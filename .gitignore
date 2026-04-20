@@ -1,0 +1,12 @@
+# Build artifacts
+native/claude-instances-bar
+native/.build-info
+
+# Claude agent scratch files
+_*.claude.md
+
+# macOS
+.DS_Store
+
+# Debug logs
+*.log
