@@ -289,24 +289,36 @@ def get_session_history(max_sessions=20):
 
         try:
             size = os.path.getsize(filepath)
-            # For history, just read first 20 lines + last 20 lines
+            # Read first 50 lines for model detection + count all lines
             with open(filepath, 'r', errors='replace') as f:
                 first_lines = []
                 for i, line in enumerate(f):
-                    if i < 20:
+                    if i < 50:
                         first_lines.append(line.strip())
                     turn_count += 1
                     last_line = line.strip()
 
-            # Extract model from first assistant message
+            # Extract model from first assistant/result message with model info
             for line in first_lines:
                 try:
                     obj = json.loads(line)
-                    if obj.get('type') == 'assistant':
+                    msg_type = obj.get('type', '')
+                    # Check assistant messages
+                    if msg_type == 'assistant':
                         m = obj.get('message', {}).get('model', '')
                         if m:
                             model = m
                             break
+                    # Check result messages (some sessions log model in result)
+                    elif msg_type == 'result':
+                        m = obj.get('model', '') or obj.get('result', {}).get('model', '')
+                        if m:
+                            model = m
+                            break
+                    # Check system messages that may reference model
+                    elif msg_type == 'system' and obj.get('model'):
+                        model = obj['model']
+                        break
                 except json.JSONDecodeError:
                     pass
 
@@ -342,6 +354,19 @@ def get_session_history(max_sessions=20):
         elif 'haiku' in model:
             model_short = 'haiku'
 
+        # Estimate cost from model + tokens (per-million pricing)
+        # Approximate rates: opus $15/M in + $75/M out, sonnet $3/M in + $15/M out, haiku $0.25/M in + $1.25/M out
+        cost_usd = 0.0
+        rate_in, rate_out = 0.0, 0.0
+        if model_short == 'opus':
+            rate_in, rate_out = 15.0, 75.0
+        elif model_short == 'sonnet':
+            rate_in, rate_out = 3.0, 15.0
+        elif model_short == 'haiku':
+            rate_in, rate_out = 0.25, 1.25
+        if total_input > 0 or total_output > 0:
+            cost_usd = round((total_input * rate_in + total_output * rate_out) / 1_000_000, 4)
+
         modified = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
         sessions.append({
@@ -353,6 +378,7 @@ def get_session_history(max_sessions=20):
             'size_kb': round(size / 1024, 1) if size else 0,
             'tokens_in': total_input,
             'tokens_out': total_output,
+            'cost_usd': cost_usd,
         })
 
     return sessions

@@ -72,6 +72,13 @@ private func relativeTime(_ isoString: String?) -> String {
     }
 }
 
+private func fmtCost(_ usd: Double) -> String {
+    if usd >= 1.0 { return String(format: "$%.2f", usd) }
+    if usd >= 0.01 { return String(format: "%.0f¢", usd * 100) }
+    if usd > 0 { return String(format: "%.1f¢", usd * 100) }
+    return "–"
+}
+
 private func shortenPath(_ path: String?, maxLen: Int = 32) -> String {
     guard let p = path, !p.isEmpty else { return "?" }
     if p.count <= maxLen { return p }
@@ -162,6 +169,7 @@ struct SessionHistory: Codable {
     let modified: String?
     let tokensIn: Int?
     let tokensOut: Int?
+    let costUsd: Double?
 
     enum CodingKeys: String, CodingKey {
         case project, model, turns, modified
@@ -169,6 +177,7 @@ struct SessionHistory: Codable {
         case sizeKb = "size_kb"
         case tokensIn = "tokens_in"
         case tokensOut = "tokens_out"
+        case costUsd = "cost_usd"
     }
 }
 
@@ -1301,7 +1310,7 @@ struct DashboardRootView: View {
                     LiveTabView(data: dataSource.data, onFocus: onFocus, onTerminate: onTerminate,
                                 onCopyPID: onCopyPID, onOpenTranscript: onOpenTranscript)
                 case .history:
-                    HistoryTabView(data: dataSource.data)
+                    HistoryTabView(data: dataSource.data, onResume: onResume, onOpenFile: onOpenFile)
                 case .events:
                     EventsTabView(data: dataSource.data)
                 case .allSessions:
@@ -1853,20 +1862,79 @@ struct MetadataItem: View {
 
 struct HistoryTabView: View {
     let data: ScanResult?
+    let onResume: (String, String?) -> Void
+    let onOpenFile: (String) -> Void
+
     @State private var sortOrder: HistorySortOrder = .modified
+    @State private var ascending: Bool = false
+    @State private var searchText: String = ""
+    @State private var showSubagents: Bool = true
 
-    enum HistorySortOrder {
-        case project, model, turns, size, modified
+    enum HistorySortOrder: Equatable {
+        case project, model, turns, tokensOut, cost, size, modified
 
-        func compare(_ a: SessionHistory, _ b: SessionHistory) -> Bool {
+        /// Default ascending direction for each column (true = natural ascending)
+        var defaultAscending: Bool {
             switch self {
-            case .project:  return a.project < b.project
-            case .model:    return (a.model ?? "") < (b.model ?? "")
-            case .turns:    return a.turns > b.turns
-            case .size:     return a.sizeKb > b.sizeKb
-            case .modified: return (a.modified ?? "") > (b.modified ?? "")
+            case .project, .model: return true
+            case .turns, .tokensOut, .cost, .size, .modified: return false
             }
         }
+
+        func compare(_ a: SessionHistory, _ b: SessionHistory, ascending: Bool) -> Bool {
+            let result: Bool
+            switch self {
+            case .project:   result = a.project < b.project
+            case .model:     result = (a.model ?? "") < (b.model ?? "")
+            case .turns:     result = a.turns > b.turns
+            case .tokensOut: result = (a.tokensOut ?? 0) > (b.tokensOut ?? 0)
+            case .cost:      result = (a.costUsd ?? 0) > (b.costUsd ?? 0)
+            case .size:      result = a.sizeKb > b.sizeKb
+            case .modified:  result = (a.modified ?? "") > (b.modified ?? "")
+            }
+            return ascending ? !result : result
+        }
+    }
+
+    private var filteredSessions: [SessionHistory] {
+        guard let d = data else { return [] }
+        var sessions = d.history
+        // Filter subagents
+        if !showSubagents {
+            sessions = sessions.filter { !$0.sessionId.hasPrefix("agent-") }
+        }
+        // Search filter
+        if !searchText.isEmpty {
+            let q = searchText.lowercased()
+            sessions = sessions.filter {
+                $0.project.lowercased().contains(q) ||
+                $0.sessionId.lowercased().contains(q) ||
+                ($0.model ?? "").lowercased().contains(q)
+            }
+        }
+        return sessions.sorted { sortOrder.compare($0, $1, ascending: ascending) }
+    }
+
+    private func toggleSort(_ col: HistorySortOrder) {
+        if sortOrder == col {
+            ascending.toggle()
+        } else {
+            sortOrder = col
+            ascending = col.defaultAscending
+        }
+    }
+
+    /// Summary stats for visible sessions
+    private var summaryStats: (sessions: Int, totalTurns: Int, totalTokensIn: Int, totalTokensOut: Int, totalSizeKb: Double, totalCost: Double) {
+        let visible = filteredSessions
+        return (
+            sessions: visible.count,
+            totalTurns: visible.reduce(0) { $0 + $1.turns },
+            totalTokensIn: visible.reduce(0) { $0 + ($1.tokensIn ?? 0) },
+            totalTokensOut: visible.reduce(0) { $0 + ($1.tokensOut ?? 0) },
+            totalSizeKb: visible.reduce(0.0) { $0 + $1.sizeKb },
+            totalCost: visible.reduce(0.0) { $0 + ($1.costUsd ?? 0) }
+        )
     }
 
     var body: some View {
@@ -1876,33 +1944,84 @@ struct HistoryTabView: View {
                 Text("Session History")
                     .font(.system(size: 22, weight: .bold))
                 Spacer()
-                if let d = data {
-                    Text("\(d.history.count) sessions")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.secondary)
+                let stats = summaryStats
+                if stats.sessions > 0 {
+                    HStack(spacing: 12) {
+                        Text("\(stats.sessions) sessions")
+                        Text("\(fmtTokens(stats.totalTokensOut)) out")
+                        if stats.totalCost > 0 {
+                            Text(fmtCost(stats.totalCost))
+                        }
+                        Text(fmtSize(stats.totalSizeKb))
+                    }
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.secondary)
                 }
             }
             .padding(.horizontal, 24)
             .padding(.top, 24)
-            .padding(.bottom, 16)
+            .padding(.bottom, 12)
 
-            if let d = data, !d.history.isEmpty {
-                let maxSize = d.history.map { $0.sizeKb }.max() ?? 1
-                let sorted = d.history.sorted(by: sortOrder.compare)
+            // Search bar + agent toggle
+            HStack(spacing: 12) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                    TextField("Search projects, sessions, models...", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                )
 
-                // Column headers (clickable to sort)
+                Button(action: { showSubagents.toggle() }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: showSubagents ? "eye" : "eye.slash")
+                            .font(.system(size: 11))
+                        Text("Agents")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(showSubagents ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
+                    )
+                    .foregroundColor(showSubagents ? .accentColor : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help(showSubagents ? "Hide subagent sessions" : "Show subagent sessions")
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 12)
+
+            if !filteredSessions.isEmpty {
+                let maxSize = filteredSessions.map { $0.sizeKb }.max() ?? 1
+                let sorted = filteredSessions
+
+                // Column headers
                 HStack(spacing: 0) {
-                    ColumnHeader(title: "Project", width: 180, alignment: .leading,
-                                 isActive: sortOrder == .project) { sortOrder = .project }
-                    ColumnHeader(title: "Model", width: 90, alignment: .leading,
-                                 isActive: sortOrder == .model) { sortOrder = .model }
-                    ColumnHeader(title: "Turns", width: 70, alignment: .trailing,
-                                 isActive: sortOrder == .turns) { sortOrder = .turns }
-                    ColumnHeader(title: "Size", width: 70, alignment: .trailing,
-                                 isActive: sortOrder == .size) { sortOrder = .size }
-                    Spacer().frame(width: 100) // bar column
+                    ColumnHeader(title: "Project", width: 170, alignment: .leading,
+                                 isActive: sortOrder == .project, ascending: ascending) { toggleSort(.project) }
+                    ColumnHeader(title: "Model", width: 80, alignment: .leading,
+                                 isActive: sortOrder == .model, ascending: ascending) { toggleSort(.model) }
+                    ColumnHeader(title: "Turns", width: 55, alignment: .trailing,
+                                 isActive: sortOrder == .turns, ascending: ascending) { toggleSort(.turns) }
+                    ColumnHeader(title: "Tokens", width: 65, alignment: .trailing,
+                                 isActive: sortOrder == .tokensOut, ascending: ascending) { toggleSort(.tokensOut) }
+                    ColumnHeader(title: "Cost", width: 50, alignment: .trailing,
+                                 isActive: sortOrder == .cost, ascending: ascending) { toggleSort(.cost) }
+                    ColumnHeader(title: "Size", width: 50, alignment: .trailing,
+                                 isActive: sortOrder == .size, ascending: ascending) { toggleSort(.size) }
+                    Spacer().frame(width: 70) // bar column
                     ColumnHeader(title: "Last Active", width: 80, alignment: .trailing,
-                                 isActive: sortOrder == .modified) { sortOrder = .modified }
+                                 isActive: sortOrder == .modified, ascending: ascending) { toggleSort(.modified) }
+                    Spacer().frame(width: 80) // action buttons space
                 }
                 .padding(.horizontal, 24)
                 .padding(.bottom, 8)
@@ -1915,57 +2034,18 @@ struct HistoryTabView: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(Array(sorted.enumerated()), id: \.element.sessionId) { idx, sess in
-                            let m = modelDisplay(sess.model)
-                            HStack(spacing: 0) {
-                                Text(sess.sessionId.hasPrefix("agent-") ? "↳ agent" : sess.project)
-                                    .lineLimit(1)
-                                    .frame(width: 180, alignment: .leading)
-
-                                HStack(spacing: 4) {
-                                    Text(m.badge).foregroundColor(Color(nsColor: m.color))
-                                    Text(m.label).foregroundColor(Color(nsColor: m.color))
-                                }
-                                .font(.system(size: 12, weight: .medium))
-                                .frame(width: 90, alignment: .leading)
-
-                                Text("\(sess.turns)")
-                                    .frame(width: 70, alignment: .trailing)
-
-                                Text(fmtSize(sess.sizeKb))
-                                    .frame(width: 70, alignment: .trailing)
-
-                                // Size bar
-                                GeometryReader { geo in
-                                    RoundedRectangle(cornerRadius: 3)
-                                        .fill(
-                                            LinearGradient(
-                                                colors: [Color.blue.opacity(0.3), Color.blue.opacity(0.6)],
-                                                startPoint: .leading, endPoint: .trailing
-                                            )
-                                        )
-                                        .frame(width: max(2, geo.size.width * CGFloat(sess.sizeKb / maxSize)), height: 6)
-                                        .frame(maxHeight: .infinity, alignment: .center)
-                                }
-                                .frame(width: 100, height: 16)
-
-                                Text(relativeTime(sess.modified))
-                                    .foregroundColor(.secondary)
-                                    .frame(width: 80, alignment: .trailing)
-                            }
-                            .font(.system(size: 13, design: .monospaced))
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 8)
-                            .background(idx % 2 == 0 ? Color.clear : Color.secondary.opacity(0.04))
-                            .contentShape(Rectangle())
+                            HistoryRow(session: sess, isEven: idx % 2 == 0,
+                                       maxSize: maxSize,
+                                       onResume: onResume, onOpenFile: onOpenFile)
                         }
                     }
                 }
             } else {
                 VStack(spacing: 12) {
-                    Image(systemName: "clock.arrow.circlepath")
+                    Image(systemName: searchText.isEmpty ? "clock.arrow.circlepath" : "magnifyingglass")
                         .font(.system(size: 40))
                         .foregroundColor(.secondary.opacity(0.3))
-                    Text("No session history")
+                    Text(searchText.isEmpty ? "No session history" : "No matching sessions")
                         .font(.system(size: 14))
                         .foregroundColor(.secondary)
                 }
@@ -1975,19 +2055,180 @@ struct HistoryTabView: View {
     }
 }
 
+// ─── History Row (extracted for hover state) ───────────────────────────────
+
+private struct HistoryRow: View {
+    let session: SessionHistory
+    let isEven: Bool
+    let maxSize: Double
+    let onResume: (String, String?) -> Void
+    let onOpenFile: (String) -> Void
+
+    @State private var isHovered = false
+
+    private var isAgent: Bool { session.sessionId.hasPrefix("agent-") }
+
+    /// Reconstruct a plausible cwd from the session's JSONL path
+    private var sessionCwd: String? {
+        // session JSONL lives at ~/.claude/projects/<dir-name>/<sessionId>.jsonl
+        // project display is already shortened, so we use nil (resume from home)
+        return nil
+    }
+
+    var body: some View {
+        let m = modelDisplay(session.model)
+        HStack(spacing: 0) {
+            // Project column — show parent project dimmed for agents
+            Group {
+                if isAgent {
+                    HStack(spacing: 3) {
+                        Text("↳")
+                            .foregroundColor(.secondary.opacity(0.5))
+                        Text(session.project)
+                            .foregroundColor(.secondary.opacity(0.6))
+                    }
+                } else {
+                    Text(session.project)
+                }
+            }
+            .lineLimit(1)
+            .frame(width: 170, alignment: .leading)
+
+            // Model badge
+            HStack(spacing: 4) {
+                Text(m.badge).foregroundColor(Color(nsColor: m.color))
+                Text(m.label).foregroundColor(Color(nsColor: m.color))
+            }
+            .font(.system(size: 12, weight: .medium))
+            .frame(width: 80, alignment: .leading)
+
+            // Turns
+            Text("\(session.turns)")
+                .frame(width: 55, alignment: .trailing)
+
+            // Tokens (output tokens — most meaningful metric)
+            Text(session.tokensOut.map { fmtTokens($0) } ?? "–")
+                .foregroundColor(.secondary)
+                .frame(width: 65, alignment: .trailing)
+                .help(tokenTooltip)
+
+            // Cost
+            Text(session.costUsd.map { fmtCost($0) } ?? "–")
+                .foregroundColor(costColor)
+                .frame(width: 50, alignment: .trailing)
+                .help(session.costUsd.map { String(format: "$%.4f", $0) } ?? "No cost data")
+
+            // Size
+            Text(fmtSize(session.sizeKb))
+                .frame(width: 50, alignment: .trailing)
+
+            // Size bar with tooltip
+            GeometryReader { geo in
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.blue.opacity(0.3), Color.blue.opacity(0.6)],
+                            startPoint: .leading, endPoint: .trailing
+                        )
+                    )
+                    .frame(width: max(2, geo.size.width * CGFloat(session.sizeKb / maxSize)), height: 6)
+                    .frame(maxHeight: .infinity, alignment: .center)
+            }
+            .frame(width: 70, height: 16)
+            .help("JSONL size: \(fmtSize(session.sizeKb)) (relative bar)")
+
+            // Last Active with absolute time tooltip
+            Text(relativeTime(session.modified))
+                .foregroundColor(.secondary)
+                .frame(width: 80, alignment: .trailing)
+                .help(session.modified ?? "Unknown")
+
+            // Action buttons — visible on hover
+            HStack(spacing: 6) {
+                if isHovered {
+                    Button(action: { onResume(session.sessionId, sessionCwd) }) {
+                        Image(systemName: "play.circle")
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Resume session")
+
+                    Button(action: {
+                        // Find the JSONL path for this session
+                        let projectsDir = NSString(string: "~/.claude/projects").expandingTildeInPath
+                        let jsonlPath = findJsonlPath(projectsDir: projectsDir, sessionId: session.sessionId)
+                        if let path = jsonlPath { onOpenFile(path) }
+                    }) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.bordered)
+                    .help("View transcript")
+                }
+            }
+            .frame(width: 80, alignment: .trailing)
+            .transition(.opacity)
+        }
+        .font(.system(size: 13, design: .monospaced))
+        .padding(.horizontal, 24)
+        .padding(.vertical, 8)
+        .background(isHovered ? Color.accentColor.opacity(0.06) :
+                     (isEven ? Color.clear : Color.secondary.opacity(0.04)))
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.12)) { isHovered = hovering }
+        }
+    }
+
+    private var tokenTooltip: String {
+        let inTok = session.tokensIn.map { fmtTokens($0) } ?? "?"
+        let outTok = session.tokensOut.map { fmtTokens($0) } ?? "?"
+        return "In: \(inTok)  Out: \(outTok)"
+    }
+
+    private var costColor: Color {
+        guard let c = session.costUsd else { return .secondary }
+        if c >= 1.0 { return .red }
+        if c >= 0.25 { return .orange }
+        return .secondary
+    }
+}
+
+/// Find a session's JSONL file by scanning ~/.claude/projects/
+private func findJsonlPath(projectsDir: String, sessionId: String) -> String? {
+    let fm = FileManager.default
+    guard let dirs = try? fm.contentsOfDirectory(atPath: projectsDir) else { return nil }
+    for dir in dirs {
+        let path = "\(projectsDir)/\(dir)/\(sessionId).jsonl"
+        if fm.fileExists(atPath: path) { return path }
+    }
+    return nil
+}
+
 struct ColumnHeader: View {
     let title: String
     let width: CGFloat
     let alignment: Alignment
     let isActive: Bool
+    let ascending: Bool
     let action: () -> Void
+
+    init(title: String, width: CGFloat, alignment: Alignment,
+         isActive: Bool, ascending: Bool = false, action: @escaping () -> Void) {
+        self.title = title
+        self.width = width
+        self.alignment = alignment
+        self.isActive = isActive
+        self.ascending = ascending
+        self.action = action
+    }
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 4) {
                 Text(title)
                 if isActive {
-                    Image(systemName: "chevron.down")
+                    Image(systemName: ascending ? "chevron.up" : "chevron.down")
                         .font(.system(size: 8, weight: .bold))
                 }
             }
