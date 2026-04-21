@@ -688,7 +688,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let ts = inst.statusline?.tokSpeed, !ts.isEmpty, ts != "0" { parts.append("\(ts) tok/s") }
             if let cv = inst.statusline?.costVel, !cv.isEmpty, cv != "0" { parts.append("$\(cv)/m") }
 
-            addDimMono(menu, "    " + parts.joined(separator: " · "), size: 11)
+            addDimMono(menu, "   " + parts.joined(separator: " · "), size: 11)
 
             // Row 3: Focus file
             if let focusFile = inst.statusline?.focusFile, !focusFile.isEmpty {
@@ -697,7 +697,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     display = display.replacingOccurrences(of: cwdFull, with: ".")
                 }
                 display = display.replacingOccurrences(of: home, with: "~")
-                addDimMono(menu, "    📄 \(shortenPath(display, maxLen: 38))", size: 11)
+                addDimMono(menu, "   📄 \(shortenPath(display, maxLen: 38))", size: 11)
             }
 
             // MCP down warning
@@ -743,13 +743,8 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             row1.submenu = submenu
 
             if idx < live.count - 1 {
-                // Thin visual gap between instances
-                let gap = NSMenuItem()
-                gap.attributedTitle = NSAttributedString(string: " ", attributes: [
-                    .font: NSFont.systemFont(ofSize: 4),
-                ])
-                gap.isEnabled = false
-                menu.addItem(gap)
+                // Thin separator between instances
+                menu.addItem(.separator())
             }
         }
         menu.addItem(.separator())
@@ -1162,6 +1157,7 @@ enum DashboardTab: String, CaseIterable, Identifiable {
     case history     = "History"
     case events      = "Events"
     case allSessions = "All Sessions"
+    case about       = "About"
 
     var id: String { rawValue }
 
@@ -1172,6 +1168,7 @@ enum DashboardTab: String, CaseIterable, Identifiable {
         case .history:     return "clock.arrow.circlepath"
         case .events:      return "list.bullet"
         case .allSessions: return "tray.full.fill"
+        case .about:       return "info.circle"
         }
     }
 
@@ -1180,6 +1177,7 @@ enum DashboardTab: String, CaseIterable, Identifiable {
         case .overview, .live:          return "Dashboard"
         case .history, .events:         return "Details"
         case .allSessions:              return "Details"
+        case .about:                    return "Help"
         }
     }
 }
@@ -1223,6 +1221,7 @@ struct SidebarButton: View {
         case .history:     return .purple
         case .events:      return .orange
         case .allSessions: return .indigo
+        case .about:       return .secondary
         }
     }
 }
@@ -1242,7 +1241,8 @@ struct DashboardRootView: View {
         let grouped = Dictionary(grouping: DashboardTab.allCases) { $0.section }
         return [
             ("Dashboard", grouped["Dashboard"] ?? []),
-            ("Details",   grouped["Details"] ?? [])
+            ("Details",   grouped["Details"] ?? []),
+            ("Help",      grouped["Help"] ?? [])
         ]
     }
 
@@ -1316,6 +1316,8 @@ struct DashboardRootView: View {
                 case .allSessions:
                     AllSessionsTabView(dataSource: dataSource, onResume: onResume,
                                        onOpenFile: onOpenFile)
+                case .about:
+                    AboutTabView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1331,33 +1333,39 @@ struct StatCard: View {
     let value: String
     let icon: String
     let color: Color
+    var subtitle: String? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
                 Image(systemName: icon)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(color)
-                    .frame(width: 28, height: 28)
+                    .frame(width: 22, height: 22)
                     .background(color.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
                 Spacer()
             }
             Text(value)
-                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .font(.system(size: 22, weight: .bold, design: .rounded))
                 .foregroundColor(.primary)
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(.secondary)
+            if let sub = subtitle {
+                Text(sub)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary.opacity(0.7))
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
+        .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 10)
+            RoundedRectangle(cornerRadius: 8)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
+            RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
         )
     }
@@ -1368,7 +1376,7 @@ struct OverviewTabView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 14) {
                 // Header
                 HStack(alignment: .firstTextBaseline) {
                     Text("Overview")
@@ -1386,129 +1394,102 @@ struct OverviewTabView: View {
                     }
                 }
 
-                // Stat cards
                 if let d = data {
-                    let totalTurns = d.live.compactMap { $0.turns }.reduce(0, +)
-                    let totalOut = d.live.compactMap { $0.outputTokens }.reduce(0, +)
-                    let totalRss = d.live.compactMap { Int($0.statusline?.rssMb ?? "0") }.reduce(0, +)
+                    let liveTurns = d.live.compactMap { $0.turns }.reduce(0, +)
+                    let liveOut = d.live.compactMap { $0.outputTokens }.reduce(0, +)
+                    let liveRss = d.live.compactMap { Int($0.statusline?.rssMb ?? "0") }.reduce(0, +)
                     let histTurns = d.history.reduce(0) { $0 + $1.turns }
                     let histSize = d.history.reduce(0.0) { $0 + $1.sizeKb }
+                    let histTokensIn = d.history.reduce(0) { $0 + ($1.tokensIn ?? 0) }
+                    let histTokensOut = d.history.reduce(0) { $0 + ($1.tokensOut ?? 0) }
+                    let histCost = d.history.reduce(0.0) { $0 + ($1.costUsd ?? 0) }
+                    let avgTurns = d.history.isEmpty ? 0 : histTurns / d.history.count
 
-                    LazyVGrid(columns: [
-                        GridItem(.flexible(), spacing: 12),
-                        GridItem(.flexible(), spacing: 12),
-                        GridItem(.flexible(), spacing: 12),
-                        GridItem(.flexible(), spacing: 12)
-                    ], spacing: 12) {
-                        StatCard(title: "Live", value: "\(d.liveCount)", icon: "bolt.fill", color: .green)
-                        StatCard(title: "Sessions", value: "\(d.history.count)", icon: "tray.full.fill", color: .blue)
-                        StatCard(title: "Total Turns", value: fmtTokens(histTurns), icon: "arrow.triangle.2.circlepath", color: .purple)
-                        StatCard(title: "Total Size", value: fmtSize(histSize), icon: "internaldrive.fill", color: .orange)
+                    // Model breakdown
+                    let modelCounts = Dictionary(grouping: d.history) { $0.model ?? "unknown" }
+                        .mapValues { $0.count }
+
+                    // ── Top stat cards (2 rows of 4) ──
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
+                        StatCard(title: "Live", value: "\(d.liveCount)", icon: "bolt.fill", color: .green,
+                                 subtitle: liveRss > 0 ? "\(liveRss) MB RAM" : nil)
+                        StatCard(title: "Sessions", value: "\(d.history.count)", icon: "tray.full.fill", color: .blue,
+                                 subtitle: "avg \(avgTurns) turns")
+                        StatCard(title: "Turns", value: fmtTokens(histTurns), icon: "arrow.triangle.2.circlepath", color: .purple,
+                                 subtitle: "\(fmtTokens(liveTurns)) active")
+                        StatCard(title: "Size", value: fmtSize(histSize), icon: "internaldrive.fill", color: .orange)
+                        StatCard(title: "Tokens In", value: fmtTokens(histTokensIn), icon: "arrow.down.circle.fill", color: .cyan)
+                        StatCard(title: "Tokens Out", value: fmtTokens(histTokensOut), icon: "arrow.up.circle.fill", color: .indigo,
+                                 subtitle: liveOut > 0 ? "\(fmtTokens(liveOut)) active" : nil)
+                        StatCard(title: "Est. Cost", value: fmtCost(histCost), icon: "dollarsign.circle.fill", color: .mint)
+                        StatCard(title: "Models", value: "\(modelCounts.count)", icon: "cpu.fill", color: .pink,
+                                 subtitle: modelCounts.sorted(by: { $0.value > $1.value }).prefix(2)
+                                     .map { "\($0.key) ×\($0.value)" }.joined(separator: ", "))
                     }
 
-                    // Live aggregate stats
-                    if d.liveCount > 0 {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "bolt.fill")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(.yellow)
-                                Text("Active Session Totals")
-                                    .font(.system(size: 13, weight: .semibold))
-                            }
-
-                            HStack(spacing: 0) {
-                                AggregateMetric(label: "Turns", value: "\(totalTurns)", color: .blue)
-                                Divider().frame(height: 32)
-                                AggregateMetric(label: "Output", value: fmtTokens(totalOut), color: .purple)
-                                Divider().frame(height: 32)
-                                AggregateMetric(label: "Memory", value: "\(totalRss) MB", color: .orange)
-                                Spacer()
-                            }
-                        }
-                        .padding(16)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10)
-                                .fill(Color(nsColor: .controlBackgroundColor))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10)
-                                .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
-                        )
-                    }
-
-                    // Rate limits
-                    if let limits = d.limits {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "gauge.with.dots.needle.33percent")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(.cyan)
-                                Text("Usage Limits")
-                                    .font(.system(size: 13, weight: .semibold))
-                            }
-
-                            VStack(spacing: 12) {
-                                if let fiveH = limits.fiveH {
-                                    RateLimitRow(label: "5 Hour", entry: fiveH)
-                                }
-                                if let week = limits.week {
-                                    RateLimitRow(label: "Weekly", entry: week)
+                    // ── Two-column middle: Rate limits + Live aggregate ──
+                    HStack(alignment: .top, spacing: 10) {
+                        // Rate limits
+                        if let limits = d.limits {
+                            OverviewSection(title: "Usage Limits", icon: "gauge.with.dots.needle.33percent", iconColor: .cyan) {
+                                VStack(spacing: 10) {
+                                    if let fiveH = limits.fiveH {
+                                        RateLimitRow(label: "5 Hour", entry: fiveH)
+                                    }
+                                    if let week = limits.week {
+                                        RateLimitRow(label: "Weekly", entry: week)
+                                    }
                                 }
                             }
                         }
-                        .padding(16)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10)
-                                .fill(Color(nsColor: .controlBackgroundColor))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10)
-                                .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
-                        )
+
+                        // Live aggregate (only when running)
+                        if d.liveCount > 0 {
+                            OverviewSection(title: "Active Totals", icon: "bolt.fill", iconColor: .yellow) {
+                                HStack(spacing: 0) {
+                                    AggregateMetric(label: "Turns", value: "\(liveTurns)", color: .blue)
+                                    Divider().frame(height: 28)
+                                    AggregateMetric(label: "Output", value: fmtTokens(liveOut), color: .purple)
+                                    Divider().frame(height: 28)
+                                    AggregateMetric(label: "Memory", value: "\(liveRss) MB", color: .orange)
+                                    Spacer()
+                                }
+                            }
+                        }
                     }
 
-                    // Recent events mini
+                    // ── Recent events ──
                     if let events = d.recentEvents, !events.isEmpty {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "clock")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(.blue)
-                                Text("Recent Events")
-                                    .font(.system(size: 13, weight: .semibold))
-                            }
-
+                        OverviewSection(title: "Recent Events", icon: "clock", iconColor: .blue) {
                             VStack(alignment: .leading, spacing: 0) {
                                 ForEach(Array(events.suffix(5).reversed().enumerated()), id: \.offset) { idx, evt in
                                     HStack(spacing: 10) {
-                                        // Mini timeline dot
                                         VStack(spacing: 0) {
                                             if idx > 0 {
                                                 Rectangle()
                                                     .fill(Color.secondary.opacity(0.2))
-                                                    .frame(width: 1, height: 6)
+                                                    .frame(width: 1, height: 4)
                                             }
                                             Circle()
                                                 .fill(eventColor(evt.event))
-                                                .frame(width: 8, height: 8)
+                                                .frame(width: 7, height: 7)
                                             if idx < min(4, events.count - 1) {
                                                 Rectangle()
                                                     .fill(Color.secondary.opacity(0.2))
-                                                    .frame(width: 1, height: 6)
+                                                    .frame(width: 1, height: 4)
                                             }
                                         }
-                                        .frame(width: 8)
+                                        .frame(width: 7)
 
                                         Text(eventTime(evt.ts))
-                                            .font(.system(size: 12, design: .monospaced))
+                                            .font(.system(size: 11, design: .monospaced))
                                             .foregroundColor(.secondary)
-                                            .frame(width: 45, alignment: .leading)
+                                            .frame(width: 42, alignment: .leading)
 
                                         EventBadge(event: evt.event)
 
                                         Text(evt.project ?? "")
-                                            .font(.system(size: 12))
+                                            .font(.system(size: 11))
                                             .foregroundColor(.secondary)
                                             .lineLimit(1)
                                         Spacer()
@@ -1516,15 +1497,6 @@ struct OverviewTabView: View {
                                 }
                             }
                         }
-                        .padding(16)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10)
-                                .fill(Color(nsColor: .controlBackgroundColor))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10)
-                                .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
-                        )
                     }
                 } else {
                     VStack(spacing: 12) {
@@ -1537,8 +1509,39 @@ struct OverviewTabView: View {
                     .frame(maxWidth: .infinity, minHeight: 200)
                 }
             }
-            .padding(24)
+            .padding(20)
         }
+    }
+}
+
+/// Reusable section container for overview cards
+struct OverviewSection<Content: View>: View {
+    let title: String
+    let icon: String
+    let iconColor: Color
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(iconColor)
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
+        )
     }
 }
 
@@ -2537,6 +2540,218 @@ private struct SessionRow: View {
         .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.12)) { isHovered = hovering }
+        }
+    }
+}
+
+// ─── SwiftUI: About Tab ────────────────────────────────────────────────────
+
+struct AboutTabView: View {
+    private let buildInfo: [String: String] = {
+        let path = widgetDir + "/native/.build-info"
+        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return [:] }
+        var info: [String: String] = [:]
+        for line in content.components(separatedBy: .newlines) {
+            let parts = line.trimmingCharacters(in: .whitespaces).components(separatedBy: "=")
+            if parts.count == 2 { info[parts[0]] = parts[1] }
+        }
+        return info
+    }()
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                // Title
+                HStack(alignment: .firstTextBaseline) {
+                    Text("About")
+                        .font(.system(size: 22, weight: .bold))
+                    Spacer()
+                }
+
+                // App identity
+                OverviewSection(title: "Claude Instances", icon: "cpu", iconColor: .accentColor) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Native macOS menu bar widget for monitoring and managing concurrent Claude Code sessions.")
+                            .font(.system(size: 13))
+                            .foregroundColor(.secondary)
+                        HStack(spacing: 16) {
+                            InfoPill(label: "Platform", value: "macOS 13+")
+                            InfoPill(label: "Language", value: "Swift 5.9")
+                            InfoPill(label: "Build", value: "swiftc (no Xcode)")
+                        }
+                    }
+                }
+
+                // Build info
+                OverviewSection(title: "Build Info", icon: "hammer.fill", iconColor: .orange) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        AboutRow(label: "Commit", value: buildInfo["commit"] ?? "–")
+                        AboutRow(label: "Source Hash", value: buildInfo["src_hash"] ?? "–")
+                        AboutRow(label: "Built At", value: buildInfo["built_at"] ?? "–")
+                        AboutRow(label: "Widget Dir", value: widgetDir.replacingOccurrences(of: home, with: "~"))
+                    }
+                }
+
+                // Keyboard shortcuts
+                OverviewSection(title: "Keyboard Shortcuts", icon: "keyboard", iconColor: .blue) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ShortcutRow(keys: "⌘N", desc: "New Claude session in Ghostty")
+                        ShortcutRow(keys: "⌘D", desc: "Open/focus Dashboard")
+                        ShortcutRow(keys: "⌘R", desc: "Force refresh scan data")
+                    }
+                }
+
+                // Data sources
+                OverviewSection(title: "Data Sources", icon: "cylinder.split.1x2", iconColor: .purple) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        AboutRow(label: "Scanner", value: "lib/scan.sh (Python → JSON)")
+                        AboutRow(label: "Statusline", value: "/tmp/claude-statusline-<pid>")
+                        AboutRow(label: "Sessions", value: "~/.claude/projects/")
+                        AboutRow(label: "Rate Limits", value: "~/.claude/widgets/.limits.json")
+                        AboutRow(label: "Refresh", value: "Every 5 seconds")
+                    }
+                }
+
+                // Dashboard tabs guide
+                OverviewSection(title: "Dashboard Tabs", icon: "sidebar.squares.left", iconColor: .indigo) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        TabHelp(icon: "square.grid.2x2.fill", color: .blue, name: "Overview",
+                                desc: "Stat cards, rate limits, active totals, recent events")
+                        TabHelp(icon: "sparkles", color: .green, name: "Live",
+                                desc: "Running instances with metrics, hover actions, transcript viewer")
+                        TabHelp(icon: "clock.arrow.circlepath", color: .purple, name: "History",
+                                desc: "Recent sessions — search, sort, resume, tokens, cost")
+                        TabHelp(icon: "list.bullet", color: .orange, name: "Events",
+                                desc: "Timeline of start/stop/compact/permission events")
+                        TabHelp(icon: "tray.full.fill", color: .indigo, name: "All Sessions",
+                                desc: "Deep scan of ALL past sessions with search and resume")
+                    }
+                }
+
+                // Links
+                OverviewSection(title: "Links", icon: "link", iconColor: .cyan) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Button(action: {
+                            NSWorkspace.shared.open(URL(string: "https://github.com/alcatraz627/claude-instances")!)
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.up.right.square")
+                                    .font(.system(size: 11))
+                                Text("GitHub Repository")
+                                    .font(.system(size: 13))
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.accentColor)
+
+                        AboutRow(label: "Logs", value: "/tmp/claude-instances-bar.log")
+                        AboutRow(label: "LaunchAgent", value: "dev.claude-instances.menubar")
+                    }
+                }
+
+                // Troubleshooting
+                OverviewSection(title: "Troubleshooting", icon: "wrench.and.screwdriver", iconColor: .yellow) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        TroubleshootRow(problem: "Two icons in menu bar",
+                                       fix: "Hover stale icon to clear, or reinstall")
+                        TroubleshootRow(problem: "Focus doesn't switch tabs",
+                                       fix: "Grant Accessibility permission in System Settings")
+                        TroubleshootRow(problem: "Menu shows 'Scanning...'",
+                                       fix: "Test scan.sh directly: bash lib/scan.sh")
+                    }
+                }
+            }
+            .padding(20)
+        }
+    }
+}
+
+private struct InfoPill: View {
+    let label: String
+    let value: String
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundColor(.primary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(RoundedRectangle(cornerRadius: 4).fill(Color.secondary.opacity(0.08)))
+    }
+}
+
+private struct AboutRow: View {
+    let label: String
+    let value: String
+    var body: some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.secondary)
+                .frame(width: 100, alignment: .leading)
+            Text(value)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+            Spacer()
+        }
+    }
+}
+
+private struct ShortcutRow: View {
+    let keys: String
+    let desc: String
+    var body: some View {
+        HStack {
+            Text(keys)
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundColor(.accentColor)
+                .frame(width: 40, alignment: .leading)
+            Text(desc)
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+            Spacer()
+        }
+    }
+}
+
+private struct TabHelp: View {
+    let icon: String
+    let color: Color
+    let name: String
+    let desc: String
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 11))
+                .foregroundColor(color)
+                .frame(width: 16)
+            Text(name)
+                .font(.system(size: 12, weight: .semibold))
+                .frame(width: 80, alignment: .leading)
+            Text(desc)
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+            Spacer()
+        }
+    }
+}
+
+private struct TroubleshootRow: View {
+    let problem: String
+    let fix: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(problem)
+                .font(.system(size: 12, weight: .medium))
+            Text(fix)
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
         }
     }
 }
