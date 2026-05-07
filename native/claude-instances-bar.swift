@@ -1027,12 +1027,23 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let m = modelDisplay(inst.model)
             let elapsed = inst.elapsed?.trimmingCharacters(in: .whitespaces) ?? "?"
 
-            // Primary label: tab title if set, else shortened cwd
-            let title = (inst.tabTitle ?? "").isEmpty
-                ? shortenPath(inst.cwdShort, maxLen: 28)
-                : inst.tabTitle!
-            let titleMaxLen = 28
-            let displayTitle = title.count > titleMaxLen ? "…" + title.suffix(titleMaxLen - 1) : title
+            // Primary label: leaf folder name (tab title overrides)
+            //   Leaf = last component of cwd, e.g. "claude-instances" not
+            //   "...de/widgets/claude-instances". Full path renders separately
+            //   on the next row, wrapping rather than truncating.
+            let leafTitle: String = {
+                if let tt = inst.tabTitle, !tt.isEmpty { return tt }
+                if let cwd = inst.cwd, !cwd.isEmpty {
+                    return (cwd as NSString).lastPathComponent
+                }
+                return inst.cwdShort ?? "(unknown)"
+            }()
+            let displayTitle = leafTitle
+            // Full cwd for the wrapping row below — $HOME → ~ substitution only
+            let fullPathDisplay: String? = {
+                guard let cwd = inst.cwd, !cwd.isEmpty else { return nil }
+                return cwd.replacingOccurrences(of: home, with: "~")
+            }()
 
             // Session state indicator
             let stateStr = inst.sessionState?.state ?? "idle"
@@ -1084,13 +1095,21 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             row1.isEnabled = true
             menu.addItem(row1)
 
+            // Row 1.5: Full cwd path — wraps, never truncates.
+            if let path = fullPathDisplay, path != leafTitle {
+                addWrappingDim(menu, "      \(path)",
+                              color: NSColor.tertiaryLabelColor, size: 10)
+            }
+
             // State detail line (when actively doing something)
             if stateStr != "idle" && !stateDetail.isEmpty {
                 addColored(menu, "    \(stateIcon) \(stateStr): \(stateDetail)",
                           color: menuTeal, size: 11)
             }
 
-            // Row 2: Compact metrics line — enhanced with cost, tool calls, context %
+            // Row 2: Compact metrics line — semantic per-field colors
+            // (turn count is gray, tools orange, tokens green, cost & memory
+            // step-shaded by burn level, speed step-shaded by throughput).
             let row2 = NSMenuItem()
             let row2Attr = NSMutableAttributedString()
             row2Attr.append(NSAttributedString(string: "   ", attributes: [
@@ -1110,17 +1129,51 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 ]))
             }
 
-            var metricParts: [String] = []
-            if let t = inst.turns, t > 0 { metricParts.append("\(t)t") }
-            if let tc = inst.toolCalls, tc > 0 { metricParts.append("🔧\(tc)") }
-            if let o = inst.outputTokens, o > 0 { metricParts.append("↑\(fmtTokens(o))") }
-            if let c = inst.costUsd, c > 0 { metricParts.append(fmtCost(c)) }
-            if let rss = inst.statusline?.rssMb, rss != "0", !rss.isEmpty { metricParts.append("\(rss)MB") }
-            if let ts = inst.statusline?.tokSpeed, !ts.isEmpty, ts != "0" { metricParts.append("\(ts)t/s") }
-            if !metricParts.isEmpty {
-                row2Attr.append(NSAttributedString(string: metricParts.joined(separator: " · "), attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-                    .foregroundColor: NSColor.secondaryLabelColor,
+            // (text, color) pairs — built individually so each field can
+            // signal its own state via color rather than reading as a wall
+            // of gray.
+            var metricParts: [(String, NSColor)] = []
+            if let t = inst.turns, t > 0 {
+                metricParts.append(("\(t)t", .secondaryLabelColor))
+            }
+            if let tc = inst.toolCalls, tc > 0 {
+                metricParts.append(("🔧\(tc)", .systemOrange))
+            }
+            if let o = inst.outputTokens, o > 0 {
+                metricParts.append(("↑\(fmtTokens(o))", menuGreen))
+            }
+            if let c = inst.costUsd, c > 0 {
+                let costColor: NSColor = c > 5  ? .systemRed
+                                       : c > 1  ? .systemOrange
+                                                : .secondaryLabelColor
+                metricParts.append((fmtCost(c), costColor))
+            }
+            if let rss = inst.statusline?.rssMb, rss != "0", !rss.isEmpty {
+                let mb = Int(rss) ?? 0
+                let memColor: NSColor = mb >= 500 ? .systemRed
+                                      : mb >= 200 ? .systemOrange
+                                                  : .secondaryLabelColor
+                metricParts.append(("\(rss)MB", memColor))
+            }
+            if let ts = inst.statusline?.tokSpeed, !ts.isEmpty, ts != "0" {
+                let n = Int(ts) ?? 0
+                let speedColor: NSColor = n > 600 ? menuGreen
+                                        : n > 300 ? menuTeal
+                                                  : .secondaryLabelColor
+                metricParts.append(("\(ts)t/s", speedColor))
+            }
+
+            let metricFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+            for (idx, part) in metricParts.enumerated() {
+                if idx > 0 {
+                    row2Attr.append(NSAttributedString(string: " · ", attributes: [
+                        .font: metricFont,
+                        .foregroundColor: NSColor.tertiaryLabelColor,
+                    ]))
+                }
+                row2Attr.append(NSAttributedString(string: part.0, attributes: [
+                    .font: metricFont,
+                    .foregroundColor: part.1,
                 ]))
             }
 
@@ -1128,14 +1181,22 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             row2.isEnabled = false
             menu.addItem(row2)
 
-            // Row 3: Focus file (if present)
+            // Compaction-soon warning when context is critically low.
+            if let ctxStr = inst.statusline?.ctxRemaining,
+               let ctxInt = Int(ctxStr), ctxInt > 0 && ctxInt < 15 {
+                addColored(menu, "    ⚠ Context low (\(ctxInt)%) — compaction imminent",
+                          color: .systemRed, size: 11)
+            }
+
+            // Row 3: Focus file (if present) — wraps instead of truncating.
             if let focusFile = inst.statusline?.focusFile, !focusFile.isEmpty {
                 var display = focusFile
                 if let cwdFull = inst.cwd, !cwdFull.isEmpty {
                     display = display.replacingOccurrences(of: cwdFull, with: ".")
                 }
                 display = display.replacingOccurrences(of: home, with: "~")
-                addDimMono(menu, "   📄 \(shortenPath(display, maxLen: 36))", size: 11)
+                addWrappingDim(menu, "   📄 \(display)",
+                              color: NSColor.tertiaryLabelColor, size: 11)
             }
 
             // MCP down warning
@@ -1584,6 +1645,43 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ])
         i.isEnabled = false
         menu.addItem(i)
+    }
+
+    /// Add a multi-line, character-wrapping dim row to the menu.
+    /// Uses a view-based NSMenuItem (NSTextField with usesSingleLineMode=false)
+    /// because NSMenuItem.attributedTitle does not honor lineBreakMode for
+    /// width-based wrapping — it just lets the menu grow horizontally instead.
+    /// Used for the full-cwd row under each instance and the focus-file row,
+    /// where path length should never trigger an ellipsis.
+    private func addWrappingDim(_ menu: NSMenu, _ text: String,
+                                color: NSColor = .tertiaryLabelColor,
+                                size: CGFloat = 11) {
+        let item = NSMenuItem()
+        let label = NSTextField(labelWithString: text)
+        label.font = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        label.textColor = color
+        label.usesSingleLineMode = false
+        label.maximumNumberOfLines = 0
+        label.lineBreakMode = .byCharWrapping
+        label.preferredMaxLayoutWidth = 320
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.isBezeled = false
+        label.isEditable = false
+        label.drawsBackground = false
+
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
+            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 1),
+            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -1),
+            container.widthAnchor.constraint(greaterThanOrEqualToConstant: 340),
+        ])
+        item.view = container
+        item.isEnabled = false
+        menu.addItem(item)
     }
 
     private func addDimMono(_ menu: NSMenu, _ title: String, size: CGFloat = 12) {
