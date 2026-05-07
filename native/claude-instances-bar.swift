@@ -600,6 +600,24 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         set { UserDefaults.standard.set(newValue, forKey: thresholdKey) }
     }
 
+    /// Refresh cadence — interval (seconds) at which the scan timer fires.
+    /// 0 means "paused"; UI exposes presets via the Refresh submenu.
+    /// Persisted via UserDefaults so it survives restarts.
+    private let refreshIntervalKey = "scanRefreshInterval"
+    private static let refreshPresets: [Double] = [1, 2, 5, 10, 30, 60]
+    private var refreshInterval: Double {
+        get {
+            let v = UserDefaults.standard.double(forKey: refreshIntervalKey)
+            return v > 0 ? v : 5.0
+        }
+        set { UserDefaults.standard.set(newValue, forKey: refreshIntervalKey) }
+    }
+    private var refreshPaused: Bool {
+        get { UserDefaults.standard.bool(forKey: refreshIntervalKey + ".paused") }
+        set { UserDefaults.standard.set(newValue, forKey: refreshIntervalKey + ".paused") }
+    }
+    private var lastScanAt: Date?
+
     // ── App lifecycle ────────────────────────────────────────────────────────
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -624,13 +642,28 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Initial scan
         refreshData()
 
-        // Background timer — scan every 5 seconds
-        scanTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        // Background timer — scan at user-selected cadence (or paused)
+        restartScanTimer()
+    }
+
+    /// (Re)start the periodic scan timer using the current `refreshInterval`.
+    /// Call after the user changes cadence via the Refresh submenu.
+    private func restartScanTimer() {
+        scanTimer?.invalidate()
+        scanTimer = nil
+
+        if refreshPaused {
+            dlog("scan timer paused (no auto-refresh)")
+            return
+        }
+
+        let interval = refreshInterval
+        let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.refreshData()
         }
-        RunLoop.current.add(scanTimer!, forMode: .common)
-
-        dlog("ready — timer started (5s quick / 30s full)")
+        RunLoop.current.add(t, forMode: .common)
+        scanTimer = t
+        dlog("scan timer started — interval=\(interval)s (full every \(fullScanInterval) ticks)")
     }
 
     func applicationWillTerminate(_ note: Notification) {
@@ -693,6 +726,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         self.cachedData = r
                     }
                     self.lastScanError = false
+                    self.lastScanAt    = Date()
                 } else {
                     self.lastScanError = true
                 }
@@ -1318,7 +1352,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func addActionsSection(_ menu: NSMenu, _ data: ScanResult) {
         addAction(menu, "New Session", #selector(newSession), icon: "plus.circle", key: "n")
         addAction(menu, "Dashboard", #selector(openDashboard), icon: "rectangle.3.group", key: "d")
-        addAction(menu, "Refresh", #selector(refreshAction), icon: "arrow.clockwise", key: "r")
+        addRefreshMenu(menu)
 
         if data.live.count > 0 {
             menu.addItem(.separator())
@@ -1337,6 +1371,96 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
         addAction(menu, "Quit Widget", #selector(NSApplication.terminate(_:)), icon: "power")
+    }
+
+    // ── Refresh submenu (manual + cadence picker) ────────────────────────────
+
+    private func addRefreshMenu(_ menu: NSMenu) {
+        let parent = NSMenuItem(title: "Refresh", action: nil, keyEquivalent: "")
+        setIcon(parent, "arrow.clockwise")
+
+        // Subtitle showing current cadence + last-scan age
+        let cadenceLabel: String
+        if refreshPaused {
+            cadenceLabel = "paused"
+        } else {
+            let i = refreshInterval
+            cadenceLabel = i < 1 ? String(format: "%.1fs", i) : "\(Int(i))s"
+        }
+        let agePart: String
+        if let t = lastScanAt {
+            let s = Int(Date().timeIntervalSince(t))
+            agePart = "  ·  \(s)s ago"
+        } else {
+            agePart = ""
+        }
+        parent.attributedTitle = NSAttributedString(
+            string: "  Refresh  (\(cadenceLabel))\(agePart)",
+            attributes: [.font: NSFont.systemFont(ofSize: 13)]
+        )
+
+        let sub = NSMenu()
+
+        // Manual refresh now
+        let now = NSMenuItem(title: "Refresh Now", action: #selector(refreshAction), keyEquivalent: "r")
+        now.target = self
+        setIcon(now, "arrow.clockwise.circle")
+        sub.addItem(now)
+
+        sub.addItem(.separator())
+
+        let header = NSMenuItem()
+        header.attributedTitle = NSAttributedString(
+            string: "Auto-refresh interval",
+            attributes: [
+                .foregroundColor: NSColor.tertiaryLabelColor,
+                .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            ])
+        header.isEnabled = false
+        sub.addItem(header)
+
+        // Cadence presets — radio-style (✓ next to current selection)
+        for preset in Self.refreshPresets {
+            let label = preset < 1 ? String(format: "%.1f seconds", preset) :
+                        preset == 1 ? "1 second" :
+                                      "\(Int(preset)) seconds"
+            let mi = NSMenuItem(title: label,
+                                action: #selector(setRefreshInterval(_:)),
+                                keyEquivalent: "")
+            mi.target = self
+            mi.representedObject = preset
+            mi.state = (!refreshPaused && abs(refreshInterval - preset) < 0.01) ? .on : .off
+            sub.addItem(mi)
+        }
+
+        sub.addItem(.separator())
+
+        // Pause toggle
+        let pause = NSMenuItem(title: "Paused",
+                               action: #selector(togglePause(_:)),
+                               keyEquivalent: "")
+        pause.target = self
+        pause.state = refreshPaused ? .on : .off
+        sub.addItem(pause)
+
+        parent.submenu = sub
+        menu.addItem(parent)
+    }
+
+    @objc private func setRefreshInterval(_ sender: NSMenuItem) {
+        guard let interval = sender.representedObject as? Double else { return }
+        refreshInterval = interval
+        refreshPaused = false
+        dlog("user set refresh interval to \(interval)s")
+        restartScanTimer()
+        refreshData()
+    }
+
+    @objc private func togglePause(_ sender: NSMenuItem) {
+        refreshPaused.toggle()
+        dlog("refresh \(refreshPaused ? "paused" : "resumed")")
+        restartScanTimer()
+        if !refreshPaused { refreshData() }
     }
 
     // ── Action handlers ──────────────────────────────────────────────────────
