@@ -15,7 +15,8 @@ SOURCE="$SCRIPT_DIR/claude-instances-bar.swift"
 OUTPUT="$SCRIPT_DIR/claude-instances-bar"
 LABEL="dev.claude-instances.menubar"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-DEBUG_LOG="/tmp/claude-instances-bar.log"
+DEBUG_LOG="$HOME/Library/Logs/ClaudeInstances/bar.log"
+mkdir -p "$(dirname "$DEBUG_LOG")"
 
 MODE="${1:-}"
 

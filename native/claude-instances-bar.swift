@@ -18,20 +18,72 @@ private let scanScript   = widgetDir + "/lib/scan.sh"
 private let detailScript = widgetDir + "/lib/detail.sh"
 private let renderScript = widgetDir + "/render.sh"
 private let dashboardHTML = widgetDir + "/dashboard.html"
-private let debugLog     = "/tmp/claude-instances-bar.log"
-private let iconPath     = home + "/.claude/assets/images/claude-icon-coral-32.png"
+private let logDir       = home + "/Library/Logs/ClaudeInstances"
+private let debugLog     = logDir + "/bar.log"
+private let debugLogPrev = logDir + "/bar.log.1"
+private let iconPath     = home + "/.claude/widgets/claude-instances/native/claude-logo.svg"
 
-// ─── Debug logging ────────────────────────────────────────────────────────────
+// ─── Logging ──────────────────────────────────────────────────────────────────
+//
+// Three levels (info / warn / error), persistent under ~/Library/Logs/ClaudeInstances/,
+// size-rotated at 1 MB (one .1 backup retained).
+//
+// Format: ISO8601 [pid] [LEVEL] message
+//
+// Use:
+//   dlog("scanner finished")     // INFO
+//   dwarn("pipe closed early")   // WARN
+//   derr("scanner status=\(s)")  // ERROR
 
-private func dlog(_ msg: String) {
+private enum LogLevel: String { case info = "INFO", warn = "WARN", error = "ERROR" }
+
+private let logRotateBytes: UInt64 = 1_000_000
+private let pidStr = String(ProcessInfo.processInfo.processIdentifier)
+
+private func ensureLogDir() {
+    try? FileManager.default.createDirectory(
+        atPath: logDir, withIntermediateDirectories: true)
+}
+
+private func rotateLogIfNeeded() {
+    guard let attrs = try? FileManager.default.attributesOfItem(atPath: debugLog),
+          let size = attrs[.size] as? UInt64, size > logRotateBytes else { return }
+    try? FileManager.default.removeItem(atPath: debugLogPrev)
+    try? FileManager.default.moveItem(atPath: debugLog, toPath: debugLogPrev)
+}
+
+private func writeLog(_ level: LogLevel, _ msg: String) {
+    ensureLogDir()
+    rotateLogIfNeeded()
     let ts   = ISO8601DateFormatter().string(from: Date())
-    let line = "  \(ts) [bar] \(msg)\n"
+    let line = "\(ts) [\(pidStr)] [\(level.rawValue)] \(msg)\n"
     guard let data = line.data(using: .utf8) else { return }
     if let fh = FileHandle(forWritingAtPath: debugLog) {
         fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
     } else {
         try? data.write(to: URL(fileURLWithPath: debugLog))
     }
+}
+
+private func dlog (_ msg: String) { writeLog(.info,  msg) }
+private func dwarn(_ msg: String) { writeLog(.warn,  msg) }
+private func derr (_ msg: String) { writeLog(.error, msg) }
+
+/// Pretty-print an NSError so multi-line dumps fit on one log line.
+private func fmtErr(_ error: Error) -> String {
+    let ns = error as NSError
+    return "\(ns.domain) #\(ns.code): \(ns.localizedDescription)"
+}
+
+/// Pretty-print the NSDictionary returned by `NSAppleScript.executeAndReturnError`.
+/// Strips noisy keys (NSAppleScriptErrorRange) and surfaces brief message + code + app.
+private func fmtASErr(_ info: NSDictionary) -> String {
+    let brief = info["NSAppleScriptErrorBriefMessage"] as? String
+             ?? info["NSAppleScriptErrorMessage"] as? String
+             ?? "unknown error"
+    let num   = (info["NSAppleScriptErrorNumber"] as? NSNumber)?.intValue ?? -1
+    let app   = info["NSAppleScriptErrorAppName"] as? String ?? "?"
+    return "AppleScript[\(app) #\(num)]: \(brief)"
 }
 
 // ─── Formatting helpers ──────────────────────────────────────────────────────
@@ -85,6 +137,29 @@ private func shortenPath(_ path: String?, maxLen: Int = 32) -> String {
     return "…" + p.suffix(maxLen - 1)
 }
 
+private func rateLimitCountdown(_ resetsAt: String?) -> String? {
+    guard let str = resetsAt, !str.isEmpty else { return nil }
+    var resetDate: Date?
+    if let epoch = Double(str) {
+        resetDate = Date(timeIntervalSince1970: epoch)
+    } else {
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        resetDate = fmt.date(from: str)
+        if resetDate == nil {
+            let fmt2 = ISO8601DateFormatter()
+            resetDate = fmt2.date(from: str)
+        }
+    }
+    guard let rd = resetDate else { return nil }
+    let secs = rd.timeIntervalSinceNow
+    guard secs > 0 else { return nil }
+    let h = Int(secs) / 3600
+    let m = (Int(secs) % 3600) / 60
+    if h > 0 { return "\(h)h \(m)m" }
+    return "\(m)m"
+}
+
 // ─── String helpers ──────────────────────────────────────────────────────────
 
 extension String {
@@ -100,13 +175,47 @@ struct ScanResult: Codable {
     let live: [LiveInstance]
     let history: [SessionHistory]
     let recentEvents: [Event]?
+    let deepEvents: [Event]?
     let limits: RateLimits?
+    let aggregates: Aggregates?
     let liveCount: Int
 
     enum CodingKeys: String, CodingKey {
-        case live, history, limits
+        case live, history, limits, aggregates
         case recentEvents = "recent_events"
+        case deepEvents = "deep_events"
         case liveCount = "live_count"
+    }
+}
+
+struct SessionState: Codable {
+    let state: String?    // thinking, responding, tool_use, tool_result, idle
+    let detail: String?   // e.g. tool name or empty
+}
+
+struct AggregatesPeriod: Codable {
+    let sessions: Int?
+    let turns: Int?
+    let tokensIn: Int?
+    let tokensOut: Int?
+    let costUsd: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case sessions, turns
+        case tokensIn = "tokens_in"
+        case tokensOut = "tokens_out"
+        case costUsd = "cost_usd"
+    }
+}
+
+struct Aggregates: Codable {
+    let today: AggregatesPeriod?
+    let week: AggregatesPeriod?
+    let modelBreakdown: [String: Int]?
+
+    enum CodingKeys: String, CodingKey {
+        case today, week
+        case modelBreakdown = "model_breakdown"
     }
 }
 
@@ -123,6 +232,11 @@ struct LiveInstance: Codable {
     let cacheRead: Int?
     let sessionId: String?
     let resumeId: String?
+    let toolCalls: Int?
+    let costUsd: Double?
+    let tabTitle: String?
+    let subagentCount: Int?
+    let sessionState: SessionState?
     let statusline: StatuslineMetrics?
 
     enum CodingKeys: String, CodingKey {
@@ -134,6 +248,11 @@ struct LiveInstance: Codable {
         case cacheRead = "cache_read"
         case sessionId = "session_id"
         case resumeId = "resume_id"
+        case toolCalls = "tool_calls"
+        case costUsd = "cost_usd"
+        case tabTitle = "tab_title"
+        case subagentCount = "subagent_count"
+        case sessionState = "session_state"
     }
 }
 
@@ -147,6 +266,10 @@ struct StatuslineMetrics: Codable {
     let tokSpeed: String?
     let costVel: String?
     let walSinceCp: String?
+    let ctxRemaining: String?
+    let scratchpadCount: String?
+    let pm2Online: String?
+    let pm2Errored: String?
 
     enum CodingKeys: String, CodingKey {
         case cpu, mem
@@ -157,6 +280,10 @@ struct StatuslineMetrics: Codable {
         case tokSpeed = "tok_speed"
         case costVel = "cost_vel"
         case walSinceCp = "wal_since_cp"
+        case ctxRemaining = "ctx_remaining"
+        case scratchpadCount = "scratchpad_count"
+        case pm2Online = "pm2_online"
+        case pm2Errored = "pm2_errored"
     }
 }
 
@@ -186,10 +313,14 @@ struct Event: Codable {
     let ts: String
     let project: String?
     let sessionId: String?
+    let model: String?
+    let tabTitle: String?
+    let tool: String?
 
     enum CodingKeys: String, CodingKey {
-        case event, ts, project
+        case event, ts, project, model, tool
         case sessionId = "session_id"
+        case tabTitle = "tab_title"
     }
 }
 
@@ -202,10 +333,12 @@ struct RateLimitEntry: Codable {
 struct RateLimits: Codable {
     let fiveH: RateLimitEntry?
     let week: RateLimitEntry?
+    let resetsAt: String?
 
     enum CodingKeys: String, CodingKey {
         case fiveH = "5h"
         case week
+        case resetsAt = "resets_at"
     }
 }
 
@@ -218,15 +351,25 @@ private struct ModelDisplay {
 }
 
 private let modelConfig: [String: ModelDisplay] = [
-    "opus":   ModelDisplay(badge: "◆", label: "Opus",
-                           color: NSColor(red: 0.95, green: 0.65, blue: 0.20, alpha: 1.0)),  // warm amber/gold
-    "sonnet": ModelDisplay(badge: "●", label: "Sonnet",
-                           color: NSColor(red: 0.38, green: 0.58, blue: 1.0, alpha: 1.0)),   // vibrant blue
-    "haiku":  ModelDisplay(badge: "○", label: "Haiku",
-                           color: NSColor(red: 0.30, green: 0.82, blue: 0.72, alpha: 1.0)),  // teal/mint
+    "opus":   ModelDisplay(badge: "◆", label: "Opus",   color: .systemOrange),  // vibrancy-safe
+    "sonnet": ModelDisplay(badge: "●", label: "Sonnet", color: .systemBlue),
+    "haiku":  ModelDisplay(badge: "○", label: "Haiku",  color: menuTeal),
 ]
 
 private let defaultModel = ModelDisplay(badge: "·", label: "?", color: .secondaryLabelColor)
+
+// ─── Menu color palette ──────────────────────────────────────────────────────
+// System colors are vivid but wash out on the translucent NSMenu material.
+// .shadow(withLevel:) blends toward black, keeping the hue while improving contrast.
+// Adjust the shadow level (0.0 = original, 1.0 = black) to taste.
+
+private let menuGreen:  NSColor = NSColor.systemGreen.shadow(withLevel: 0.35)!
+private let menuYellow: NSColor = NSColor.systemYellow.shadow(withLevel: 0.30)!
+private let menuCyan:   NSColor = NSColor.systemCyan.shadow(withLevel: 0.35)!
+private let menuTeal:   NSColor = NSColor.systemTeal.shadow(withLevel: 0.25)!
+
+/// Elapsed time uses gray — prominent enough without competing with status colors.
+private let coralAccent: NSColor = .systemGray
 
 private func modelDisplay(_ name: String?) -> ModelDisplay {
     guard let n = name else { return defaultModel }
@@ -253,7 +396,7 @@ private func focusGhosttyTab(forCwd cwd: String) {
     var error: NSDictionary?
     appleScript?.executeAndReturnError(&error)
     if let error = error {
-        dlog("AppleScript focus error: \(error)")
+        derr("focus failed: \(fmtASErr(error))")
         // Fallback: just activate Ghostty
         let fallback = NSAppleScript(source: "tell application \"Ghostty\" to activate")
         fallback?.executeAndReturnError(nil)
@@ -285,7 +428,7 @@ private func resumeSession(sessionId: String, cwd: String? = nil) {
     var error: NSDictionary?
     appleScript?.executeAndReturnError(&error)
     if let error = error {
-        dlog("resume AppleScript error: \(error)")
+        derr("resume failed: \(fmtASErr(error))")
     }
 }
 
@@ -390,29 +533,45 @@ private func scanAllSessions() -> [FullSession] {
 
 // ─── Scanner ─────────────────────────────────────────────────────────────────
 
-private func runScanner() -> ScanResult? {
+private func runScanner(quick: Bool = false) -> ScanResult? {
     let task = Process()
     task.executableURL = URL(fileURLWithPath: "/bin/bash")
-    task.arguments = [scanScript]
+    task.arguments = quick ? [scanScript, "--quick"] : [scanScript]
     task.environment = ProcessInfo.processInfo.environment
 
-    let pipe = Pipe()
-    task.standardOutput = pipe
-    task.standardError = FileHandle.nullDevice
+    let outPipe = Pipe()
+    let errPipe = Pipe()
+    task.standardOutput = outPipe
+    task.standardError  = errPipe
 
     do {
         try task.run()
         task.waitUntilExit()
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderr  = String(data: errData, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
         if task.terminationStatus != 0 {
-            dlog("scanner exited with status \(task.terminationStatus)")
+            let mode = quick ? "--quick" : "full"
+            derr("scanner \(mode) exit=\(task.terminationStatus)" +
+                 (stderr.isEmpty ? "" : " stderr=\(stderr.prefix(400))"))
             return nil
         }
-        let decoder = JSONDecoder()
-        return try decoder.decode(ScanResult.self, from: data)
+        if !stderr.isEmpty {
+            // Scanner succeeded but emitted warnings — surface them at WARN level.
+            dwarn("scanner stderr: \(stderr.prefix(400))")
+        }
+        do {
+            return try JSONDecoder().decode(ScanResult.self, from: outData)
+        } catch {
+            let preview = String(data: outData.prefix(200), encoding: .utf8) ?? "<non-utf8>"
+            derr("scanner JSON decode failed: \(fmtErr(error)) — first 200B: \(preview)")
+            return nil
+        }
     } catch {
-        dlog("scanner error: \(error)")
+        derr("scanner launch failed: \(fmtErr(error))")
         return nil
     }
 }
@@ -429,11 +588,28 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var theMenu: NSMenu!
     private var dashboardController: DashboardController?
 
+    /// Tick counter for quick/full scan alternation.
+    /// Quick scan (~90ms) runs every 5s. Full scan (~185ms) runs every 6th tick (30s).
+    private var scanTick: Int = 0
+    private let fullScanInterval: Int = 6
+
+    /// Warning threshold for rate limit indicators (persisted via UserDefaults).
+    private let thresholdKey = "rateLimitWarningThreshold"
+    private var warningThreshold: Int {
+        get { UserDefaults.standard.integer(forKey: thresholdKey) }
+        set { UserDefaults.standard.set(newValue, forKey: thresholdKey) }
+    }
+
     // ── App lifecycle ────────────────────────────────────────────────────────
 
     func applicationDidFinishLaunching(_ note: Notification) {
         let myPID = ProcessInfo.processInfo.processIdentifier
-        dlog("launched PID=\(myPID)")
+        let osVer = ProcessInfo.processInfo.operatingSystemVersionString
+        dlog("─── claude-instances-bar starting ───")
+        dlog("pid=\(myPID) macOS=\(osVer) log=\(debugLog)")
+
+        // Register UserDefaults defaults (doesn't write — just provides fallbacks)
+        UserDefaults.standard.register(defaults: [thresholdKey: 80])
 
         // Kill any other instances of ourselves (dedupe on launch)
         killOtherInstances(myPID: myPID)
@@ -454,7 +630,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         RunLoop.current.add(scanTimer!, forMode: .common)
 
-        dlog("ready — timer started (5s interval)")
+        dlog("ready — timer started (5s quick / 30s full)")
     }
 
     func applicationWillTerminate(_ note: Notification) {
@@ -492,18 +668,37 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // ── Data refresh ─────────────────────────────────────────────────────────
 
     private func refreshData() {
+        scanTick += 1
+        let isFullScan = (scanTick % fullScanInterval == 0) || cachedData == nil
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let result = runScanner()
+            let result = runScanner(quick: !isFullScan)
             DispatchQueue.main.async {
+                guard let self = self else { return }
                 if let r = result {
-                    self?.cachedData = r
-                    self?.lastScanError = false
+                    if isFullScan {
+                        // Full scan — replace everything
+                        self.cachedData = r
+                    } else if let existing = self.cachedData {
+                        // Quick scan — merge live data + fresh limits into existing cached result
+                        self.cachedData = ScanResult(
+                            live: r.live,
+                            history: existing.history,
+                            recentEvents: existing.recentEvents,
+                            deepEvents: existing.deepEvents,
+                            limits: r.limits ?? existing.limits,
+                            aggregates: existing.aggregates,
+                            liveCount: r.liveCount
+                        )
+                    } else {
+                        self.cachedData = r
+                    }
+                    self.lastScanError = false
                 } else {
-                    self?.lastScanError = true
+                    self.lastScanError = true
                 }
-                self?.updateButton()
+                self.updateButton()
                 // Push fresh data to dashboard if open
-                self?.dashboardController?.updateData(self?.cachedData)
+                self.dashboardController?.updateData(self.cachedData)
             }
         }
     }
@@ -534,19 +729,37 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let hasPerm = cachedData?.recentEvents?.suffix(3).contains { $0.event == "PermissionRequest" } ?? false
         let countText = hasPerm ? "⚠ \(liveCount)" : (liveCount > 0 ? "\(liveCount)" : "–")
 
-        // Text color: coral normally, red/orange on rate limit
-        var textColor = NSColor(red: 0.85, green: 0.47, blue: 0.34, alpha: 1.0) // coral
+        // Text color: standard label (white on dark bar, black on light bar)
+        var textColor: NSColor = .labelColor
         if liveCount == 0 { textColor = .tertiaryLabelColor }
-        if let limits = cachedData?.limits {
-            let maxPct = max(limits.fiveH?.pct ?? 0, limits.week?.pct ?? 0)
-            if maxPct > 90 { textColor = .systemRed }
-            else if maxPct > 75 { textColor = .systemOrange }
-        }
 
-        btn.attributedTitle = NSAttributedString(string: " \(countText)", attributes: [
+        // Build attributed string with count + optional rate limit warnings
+        let title = NSMutableAttributedString()
+        title.append(NSAttributedString(string: " \(countText)", attributes: [
             .foregroundColor: textColor,
             .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
-        ])
+        ]))
+
+        // Rate limit warnings: yellow ⚠ for hourly, red ⚠ for weekly (threshold configurable via slider)
+        let threshold = warningThreshold
+        if let limits = cachedData?.limits {
+            let r5 = Int(limits.fiveH?.pct ?? 0)
+            let r7 = Int(limits.week?.pct ?? 0)
+            if r5 > threshold {
+                title.append(NSAttributedString(string: " ⚠\(r5)%", attributes: [
+                    .foregroundColor: NSColor.systemYellow,
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .bold),
+                ]))
+            }
+            if r7 > threshold {
+                title.append(NSAttributedString(string: " ⚠\(r7)%", attributes: [
+                    .foregroundColor: NSColor.systemRed,
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .bold),
+                ]))
+            }
+        }
+
+        btn.attributedTitle = title
     }
 
     // ── NSMenuDelegate ───────────────────────────────────────────────────────
@@ -574,11 +787,14 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
+        // ── Rate limits (top — most urgent info) ────────────────────────────
+        addRateLimitsSection(menu, data)
+
+        // ── Usage stats (today/week aggregates) ─────────────────────────────
+        addUsageStatsSection(menu, data)
+
         // ── Live instances ───────────────────────────────────────────────────
         addLiveInstancesSection(menu, data)
-
-        // ── Rate limits ──────────────────────────────────────────────────────
-        addRateLimitsSection(menu, data)
 
         // ── Events ───────────────────────────────────────────────────────────
         addEventsSection(menu, data)
@@ -594,34 +810,156 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func addRateLimitsSection(_ menu: NSMenu, _ data: ScanResult) {
         guard let limits = data.limits else { return }
-        let entries: [(String, RateLimitEntry?)] = [("5h", limits.fiveH), ("7d", limits.week)]
-        var hasAny = false
-        for (label, entry) in entries {
-            guard let e = entry else { continue }
-            hasAny = true
+        guard limits.fiveH != nil || limits.week != nil else { return }
 
-            // Gradient bar: green → orange → red based on fill
-            let barLen = 16
-            let filled = Int(round(e.pct / 100.0 * Double(barLen)))
-            let bar = String(repeating: "▓", count: filled) + String(repeating: "░", count: barLen - filled)
-
-            let pctStr = String(format: "%3d%%", Int(e.pct))
-            let text = "  \(label)  \(bar)  \(pctStr)  \(fmtTokens(e.used))/\(fmtTokens(e.cap))"
-
-            var color: NSColor = .secondaryLabelColor
-            if e.pct > 90      { color = .systemRed }
-            else if e.pct > 75 { color = .systemOrange }
-            else if e.pct > 50 { color = .systemYellow }
+        // Helper: build a bar menu item with label, percentage, color, and optional countdown
+        func addBarItem(_ label: String, pct: Int, barChar: String, emptyChar: String,
+                        color: NSColor, countdown: String?) {
+            let filled = pct * 10 / 100
+            let empty = 10 - filled
+            let bar = String(repeating: barChar, count: filled) + String(repeating: emptyChar, count: empty)
+            var text = " \(label) [\(bar)] \(pct)%"
+            if let cd = countdown { text += "  ~\(cd)" }
 
             let item = NSMenuItem()
             item.attributedTitle = NSAttributedString(string: text, attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium),
                 .foregroundColor: color,
             ])
             item.isEnabled = false
             menu.addItem(item)
         }
-        if hasAny { menu.addItem(.separator()) }
+
+        // 5-hour limit (warm colors: green → yellow → orange → red)
+        let safeGreen: NSColor  = menuGreen
+        let safeYellow: NSColor = menuYellow
+        let safeCyan: NSColor   = menuCyan
+
+        if let fiveH = limits.fiveH {
+            let r5 = Int(fiveH.pct)
+            var color5: NSColor = safeGreen
+            if r5 > 90      { color5 = .systemRed }
+            else if r5 > 75 { color5 = .systemOrange }
+            else if r5 > 50 { color5 = safeYellow }
+            let countdown = rateLimitCountdown(limits.resetsAt)
+            addBarItem("⏱ 5h", pct: r5, barChar: "█", emptyChar: "░",
+                       color: color5, countdown: countdown)
+        }
+
+        // Weekly limit (cool colors: cyan → indigo → purple → red)
+        if let week = limits.week {
+            let r7 = Int(week.pct)
+            var color7: NSColor = safeCyan
+            if r7 > 90      { color7 = .systemRed }
+            else if r7 > 75 { color7 = .systemPurple }
+            else if r7 > 50 { color7 = .systemIndigo }
+            addBarItem("📅 7d", pct: r7, barChar: "▓", emptyChar: "░",
+                       color: color7, countdown: nil)
+        }
+
+        // Threshold setting — submenu with slider
+        let thresholdItem = NSMenuItem()
+        thresholdItem.attributedTitle = NSAttributedString(
+            string: " ⚙ Warning at \(warningThreshold)%",
+            attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ])
+
+        let subMenu = NSMenu()
+        let sliderItem = NSMenuItem()
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 34))
+
+        let label = NSTextField(labelWithString: "Warn at: \(warningThreshold)%")
+        label.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
+        label.textColor = .secondaryLabelColor
+        label.frame = NSRect(x: 14, y: 7, width: 100, height: 20)
+        label.tag = 100  // tag for lookup in slider action
+
+        let slider = NSSlider(value: Double(warningThreshold), minValue: 50, maxValue: 100,
+                              target: self, action: #selector(thresholdSliderChanged(_:)))
+        slider.frame = NSRect(x: 114, y: 7, width: 110, height: 20)
+        slider.isContinuous = true
+        slider.numberOfTickMarks = 11  // marks every 5%
+        slider.allowsTickMarkValuesOnly = true
+
+        container.addSubview(label)
+        container.addSubview(slider)
+        sliderItem.view = container
+        subMenu.addItem(sliderItem)
+
+        thresholdItem.submenu = subMenu
+        menu.addItem(thresholdItem)
+
+        menu.addItem(.separator())
+    }
+
+    // ── Section: Usage Stats (inline today/week aggregates) ────────────────
+
+    private func addUsageStatsSection(_ menu: NSMenu, _ data: ScanResult) {
+        guard let agg = data.aggregates else { return }
+        let today = agg.today
+        let week = agg.week
+
+        // Only show if we have data
+        let todaySessions = today?.sessions ?? 0
+        let weekSessions = week?.sessions ?? 0
+        guard todaySessions > 0 || weekSessions > 0 else { return }
+
+        // Helper to build a usage row with model badges appended
+        func buildUsageRow(label: String, icon: String, period: AggregatesPeriod?, showModels: Bool) -> NSMenuItem {
+            let item = NSMenuItem()
+            let attr = NSMutableAttributedString()
+            attr.append(NSAttributedString(string: " \(icon) \(label) ", attributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+                .foregroundColor: NSColor.labelColor,
+            ]))
+            if let p = period {
+                var stats: [String] = []
+                if let s = p.sessions, s > 0 { stats.append("\(s) sess") }
+                if let t = p.turns, t > 0 { stats.append("\(fmtTokens(t)) turns") }
+                if let c = p.costUsd, c > 0 { stats.append(fmtCost(c)) }
+                attr.append(NSAttributedString(string: stats.joined(separator: " · "), attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ]))
+            }
+            // Append model badges inline on the Today row
+            if showModels, let breakdown = agg.modelBreakdown, !breakdown.isEmpty {
+                attr.append(NSAttributedString(string: "  ", attributes: [
+                    .font: NSFont.systemFont(ofSize: 12),
+                ]))
+                let sorted = breakdown.sorted { $0.value > $1.value }
+                var added = 0
+                for entry in sorted {
+                    let m = modelDisplay(entry.key)
+                    guard m.label != "?" else { continue }
+                    if added > 0 {
+                        attr.append(NSAttributedString(string: " ", attributes: [
+                            .font: NSFont.systemFont(ofSize: 11),
+                        ]))
+                    }
+                    attr.append(NSAttributedString(string: "\(m.badge)\(entry.value)", attributes: [
+                        .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                        .foregroundColor: m.color,
+                    ]))
+                    added += 1
+                }
+            }
+            item.attributedTitle = attr
+            item.isEnabled = false
+            return item
+        }
+
+        if todaySessions > 0 {
+            menu.addItem(buildUsageRow(label: "Today", icon: "📊", period: today, showModels: true))
+        }
+        if weekSessions > 0 && weekSessions != todaySessions {
+            menu.addItem(buildUsageRow(label: "Week", icon: "📈", period: week, showModels: false))
+        }
+
+        menu.addItem(.separator())
     }
 
     // ── Section: Live Instances ──────────────────────────────────────────────
@@ -653,24 +991,58 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         for (idx, inst) in live.enumerated() {
             let m = modelDisplay(inst.model)
-            let cwd = shortenPath(inst.cwdShort, maxLen: 28)
             let elapsed = inst.elapsed?.trimmingCharacters(in: .whitespaces) ?? "?"
 
-            // Row 1: Model badge + project path — CLICKABLE
+            // Primary label: tab title if set, else shortened cwd
+            let title = (inst.tabTitle ?? "").isEmpty
+                ? shortenPath(inst.cwdShort, maxLen: 28)
+                : inst.tabTitle!
+            let titleMaxLen = 28
+            let displayTitle = title.count > titleMaxLen ? "…" + title.suffix(titleMaxLen - 1) : title
+
+            // Session state indicator
+            let stateStr = inst.sessionState?.state ?? "idle"
+            let stateDetail = inst.sessionState?.detail ?? ""
+            let stateIcons: [String: String] = [
+                "thinking": "💭", "responding": "✍️", "tool_use": "🔧",
+                "tool_result": "⚙️", "idle": "",
+            ]
+            let stateIcon = stateIcons[stateStr] ?? ""
+
+            // Row 1: Model badge + state icon + title + elapsed — CLICKABLE
             let row1 = NSMenuItem()
             let row1Attr = NSMutableAttributedString()
-            row1Attr.append(NSAttributedString(string: "  \(m.badge) \(m.label)", attributes: [
+            row1Attr.append(NSAttributedString(string: "  \(m.badge) ", attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .bold),
                 .foregroundColor: m.color,
             ]))
-            row1Attr.append(NSAttributedString(string: "  \(cwd)", attributes: [
+
+            // State icon (blinking effect via alternating with empty on even/odd seconds)
+            if !stateIcon.isEmpty {
+                let showBlink = Int(Date().timeIntervalSince1970) % 2 == 0
+                let blinkStr = showBlink ? stateIcon + " " : "  "
+                row1Attr.append(NSAttributedString(string: blinkStr, attributes: [
+                    .font: NSFont.systemFont(ofSize: 12),
+                ]))
+            }
+
+            row1Attr.append(NSAttributedString(string: displayTitle, attributes: [
                 .font: NSFont.systemFont(ofSize: 13, weight: .medium),
                 .foregroundColor: NSColor.labelColor,
             ]))
             row1Attr.append(NSAttributedString(string: "  \(elapsed)", attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-                .foregroundColor: NSColor(red: 0.85, green: 0.47, blue: 0.34, alpha: 1.0),
+                .foregroundColor: coralAccent,
             ]))
+
+            // Subagent badge
+            if let subs = inst.subagentCount, subs > 0 {
+                row1Attr.append(NSAttributedString(string: "  ↳\(subs)", attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                    .foregroundColor: NSColor.systemPurple,
+                ]))
+            }
+
             row1.attributedTitle = row1Attr
             row1.representedObject = inst.cwd
             row1.action = #selector(focusInstance(_:))
@@ -678,26 +1050,58 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             row1.isEnabled = true
             menu.addItem(row1)
 
-            // Row 2: Compact metrics line
-            var parts: [String] = []
-            parts.append("PID \(inst.pid)")
-            if let cpu = inst.statusline?.cpu, !cpu.isEmpty, cpu != "0" { parts.append("CPU \(cpu)%") }
-            if let rss = inst.statusline?.rssMb, rss != "0", !rss.isEmpty { parts.append("\(rss) MB") }
-            if let t = inst.turns, t > 0 { parts.append("\(t)t") }
-            if let o = inst.outputTokens, o > 0 { parts.append("↑\(fmtTokens(o))") }
-            if let ts = inst.statusline?.tokSpeed, !ts.isEmpty, ts != "0" { parts.append("\(ts) tok/s") }
-            if let cv = inst.statusline?.costVel, !cv.isEmpty, cv != "0" { parts.append("$\(cv)/m") }
+            // State detail line (when actively doing something)
+            if stateStr != "idle" && !stateDetail.isEmpty {
+                addColored(menu, "    \(stateIcon) \(stateStr): \(stateDetail)",
+                          color: menuTeal, size: 11)
+            }
 
-            addDimMono(menu, "   " + parts.joined(separator: " · "), size: 11)
+            // Row 2: Compact metrics line — enhanced with cost, tool calls, context %
+            let row2 = NSMenuItem()
+            let row2Attr = NSMutableAttributedString()
+            row2Attr.append(NSAttributedString(string: "   ", attributes: [
+                .font: NSFont.systemFont(ofSize: 12),
+            ]))
 
-            // Row 3: Focus file
+            // Context remaining (prominent, color-coded)
+            if let ctx = inst.statusline?.ctxRemaining, !ctx.isEmpty, ctx != "0" {
+                let ctxInt = Int(ctx) ?? 0
+                let ctxNSColor: NSColor = ctxInt < 30 ? .systemRed : (ctxInt < 60 ? .systemOrange : menuGreen)
+                row2Attr.append(NSAttributedString(string: "ctx \(ctx)%", attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium),
+                    .foregroundColor: ctxNSColor,
+                ]))
+                row2Attr.append(NSAttributedString(string: "  ", attributes: [
+                    .font: NSFont.systemFont(ofSize: 12),
+                ]))
+            }
+
+            var metricParts: [String] = []
+            if let t = inst.turns, t > 0 { metricParts.append("\(t)t") }
+            if let tc = inst.toolCalls, tc > 0 { metricParts.append("🔧\(tc)") }
+            if let o = inst.outputTokens, o > 0 { metricParts.append("↑\(fmtTokens(o))") }
+            if let c = inst.costUsd, c > 0 { metricParts.append(fmtCost(c)) }
+            if let rss = inst.statusline?.rssMb, rss != "0", !rss.isEmpty { metricParts.append("\(rss)MB") }
+            if let ts = inst.statusline?.tokSpeed, !ts.isEmpty, ts != "0" { metricParts.append("\(ts)t/s") }
+            if !metricParts.isEmpty {
+                row2Attr.append(NSAttributedString(string: metricParts.joined(separator: " · "), attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ]))
+            }
+
+            row2.attributedTitle = row2Attr
+            row2.isEnabled = false
+            menu.addItem(row2)
+
+            // Row 3: Focus file (if present)
             if let focusFile = inst.statusline?.focusFile, !focusFile.isEmpty {
                 var display = focusFile
                 if let cwdFull = inst.cwd, !cwdFull.isEmpty {
                     display = display.replacingOccurrences(of: cwdFull, with: ".")
                 }
                 display = display.replacingOccurrences(of: home, with: "~")
-                addDimMono(menu, "   📄 \(shortenPath(display, maxLen: 38))", size: 11)
+                addDimMono(menu, "   📄 \(shortenPath(display, maxLen: 36))", size: 11)
             }
 
             // MCP down warning
@@ -713,6 +1117,15 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             focusItem.representedObject = inst.cwd
             setIcon(focusItem, "terminal")
             submenu.addItem(focusItem)
+
+            // Open in Finder
+            if let cwdPath = inst.cwd, !cwdPath.isEmpty {
+                let finderItem = NSMenuItem(title: "Open in Finder", action: #selector(openInFinder(_:)), keyEquivalent: "")
+                finderItem.target = self
+                finderItem.representedObject = cwdPath
+                setIcon(finderItem, "folder")
+                submenu.addItem(finderItem)
+            }
 
             if let sid = inst.sessionId, !sid.isEmpty {
                 let detailItem = NSMenuItem(title: "View Transcript", action: #selector(openDetail(_:)), keyEquivalent: "")
@@ -743,7 +1156,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             row1.submenu = submenu
 
             if idx < live.count - 1 {
-                // Thin separator between instances
                 menu.addItem(.separator())
             }
         }
@@ -752,52 +1164,104 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // ── Section: Events ──────────────────────────────────────────────────────
 
+    private let eventIcons: [String: String] = [
+        "SessionStart": "▶", "Stop": "■", "PermissionRequest": "⚠",
+        "PostCompact": "⟳", "PreCompact": "⟲", "SubagentStart": "↳",
+        "SubagentStop": "↲", "Notification": "🔔", "PostToolUse": "🔧",
+    ]
+    private let eventColors: [String: NSColor] = [
+        "SessionStart": menuGreen, "Stop": .systemRed,
+        "PermissionRequest": .systemOrange, "PostCompact": .systemBlue,
+        "PreCompact": .systemBlue, "SubagentStart": .systemPurple,
+        "SubagentStop": .systemPurple, "Notification": menuYellow,
+        "PostToolUse": menuTeal,
+    ]
+
+    private func formatEventItem(_ evt: Event) -> NSAttributedString {
+        let icon = eventIcons[evt.event] ?? "·"
+        let color = eventColors[evt.event] ?? .secondaryLabelColor
+        var ts = evt.ts
+        if ts.contains("T") {
+            ts = String(ts.split(separator: "T").last?.prefix(5) ?? "?")
+        }
+
+        // Model badge
+        let m = modelDisplay(evt.model)
+        let modelBadge = evt.model != nil ? "\(m.badge) " : ""
+
+        // Event name + tool detail
+        var evtName = evt.event
+        if evt.event == "PostToolUse", let tool = evt.tool, !tool.isEmpty {
+            evtName = tool
+        }
+        if evtName.count > 14 { evtName = String(evtName.prefix(14)) }
+
+        // Title or project
+        var context = ""
+        if let tt = evt.tabTitle, !tt.isEmpty {
+            context = tt.count > 16 ? "…" + tt.suffix(15) : tt
+        } else if let proj = evt.project, !proj.isEmpty {
+            context = proj.count > 16 ? "…" + proj.suffix(15) : proj
+        }
+
+        let attr = NSMutableAttributedString()
+        attr.append(NSAttributedString(string: "  \(icon) ", attributes: [
+            .font: NSFont.systemFont(ofSize: 12), .foregroundColor: color,
+        ]))
+        if !modelBadge.isEmpty {
+            attr.append(NSAttributedString(string: modelBadge, attributes: [
+                .font: NSFont.systemFont(ofSize: 11), .foregroundColor: m.color,
+            ]))
+        }
+        attr.append(NSAttributedString(string: "\(ts) ", attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: NSColor.tertiaryLabelColor,
+        ]))
+        attr.append(NSAttributedString(string: evtName.padding(toLength: 14, withPad: " ", startingAt: 0), attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: color,
+        ]))
+        if !context.isEmpty {
+            attr.append(NSAttributedString(string: " \(context)", attributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]))
+        }
+        return attr
+    }
+
     private func addEventsSection(_ menu: NSMenu, _ data: ScanResult) {
         guard let events = data.recentEvents, !events.isEmpty else { return }
 
-        let eventIcons: [String: String] = [
-            "SessionStart": "▶",
-            "Stop": "■",
-            "PermissionRequest": "⚠",
-            "PostCompact": "⟳",
-        ]
-        let eventColors: [String: NSColor] = [
-            "SessionStart": .systemGreen,
-            "Stop": .systemRed,
-            "PermissionRequest": .systemOrange,
-            "PostCompact": .systemBlue,
-        ]
-
         addSectionHeader(menu, "Recent Events", icon: "list.bullet")
 
-        for evt in events.suffix(5).reversed() {
-            let icon = eventIcons[evt.event] ?? "·"
-            let color = eventColors[evt.event] ?? .secondaryLabelColor
-            var ts = evt.ts
-            if ts.contains("T") {
-                ts = String(ts.split(separator: "T").last?.prefix(5) ?? "?")
-            }
-            var project = evt.project ?? ""
-            if project.count > 22 { project = "…" + project.suffix(21) }
-
+        for evt in events.suffix(7).reversed() {
             let item = NSMenuItem()
-            let attr = NSMutableAttributedString()
-            attr.append(NSAttributedString(string: "  \(icon) ", attributes: [
-                .font: NSFont.systemFont(ofSize: 12),
-                .foregroundColor: color,
-            ]))
-            attr.append(NSAttributedString(string: "\(ts)  ", attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
-                .foregroundColor: NSColor.tertiaryLabelColor,
-            ]))
-            attr.append(NSAttributedString(string: project, attributes: [
-                .font: NSFont.systemFont(ofSize: 12),
-                .foregroundColor: NSColor.secondaryLabelColor,
-            ]))
-            item.attributedTitle = attr
+            item.attributedTitle = formatEventItem(evt)
             item.isEnabled = false
             menu.addItem(item)
         }
+
+        // Deep history submenu
+        if let deepEvents = data.deepEvents, deepEvents.count > 0 {
+            let deepItem = NSMenuItem()
+            deepItem.attributedTitle = NSAttributedString(string: "  📜 Event History (\(deepEvents.count))…", attributes: [
+                .font: NSFont.systemFont(ofSize: 12),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ])
+            deepItem.isEnabled = true
+
+            let deepSubmenu = NSMenu()
+            for evt in deepEvents.suffix(30).reversed() {
+                let subItem = NSMenuItem()
+                subItem.attributedTitle = formatEventItem(evt)
+                subItem.isEnabled = false
+                deepSubmenu.addItem(subItem)
+            }
+            deepItem.submenu = deepSubmenu
+            menu.addItem(deepItem)
+        }
+
         menu.addItem(.separator())
     }
 
@@ -825,7 +1289,8 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 .font: NSFont.systemFont(ofSize: 12, weight: .medium),
                 .foregroundColor: NSColor.labelColor,
             ]))
-            attr.append(NSAttributedString(string: "  \(String(sess.turns).leftPad(4))t  \(sz.leftPad(5))  \(rel.leftPad(4))", attributes: [
+            let costStr = sess.costUsd.map { fmtCost($0) } ?? "–"
+            attr.append(NSAttributedString(string: "  \(String(sess.turns).leftPad(4))t  \(sz.leftPad(5))  \(costStr.leftPad(6))  \(rel.leftPad(4))", attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
                 .foregroundColor: NSColor.secondaryLabelColor,
             ]))
@@ -906,6 +1371,12 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dlog("copied PID \(pid)")
     }
 
+    @objc private func openInFinder(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        dlog("open in Finder: \(path)")
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+    }
+
     @objc private func openDetail(_ sender: NSMenuItem) {
         guard let info = sender.representedObject as? [String: Any],
               let pid = info["pid"] as? Int,
@@ -954,8 +1425,22 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func refreshAction() {
-        dlog("manual refresh")
+        dlog("manual refresh (forced full)")
+        scanTick = fullScanInterval - 1  // Next tick will be a full scan
         refreshData()
+    }
+
+    @objc private func thresholdSliderChanged(_ sender: NSSlider) {
+        let newVal = Int(sender.doubleValue)
+        warningThreshold = newVal
+        dlog("threshold changed to \(newVal)%")
+        // Update the label in the same container view
+        if let container = sender.superview,
+           let label = container.subviews.first(where: { $0.tag == 100 }) as? NSTextField {
+            label.stringValue = "Warn at: \(newVal)%"
+        }
+        // Immediately refresh the menu bar icon to reflect the new threshold
+        updateButton()
     }
 
     @objc private func resumeHistorySession(_ sender: NSMenuItem) {
@@ -1409,6 +1894,78 @@ struct OverviewTabView: View {
                     let modelCounts = Dictionary(grouping: d.history) { $0.model ?? "unknown" }
                         .mapValues { $0.count }
 
+                    // ── Today / This Week aggregates (from scan.sh) ──
+                    if let agg = d.aggregates, (agg.today != nil || agg.week != nil) {
+                        HStack(alignment: .top, spacing: 10) {
+                            if let today = agg.today {
+                                OverviewSection(title: "Today", icon: "sun.max.fill", iconColor: .yellow) {
+                                    VStack(spacing: 8) {
+                                        HStack(spacing: 0) {
+                                            AggregateMetric(label: "Sessions", value: "\(today.sessions ?? 0)", color: .blue)
+                                            Divider().frame(height: 28)
+                                            AggregateMetric(label: "Turns", value: fmtTokens(today.turns ?? 0), color: .purple)
+                                            Spacer()
+                                        }
+                                        HStack(spacing: 0) {
+                                            AggregateMetric(label: "Tokens In", value: fmtTokens(today.tokensIn ?? 0), color: .cyan)
+                                            Divider().frame(height: 28)
+                                            AggregateMetric(label: "Tokens Out", value: fmtTokens(today.tokensOut ?? 0), color: .indigo)
+                                            Divider().frame(height: 28)
+                                            AggregateMetric(label: "Cost", value: fmtCost(today.costUsd ?? 0), color: .mint)
+                                            Spacer()
+                                        }
+                                    }
+                                }
+                            }
+                            if let week = agg.week {
+                                OverviewSection(title: "This Week", icon: "calendar", iconColor: .blue) {
+                                    VStack(spacing: 8) {
+                                        HStack(spacing: 0) {
+                                            AggregateMetric(label: "Sessions", value: "\(week.sessions ?? 0)", color: .blue)
+                                            Divider().frame(height: 28)
+                                            AggregateMetric(label: "Turns", value: fmtTokens(week.turns ?? 0), color: .purple)
+                                            Spacer()
+                                        }
+                                        HStack(spacing: 0) {
+                                            AggregateMetric(label: "Tokens In", value: fmtTokens(week.tokensIn ?? 0), color: .cyan)
+                                            Divider().frame(height: 28)
+                                            AggregateMetric(label: "Tokens Out", value: fmtTokens(week.tokensOut ?? 0), color: .indigo)
+                                            Divider().frame(height: 28)
+                                            AggregateMetric(label: "Cost", value: fmtCost(week.costUsd ?? 0), color: .mint)
+                                            Spacer()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Model breakdown badges (from aggregates)
+                        if let mb = agg.modelBreakdown, !mb.isEmpty {
+                            OverviewSection(title: "Model Usage", icon: "cpu.fill", iconColor: .pink) {
+                                HStack(spacing: 8) {
+                                    ForEach(mb.sorted(by: { $0.value > $1.value }), id: \.key) { model, count in
+                                        let m = modelDisplay(model)
+                                        HStack(spacing: 4) {
+                                            Text(m.badge)
+                                            Text(m.label)
+                                                .font(.system(size: 12, weight: .bold))
+                                            Text("×\(count)")
+                                                .font(.system(size: 12))
+                                                .foregroundColor(.secondary)
+                                        }
+                                        .foregroundColor(Color(nsColor: m.color))
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(
+                                            Capsule().fill(Color(nsColor: m.color).opacity(0.1))
+                                        )
+                                    }
+                                    Spacer()
+                                }
+                            }
+                        }
+                    }
+
                     // ── Top stat cards (2 rows of 4) ──
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
                         StatCard(title: "Live", value: "\(d.liveCount)", icon: "bolt.fill", color: .green,
@@ -1438,6 +1995,17 @@ struct OverviewTabView: View {
                                     }
                                     if let week = limits.week {
                                         RateLimitRow(label: "Weekly", entry: week)
+                                    }
+                                    if let countdown = rateLimitCountdown(limits.resetsAt) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "clock.arrow.circlepath")
+                                                .font(.system(size: 11))
+                                                .foregroundColor(.secondary)
+                                            Text("Resets in \(countdown)")
+                                                .font(.system(size: 12, weight: .medium))
+                                                .foregroundColor(.secondary)
+                                        }
+                                        .padding(.top, 2)
                                     }
                                 }
                             }
@@ -1488,7 +2056,15 @@ struct OverviewTabView: View {
 
                                         EventBadge(event: evt.event)
 
-                                        Text(evt.project ?? "")
+                                        // Model badge inline
+                                        if let model = evt.model, !model.isEmpty {
+                                            let em = modelDisplay(model)
+                                            Text(em.badge)
+                                                .font(.system(size: 10))
+                                                .foregroundColor(Color(nsColor: em.color))
+                                        }
+
+                                        Text(evt.tabTitle ?? evt.project ?? "")
                                             .font(.system(size: 11))
                                             .foregroundColor(.secondary)
                                             .lineLimit(1)
@@ -1592,9 +2168,11 @@ struct RateLimitRow: View {
                 Text("\(Int(entry.pct))%")
                     .font(.system(size: 13, weight: .bold, design: .monospaced))
                     .foregroundColor(barColor)
-                Text("(\(fmtTokens(entry.used))/\(fmtTokens(entry.cap)))")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(.secondary)
+                if entry.used > 0 || entry.cap > 0 {
+                    Text("(\(fmtTokens(entry.used))/\(fmtTokens(entry.cap)))")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.secondary)
+                }
             }
 
             GeometryReader { geo in
@@ -1679,11 +2257,15 @@ struct InstanceCard: View {
 
     @State private var isHovered = false
 
+    @State private var blinkOn = true
+
     var body: some View {
         let m = modelDisplay(inst.model)
+        let stateStr = inst.sessionState?.state ?? "idle"
+        let isActive = stateStr != "idle"
 
         VStack(alignment: .leading, spacing: 12) {
-            // Header row: model pill + path + elapsed
+            // Header row: model pill + state + title/path + elapsed
             HStack(spacing: 10) {
                 // Model pill
                 HStack(spacing: 5) {
@@ -1698,15 +2280,73 @@ struct InstanceCard: View {
                     Capsule().fill(Color(nsColor: m.color).opacity(0.12))
                 )
 
-                Text(inst.cwdShort ?? inst.cwd ?? "?")
-                    .font(.system(size: 14, weight: .medium))
-                    .lineLimit(1)
+                // Session state pill (blinking when active)
+                if isActive {
+                    let stateLabels: [String: String] = [
+                        "thinking": "Thinking", "responding": "Writing",
+                        "tool_use": "Tool", "tool_result": "Processing",
+                    ]
+                    let stateColors: [String: Color] = [
+                        "thinking": .yellow, "responding": .green,
+                        "tool_use": .teal, "tool_result": .blue,
+                    ]
+                    let label = stateLabels[stateStr] ?? stateStr
+                    let stColor = stateColors[stateStr] ?? .secondary
+
+                    Text(label)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(stColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule().fill(stColor.opacity(blinkOn ? 0.15 : 0.05))
+                        )
+                        .opacity(blinkOn ? 1.0 : 0.5)
+                        .onAppear {
+                            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                                blinkOn.toggle()
+                            }
+                        }
+                }
+
+                // Subagent badge
+                if let subs = inst.subagentCount, subs > 0 {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 10))
+                        Text("\(subs)")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(.purple)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.purple.opacity(0.12)))
+                }
 
                 Spacer()
 
                 Text(inst.elapsed?.trimmingCharacters(in: .whitespaces) ?? "?")
                     .font(.system(size: 13, weight: .medium, design: .monospaced))
                     .foregroundColor(.orange)
+            }
+
+            // Tab title / path row
+            HStack(spacing: 6) {
+                if let tabTitle = inst.tabTitle, !tabTitle.isEmpty {
+                    Text(tabTitle)
+                        .font(.system(size: 14, weight: .semibold))
+                        .lineLimit(1)
+                    Text("·")
+                        .foregroundColor(.secondary.opacity(0.4))
+                    Text(inst.cwdShort ?? inst.cwd ?? "?")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                } else {
+                    Text(inst.cwdShort ?? inst.cwd ?? "?")
+                        .font(.system(size: 14, weight: .medium))
+                        .lineLimit(1)
+                }
             }
 
             // Primary metadata row
@@ -1725,35 +2365,51 @@ struct InstanceCard: View {
                     MetadataItem(icon: "arrow.triangle.2.circlepath", text: "\(t) turns")
                 }
 
+                if let tc = inst.toolCalls, tc > 0 {
+                    MetadataItem(icon: "wrench.fill", text: "\(tc) tools")
+                }
+
                 if let o = inst.outputTokens, o > 0 {
                     MetadataItem(icon: "arrow.up", text: fmtTokens(o) + " tok")
+                }
+
+                if let c = inst.costUsd, c > 0 {
+                    MetadataItem(icon: "dollarsign.circle", text: fmtCost(c))
                 }
 
                 Spacer()
             }
 
-            // Secondary metrics row: token speed, cost velocity, WAL distance
-            let hasSecondary = (inst.statusline?.tokSpeed != nil && inst.statusline?.tokSpeed != "0") ||
-                               (inst.statusline?.costVel != nil && inst.statusline?.costVel != "0") ||
-                               (inst.statusline?.walSinceCp != nil && inst.statusline?.walSinceCp != "0")
-            if hasSecondary {
-                HStack(spacing: 0) {
-                    if let ts = inst.statusline?.tokSpeed, !ts.isEmpty, ts != "0" {
-                        MetadataItem(icon: "bolt.fill", text: "\(ts) tok/s")
+            // Context remaining + secondary metrics row
+            HStack(spacing: 0) {
+                if let ctx = inst.statusline?.ctxRemaining, !ctx.isEmpty, ctx != "0" {
+                    let ctxInt = Int(ctx) ?? 100
+                    let ctxColor: Color = ctxInt < 30 ? .red : (ctxInt < 60 ? .orange : .green)
+                    HStack(spacing: 4) {
+                        Image(systemName: "circle.lefthalf.filled")
+                            .font(.system(size: 10))
+                            .foregroundColor(ctxColor)
+                        Text("ctx \(ctx)%")
+                            .font(.system(size: 12))
+                            .foregroundColor(ctxColor)
                     }
-                    if let cv = inst.statusline?.costVel, !cv.isEmpty, cv != "0" {
-                        MetadataItem(icon: "dollarsign.circle", text: "\(cv) cpm")
-                    }
-                    if let wal = inst.statusline?.walSinceCp, !wal.isEmpty, wal != "0" {
-                        MetadataItem(icon: "arrow.clockwise", text: "\(wal) since cp")
-                    }
-                    if let mcp = inst.statusline?.mcpHealthy, !mcp.isEmpty {
-                        let count = mcp.split(separator: ",").count
-                        MetadataItem(icon: "checkmark.circle", text: "\(count) MCP")
-                    }
-                    Spacer()
+                    .padding(.trailing, 16)
                 }
-                .padding(.top, -4)
+
+                if let ts = inst.statusline?.tokSpeed, !ts.isEmpty, ts != "0" {
+                    MetadataItem(icon: "bolt.fill", text: "\(ts) tok/s")
+                }
+                if let cv = inst.statusline?.costVel, !cv.isEmpty, cv != "0" {
+                    MetadataItem(icon: "dollarsign.circle", text: "\(cv) cpm")
+                }
+                if let wal = inst.statusline?.walSinceCp, !wal.isEmpty, wal != "0" {
+                    MetadataItem(icon: "arrow.clockwise", text: "\(wal) since cp")
+                }
+                if let mcp = inst.statusline?.mcpHealthy, !mcp.isEmpty {
+                    let count = mcp.split(separator: ",").count
+                    MetadataItem(icon: "checkmark.circle", text: "\(count) MCP")
+                }
+                Spacer()
             }
 
             // Focus file
@@ -2249,25 +2905,78 @@ struct ColumnHeader: View {
 struct EventsTabView: View {
     let data: ScanResult?
 
+    @State private var filterType: String = "All"
+    @State private var showDeepHistory: Bool = false
+
+    private var allEventTypes: [String] {
+        var types = Set<String>()
+        if let events = data?.recentEvents { events.forEach { types.insert($0.event) } }
+        if let deep = data?.deepEvents { deep.forEach { types.insert($0.event) } }
+        return ["All"] + types.sorted()
+    }
+
+    private var displayEvents: [Event] {
+        let source: [Event]
+        if showDeepHistory, let deep = data?.deepEvents, !deep.isEmpty {
+            source = deep
+        } else {
+            source = data?.recentEvents ?? []
+        }
+        if filterType == "All" { return source.reversed() }
+        return source.filter { $0.event == filterType }.reversed()
+    }
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Events")
-                        .font(.system(size: 22, weight: .bold))
-                    Spacer()
-                    if let events = data?.recentEvents {
-                        Text("\(events.count) events")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.secondary)
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack(alignment: .firstTextBaseline) {
+                Text("Events")
+                    .font(.system(size: 22, weight: .bold))
+                Spacer()
+                Text("\(displayEvents.count) events")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 24)
+            .padding(.bottom, 8)
+
+            // Filter bar
+            HStack(spacing: 12) {
+                // Deep history toggle
+                if data?.deepEvents != nil {
+                    Toggle(isOn: $showDeepHistory) {
+                        Text("Deep History")
+                            .font(.system(size: 12, weight: .medium))
                     }
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
                 }
 
-                if let events = data?.recentEvents, !events.isEmpty {
-                    let reversed = Array(events.reversed())
+                Spacer()
 
+                // Event type filter
+                Picker("Type", selection: $filterType) {
+                    ForEach(allEventTypes, id: \.self) { type in
+                        Text(type == "All" ? "All Types" : eventLabel(type))
+                            .tag(type)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 160)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 12)
+
+            Rectangle()
+                .fill(Color.secondary.opacity(0.15))
+                .frame(height: 1)
+                .padding(.horizontal, 20)
+
+            if !displayEvents.isEmpty {
+                ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(reversed.enumerated()), id: \.offset) { idx, evt in
+                        ForEach(Array(displayEvents.enumerated()), id: \.offset) { idx, evt in
                             HStack(alignment: .top, spacing: 16) {
                                 // Timeline column — dot with connecting lines
                                 VStack(spacing: 0) {
@@ -2278,7 +2987,7 @@ struct EventsTabView: View {
                                         .fill(eventColor(evt.event))
                                         .frame(width: 10, height: 10)
                                     Rectangle()
-                                        .fill(idx == reversed.count - 1 ? Color.clear : Color.secondary.opacity(0.2))
+                                        .fill(idx == displayEvents.count - 1 ? Color.clear : Color.secondary.opacity(0.2))
                                         .frame(width: 1)
                                         .frame(maxHeight: .infinity)
                                 }
@@ -2289,16 +2998,60 @@ struct EventsTabView: View {
                                     HStack(spacing: 8) {
                                         EventBadge(event: evt.event)
 
+                                        // Model badge
+                                        if let model = evt.model, !model.isEmpty {
+                                            let m = modelDisplay(model)
+                                            HStack(spacing: 3) {
+                                                Text(m.badge)
+                                                Text(m.label)
+                                                    .font(.system(size: 11, weight: .bold))
+                                            }
+                                            .foregroundColor(Color(nsColor: m.color))
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(
+                                                Capsule().fill(Color(nsColor: m.color).opacity(0.1))
+                                            )
+                                        }
+
                                         Text(eventTime(evt.ts))
                                             .font(.system(size: 12, design: .monospaced))
                                             .foregroundColor(.secondary)
                                     }
 
-                                    if let proj = evt.project, !proj.isEmpty {
-                                        Text(proj)
-                                            .font(.system(size: 13))
-                                            .foregroundColor(.primary.opacity(0.8))
-                                            .lineLimit(1)
+                                    // Tab title or project
+                                    HStack(spacing: 6) {
+                                        if let title = evt.tabTitle, !title.isEmpty {
+                                            Text(title)
+                                                .font(.system(size: 13, weight: .medium))
+                                                .foregroundColor(.primary.opacity(0.9))
+                                                .lineLimit(1)
+                                            if let proj = evt.project, !proj.isEmpty {
+                                                Text("·")
+                                                    .foregroundColor(.secondary.opacity(0.4))
+                                                Text(proj)
+                                                    .font(.system(size: 12))
+                                                    .foregroundColor(.secondary)
+                                                    .lineLimit(1)
+                                            }
+                                        } else if let proj = evt.project, !proj.isEmpty {
+                                            Text(proj)
+                                                .font(.system(size: 13))
+                                                .foregroundColor(.primary.opacity(0.8))
+                                                .lineLimit(1)
+                                        }
+                                    }
+
+                                    // Tool detail for PostToolUse events
+                                    if evt.event == "PostToolUse", let tool = evt.tool, !tool.isEmpty {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "wrench.fill")
+                                                .font(.system(size: 9))
+                                                .foregroundColor(.teal.opacity(0.7))
+                                            Text(tool)
+                                                .font(.system(size: 11, design: .monospaced))
+                                                .foregroundColor(.teal)
+                                        }
                                     }
 
                                     if let sid = evt.sessionId, !sid.isEmpty {
@@ -2312,25 +3065,25 @@ struct EventsTabView: View {
 
                                 Spacer()
                             }
-                            .frame(minHeight: 52)
+                            .frame(minHeight: 56)
                         }
                     }
-                } else {
-                    VStack(spacing: 12) {
-                        Image(systemName: "clock")
-                            .font(.system(size: 40))
-                            .foregroundColor(.secondary.opacity(0.3))
-                        Text("No events recorded")
-                            .font(.system(size: 14))
-                            .foregroundColor(.secondary)
-                        Text("Events appear when sessions start, stop, or compact")
-                            .font(.system(size: 12))
-                            .foregroundColor(.secondary.opacity(0.6))
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 240)
+                    .padding(24)
                 }
+            } else {
+                VStack(spacing: 12) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 40))
+                        .foregroundColor(.secondary.opacity(0.3))
+                    Text("No events recorded")
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary)
+                    Text("Events appear when sessions start, stop, or compact")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary.opacity(0.6))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(24)
         }
     }
 }
@@ -2608,7 +3361,7 @@ struct AboutTabView: View {
                         AboutRow(label: "Statusline", value: "/tmp/claude-statusline-<pid>")
                         AboutRow(label: "Sessions", value: "~/.claude/projects/")
                         AboutRow(label: "Rate Limits", value: "~/.claude/widgets/.limits.json")
-                        AboutRow(label: "Refresh", value: "Every 5 seconds")
+                        AboutRow(label: "Refresh", value: "5s quick / 30s full")
                     }
                 }
 
@@ -2760,21 +3513,31 @@ private struct TroubleshootRow: View {
 
 private func eventColor(_ event: String) -> Color {
     switch event {
-    case "SessionStart":     return .green
-    case "Stop":             return .red
+    case "SessionStart":      return .green
+    case "Stop":              return .red
     case "PermissionRequest": return .orange
-    case "PostCompact":      return .blue
-    default:                 return .secondary
+    case "PostCompact":       return .blue
+    case "PreCompact":        return .blue
+    case "SubagentStart":     return .purple
+    case "SubagentStop":      return .purple
+    case "Notification":      return .yellow
+    case "PostToolUse":       return .teal
+    default:                  return .secondary
     }
 }
 
 private func eventLabel(_ event: String) -> String {
     switch event {
-    case "SessionStart":     return "Started"
-    case "Stop":             return "Stopped"
+    case "SessionStart":      return "Started"
+    case "Stop":              return "Stopped"
     case "PermissionRequest": return "Permission"
-    case "PostCompact":      return "Compacted"
-    default:                 return event
+    case "PostCompact":       return "Compacted"
+    case "PreCompact":        return "Compacting"
+    case "SubagentStart":     return "Agent ▶"
+    case "SubagentStop":      return "Agent ■"
+    case "Notification":      return "Notified"
+    case "PostToolUse":       return "Tool"
+    default:                  return event
     }
 }
 
