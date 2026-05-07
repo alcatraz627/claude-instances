@@ -1015,12 +1015,15 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
-        // Section header with aggregate stats
-        let totalRss = live.compactMap { Int($0.statusline?.rssMb ?? "0") }.reduce(0, +)
-        let totalOut = live.compactMap { $0.outputTokens }.reduce(0, +)
-        let headerParts = ["\(live.count) live"]
-            + (totalRss > 0 ? ["\(totalRss) MB"] : [])
-            + (totalOut > 0 ? ["↑\(fmtTokens(totalOut))"] : [])
+        // Section header with aggregate stats — cumulative cost included
+        // so the user has burn-rate awareness without expanding any session.
+        let totalRss  = live.compactMap { Int($0.statusline?.rssMb ?? "0") }.reduce(0, +)
+        let totalOut  = live.compactMap { $0.outputTokens }.reduce(0, +)
+        let totalCost = live.compactMap { $0.costUsd }.reduce(0.0, +)
+        var headerParts = ["\(live.count) live"]
+        if totalRss  > 0  { headerParts.append("\(totalRss) MB") }
+        if totalOut  > 0  { headerParts.append("↑\(fmtTokens(totalOut))") }
+        if totalCost > 0  { headerParts.append(fmtCost(totalCost)) }
         addSectionHeader(menu, headerParts.joined(separator: "  ·  "), icon: "sparkles")
 
         for (idx, inst) in live.enumerated() {
@@ -1432,6 +1435,22 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
         addAction(menu, "Quit Widget", #selector(NSApplication.terminate(_:)), icon: "power")
+
+        // Footer: data freshness — surfaces staleness when cadence is long
+        // or paused. Without this, paused refresh has no visible indicator.
+        let ageStr: String = {
+            guard let t = lastScanAt else { return "never" }
+            let s = Int(Date().timeIntervalSince(t))
+            if s < 60 { return "\(s)s ago" }
+            if s < 3600 { return "\(s/60)m ago" }
+            return "\(s/3600)h ago"
+        }()
+        let cadenceTag = refreshPaused ? "paused" :
+                         (refreshInterval < 1 ? String(format: "%.1fs", refreshInterval)
+                                              : "\(Int(refreshInterval))s")
+        let footer = "  Updated \(ageStr) · refresh: \(cadenceTag)"
+        let footerColor: NSColor = refreshPaused ? .systemOrange : .tertiaryLabelColor
+        addColored(menu, footer, color: footerColor, size: 10)
     }
 
     // ── Refresh submenu (manual + cadence picker) ────────────────────────────
