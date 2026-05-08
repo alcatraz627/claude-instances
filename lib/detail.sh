@@ -9,13 +9,23 @@
 
 set -uo pipefail
 
+# `--regen` mode: silently regenerate the HTML file (no browser, no daemon).
+# Used by the background regenerator daemon so the file on disk stays fresh.
+REGEN_ONLY=0
+if [[ "${1:-}" == "--regen" ]]; then
+    REGEN_ONLY=1
+    shift
+fi
+
 PID="${1:-}"
 SESSION_ID="${2:-}"
 PROJECTS_DIR="${HOME}/.claude/projects"
 OUTPUT="/tmp/claude-widget-${PID:-unknown}.html"
+DAEMON_PID_FILE="/tmp/claude-widget-${PID:-unknown}.daemon"
+SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 if [[ -z "$PID" ]] && [[ -z "$SESSION_ID" ]]; then
-    echo "Usage: detail.sh <pid> [session_id]" >&2
+    echo "Usage: detail.sh [--regen] <pid> [session_id]" >&2
     exit 1
 fi
 
@@ -420,7 +430,9 @@ page_html = f'''<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="5">
+<!-- Auto-refresh removed: reload + CDN reparse + marked/hljs re-render every 5s
+     caused a visible flicker. Use the Refresh button or hit ⌘R / F5 instead.
+     Live-mode (background regen + JS DOM patch) is parked for follow-up. -->
 <title>Claude — {model_short} · PID {pid}</title>
 
 <!-- Restore theme BEFORE first paint to avoid the flash on every 5s reload. -->
@@ -539,6 +551,22 @@ body {{
 .chip[aria-pressed="false"] {{ opacity: 0.45; }}
 .chip:hover {{ border-color: var(--accent); }}
 .toolbar .count {{ color: var(--dim); font-size: 12px; margin-left: auto; font-family: ui-monospace, monospace; }}
+.toolbar .refresh-btn {{ background: var(--surface); }}
+.toolbar .refresh-btn:active {{ transform: translateY(1px); }}
+.toolbar .live-tag {{
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--dim); font-family: ui-monospace, monospace;
+}}
+.toolbar .live-dot {{
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent2);
+    box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.6);
+    animation: live-pulse 2s ease-out infinite;
+}}
+@keyframes live-pulse {{
+    0%   {{ box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.6); }}
+    70%  {{ box-shadow: 0 0 0 6px rgba(63, 185, 80, 0); }}
+    100% {{ box-shadow: 0 0 0 0 rgba(63, 185, 80, 0); }}
+}}
 
 .messages {{ padding: 16px 24px 80px; max-width: 1100px; margin: 0 auto; }}
 .msg {{
@@ -683,6 +711,12 @@ details summary {{ cursor: pointer; font-size: 12px; color: var(--text); }}
     <button class="chip" data-filter="user"      aria-pressed="true">You</button>
     <button class="chip" data-filter="assistant" aria-pressed="true">Claude</button>
     <button class="chip" data-filter="tools"     aria-pressed="true">Tools</button>
+    <button class="chip refresh-btn" id="refreshBtn"
+            title="Reload page — file is regenerated every 5s in the background">↻ Refresh</button>
+    <span class="live-tag" title="Background regenerator running every 5s">
+        <span class="live-dot"></span>
+        <span class="live-label">live</span>
+    </span>
     <span class="count" id="count"></span>
 </div>
 
@@ -707,6 +741,12 @@ document.getElementById('themeToggle').addEventListener('click', () => {{
     const isLight = document.documentElement.classList.toggle('light');
     try {{ localStorage.setItem('claude-detail-theme', isLight ? 'light' : 'dark'); }} catch (e) {{}}
     applyHljsTheme();
+}});
+
+// Manual refresh — file is being regenerated every 5s by the background
+// daemon spawned in detail.sh, so location.reload() pulls in fresh content.
+document.getElementById('refreshBtn').addEventListener('click', () => {{
+    location.reload();
 }});
 
 // ── Markdown rendering (marked + hljs) ────────────────────────────────────────
@@ -819,5 +859,46 @@ with open(output_path, 'w') as f:
 print(f"Detail page written to: {output_path}")
 PYEOF
 
-# Open in default browser (Chrome preferred for live-reload behavior).
+# In regen-only mode, we're done — daemon owns this branch.
+if [[ "$REGEN_ONLY" == "1" ]]; then
+    exit 0
+fi
+
+# ── Background regenerator daemon ───────────────────────────────────────────
+#
+# The HTML file becomes stale the moment we leave: the assistant keeps writing
+# turns to the JSONL but our snapshot doesn't update. We spawn a small
+# background loop that re-runs ourselves with --regen every 5 seconds,
+# overwriting the same output path. The page (no longer using meta-refresh)
+# picks up fresh content via the manual "↻ Refresh" button — F5 / ⌘R also
+# work. The daemon stops on its own when Claude exits or 30 minutes pass.
+#
+# Dedupe via PID file: kill any prior daemon for this Claude PID before
+# spawning a new one (prevents leaks when the user re-clicks View Transcript).
+
+if [[ -f "$DAEMON_PID_FILE" ]]; then
+    OLD_DPID=$(cat "$DAEMON_PID_FILE" 2>/dev/null || echo "")
+    if [[ -n "$OLD_DPID" ]] && kill -0 "$OLD_DPID" 2>/dev/null; then
+        kill "$OLD_DPID" 2>/dev/null || true
+    fi
+    rm -f "$DAEMON_PID_FILE"
+fi
+
+(
+    REGEN_DEADLINE=$(( $(date +%s) + 1800 ))  # 30-minute hard stop
+    while true; do
+        sleep 5
+        # Stop if Claude PID is gone.
+        if [[ -n "$PID" ]] && ! kill -0 "$PID" 2>/dev/null; then break; fi
+        # Stop after 30 minutes regardless.
+        if (( $(date +%s) > REGEN_DEADLINE )); then break; fi
+        bash "$SCRIPT_PATH" --regen "$PID" "$SESSION_ID" >/dev/null 2>&1 || true
+    done
+    rm -f "$DAEMON_PID_FILE"
+) &
+DAEMON_PID=$!
+echo "$DAEMON_PID" > "$DAEMON_PID_FILE"
+disown "$DAEMON_PID" 2>/dev/null || true
+
+# Open in default browser (Chrome preferred).
 open -a "Google Chrome" "$OUTPUT" 2>/dev/null || open "$OUTPUT" 2>/dev/null
