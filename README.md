@@ -58,6 +58,21 @@ Quick scan results merge into the cached full scan -- live data and rate limits 
 while expensive operations (filesystem walks, event parsing, aggregate computation) run
 at a relaxed cadence.
 
+## Tests
+
+```bash
+bash tests/run-tests.sh
+```
+
+Runs ~30 smoke tests covering: bash syntax of all scripts, swift compile of
+the bar source, JSON shape of `scan.sh` (full + `--quick`), and
+`detail.sh --regen` against a fixture JSONL with marker checks for the
+runtime bits most likely to silently regress (FLOW_ICONS TDZ ordering,
+hook-event rendering, msg-idx + click-jump dot wiring, CDN library
+references, favicon).
+
+No external test framework — bash + Python 3 stdlib only.
+
 ## Quick Start
 
 ```bash
