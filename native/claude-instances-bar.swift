@@ -1102,10 +1102,20 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             row1.attributedTitle = row1Attr
             row1.representedObject = inst.cwd
-            row1.action = #selector(focusInstance(_:))
+            // No `action` on row1 — clicking opens the submenu (Open in Finder
+            // / Terminal / VSCode + other instance actions). Direct focus is
+            // available as the first submenu item.
             row1.target = self
             row1.isEnabled = true
             menu.addItem(row1)
+
+            // Row 1.25: Terminal tab title (when set + distinct from leaf).
+            // Helps disambiguate sessions in the same project — e.g. "build"
+            // vs "test" vs "scratch" tabs all in the same cwd.
+            if let tab = inst.tabTitle, !tab.isEmpty, tab != leafTitle {
+                addWrappingDim(menu, "      ⌥ \(tab)",
+                              color: NSColor.secondaryLabelColor, size: 11)
+            }
 
             // Row 1.5: Full cwd path — wraps, never truncates.
             if let path = fullPathDisplay, path != leafTitle {
@@ -1216,16 +1226,14 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 addColored(menu, "    ⚠ MCP down: \(mcpDown)", color: .systemRed, size: 11)
             }
 
-            // Submenu: instance actions
+            // Submenu — opens when row1 is clicked (no row1.action set).
+            // Order matches user mental model: "where do I want to go look at
+            // this work?" — Finder, Terminal, VSCode are the primary trio,
+            // followed by inspect actions (transcript, copy PID), and the
+            // destructive Terminate is isolated by a separator.
             let submenu = NSMenu()
 
-            let focusItem = NSMenuItem(title: "Focus Terminal", action: #selector(focusInstance(_:)), keyEquivalent: "")
-            focusItem.target = self
-            focusItem.representedObject = inst.cwd
-            setIcon(focusItem, "terminal")
-            submenu.addItem(focusItem)
-
-            // Open in Finder
+            // 1. Open in Finder
             if let cwdPath = inst.cwd, !cwdPath.isEmpty {
                 let finderItem = NSMenuItem(title: "Open in Finder", action: #selector(openInFinder(_:)), keyEquivalent: "")
                 finderItem.target = self
@@ -1233,6 +1241,30 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 setIcon(finderItem, "folder")
                 submenu.addItem(finderItem)
             }
+
+            // 2. Open in Terminal (Ghostty — focuses existing tab if found,
+            //    otherwise spawns a new one. Same handler as the previous
+            //    "Focus Terminal" entry; renamed to match the verb pattern.)
+            let terminalItem = NSMenuItem(title: "Open in Terminal (Ghostty)",
+                                          action: #selector(focusInstance(_:)),
+                                          keyEquivalent: "")
+            terminalItem.target = self
+            terminalItem.representedObject = inst.cwd
+            setIcon(terminalItem, "terminal")
+            submenu.addItem(terminalItem)
+
+            // 3. Open in VSCode
+            if let cwdPath = inst.cwd, !cwdPath.isEmpty {
+                let vscodeItem = NSMenuItem(title: "Open in VSCode",
+                                            action: #selector(openInVSCode(_:)),
+                                            keyEquivalent: "")
+                vscodeItem.target = self
+                vscodeItem.representedObject = cwdPath
+                setIcon(vscodeItem, "chevron.left.forwardslash.chevron.right")
+                submenu.addItem(vscodeItem)
+            }
+
+            submenu.addItem(.separator())
 
             if let sid = inst.sessionId, !sid.isEmpty {
                 let detailItem = NSMenuItem(title: "View Transcript", action: #selector(openDetail(_:)), keyEquivalent: "")
@@ -1588,6 +1620,34 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let path = sender.representedObject as? String else { return }
         dlog("open in Finder: \(path)")
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+    }
+
+    @objc private func openInVSCode(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String, !path.isEmpty else { return }
+        dlog("open in VSCode: \(path)")
+        // Try the `code` CLI first (works when "Shell Command: Install 'code'
+        // command in PATH" was run from VSCode). Fall back to opening with
+        // the .app bundle, which works as long as VSCode is installed.
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        task.arguments = ["code", path]
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError  = FileHandle.nullDevice
+        do {
+            try task.run()
+            task.waitUntilExit()
+            if task.terminationStatus == 0 { return }
+        } catch {
+            dwarn("`code` CLI not on PATH (\(fmtErr(error))); falling back to NSWorkspace")
+        }
+        let url = URL(fileURLWithPath: path)
+        let cfg = NSWorkspace.OpenConfiguration()
+        cfg.activates = true
+        let vscodeBundleURL = URL(fileURLWithPath: "/Applications/Visual Studio Code.app")
+        NSWorkspace.shared.open([url], withApplicationAt: vscodeBundleURL,
+                                configuration: cfg) { _, err in
+            if let err = err { derr("VSCode open failed: \(fmtErr(err))") }
+        }
     }
 
     @objc private func openDetail(_ sender: NSMenuItem) {
