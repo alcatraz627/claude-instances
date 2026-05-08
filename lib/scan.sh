@@ -2,11 +2,15 @@
 # scan.sh — enumerate live Claude Code instances + recent session history.
 #
 # Output: JSON to stdout with structure:
-#   { "live": [...], "history": [...], "limits": {...} }
+#   { "live": [...], "history": [...], "limits": {...}, "aggregates": {...} }
 #
 # Live instances: discovered via pgrep + process info + statusline metrics.
 # History: enumerated from ~/.claude/projects/*/*.jsonl.
 # Limits: read from cached ~/.claude/widgets/.limits.json if present.
+# Aggregates: today/week session stats, model breakdown.
+#
+# Flags:
+#   --quick   Skip history, events, aggregates (fast path for 5s polling)
 
 set -uo pipefail
 
@@ -14,16 +18,21 @@ PROJECTS_DIR="${HOME}/.claude/projects"
 LIMITS_CACHE="${HOME}/.claude/widgets/.limits.json"
 EVENTS_FILE="${HOME}/.claude/events.jsonl"
 STATUSLINE_DIR="/tmp"
+QUICK_MODE=0
+[[ "${1:-}" == "--quick" ]] && QUICK_MODE=1
 
-python3 - "$PROJECTS_DIR" "$LIMITS_CACHE" "$EVENTS_FILE" "$STATUSLINE_DIR" <<'PYEOF'
+python3 - "$PROJECTS_DIR" "$LIMITS_CACHE" "$EVENTS_FILE" "$STATUSLINE_DIR" "$QUICK_MODE" <<'PYEOF'
 import sys, json, os, subprocess, re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 projects_dir = sys.argv[1]
 limits_cache = sys.argv[2]
 events_file = sys.argv[3]
 statusline_dir = sys.argv[4]
+quick_mode = sys.argv[5] == '1'
+
+home = os.path.expanduser('~')
 
 # ─── Statusline reader ─────────────────────────────────────────
 
@@ -44,24 +53,194 @@ def read_statusline(pid):
         pass
     return metrics
 
+# ─── Context remaining % reader ────────────────────────────────
+
+def read_context_remaining(pid):
+    """Read /tmp/claude-ctx-<pid> for context window remaining %."""
+    path = os.path.join(statusline_dir, f"claude-ctx-{pid}")
+    try:
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                val = f.read().strip()
+                if val:
+                    return val
+    except OSError:
+        pass
+    return ''
+
+# ─── Tab title reader ──────────────────────────────────────────
+
+def read_tab_title(session_id):
+    """Read tab title from /tmp/claude-tab-topic-<uuid> files.
+
+    Tab topic files use the Claude session UUID as the key.
+    We try to match by reading .session_id companion files.
+    """
+    if not session_id:
+        return ''
+
+    # Strategy: scan /tmp/claude-tab-topic-*.session_id files for matching session
+    # Then read the corresponding topic file
+    try:
+        for f in os.listdir('/tmp'):
+            if f.startswith('claude-tab-topic-') and f.endswith('.session_id'):
+                sid_path = os.path.join('/tmp', f)
+                try:
+                    with open(sid_path, 'r') as sf:
+                        stored_sid = sf.read().strip()
+                    if stored_sid == session_id:
+                        # Found match — read the topic file
+                        topic_base = f[:-len('.session_id')]
+                        topic_path = os.path.join('/tmp', topic_base)
+                        if os.path.exists(topic_path):
+                            with open(topic_path, 'r') as tf:
+                                return tf.read().strip()[:60]
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return ''
+
+# ─── Subagent counter ──────────────────────────────────────────
+
+def count_subagents(pid):
+    """Count running child claude processes (subagents) for a PID."""
+    try:
+        result = subprocess.run(
+            ['pgrep', '-P', str(pid), '-f', 'claude'],
+            capture_output=True, text=True, timeout=2
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return len(result.stdout.strip().split('\n'))
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return 0
+
+# ─── Session state inference ───────────────────────────────────
+
+def infer_session_state(filepath, pid):
+    """Read last few JSONL entries to infer current session state.
+
+    Returns: {'state': str, 'detail': str}
+    States: thinking, responding, tool_use, tool_result, idle
+    """
+    result = {'state': 'idle', 'detail': ''}
+    if not filepath or not os.path.exists(filepath):
+        return result
+
+    try:
+        size = os.path.getsize(filepath)
+        if size == 0:
+            return result
+
+        # Read last 8KB for recent entries
+        with open(filepath, 'rb') as f:
+            f.seek(max(0, size - 8192))
+            if size > 8192:
+                f.readline()  # skip partial line
+            tail = f.read().decode('utf-8', errors='replace')
+
+        # Parse last 3 valid JSON lines
+        lines = [l.strip() for l in tail.strip().split('\n') if l.strip()]
+        entries = []
+        for line in reversed(lines):
+            try:
+                obj = json.loads(line)
+                entries.append(obj)
+                if len(entries) >= 3:
+                    break
+            except json.JSONDecodeError:
+                continue
+
+        if not entries:
+            return result
+
+        last = entries[0]
+        msg_type = last.get('type', '')
+
+        if msg_type == 'user':
+            result['state'] = 'thinking'
+            result['detail'] = 'processing prompt...'
+        elif msg_type == 'assistant':
+            msg = last.get('message', {})
+            content = msg.get('content', [])
+            # Check if last content block is tool_use
+            if isinstance(content, list) and content:
+                last_block = content[-1] if content else {}
+                if isinstance(last_block, dict):
+                    if last_block.get('type') == 'tool_use':
+                        tool_name = last_block.get('name', '?')
+                        tool_input = last_block.get('input', {})
+                        detail = tool_name
+                        # Extract useful detail per tool type
+                        if tool_name in ('Read', 'Edit', 'Write', 'Glob', 'Grep'):
+                            fp = tool_input.get('file_path', '') or tool_input.get('path', '') or tool_input.get('pattern', '')
+                            if fp:
+                                fp = fp.replace(home, '~')
+                                if len(fp) > 35:
+                                    fp = '...' + fp[-32:]
+                                detail = f"{tool_name}: {fp}"
+                        elif tool_name == 'Bash':
+                            cmd = tool_input.get('command', '')[:40]
+                            if cmd:
+                                detail = f"Bash: {cmd}"
+                        elif tool_name == 'Agent':
+                            desc = tool_input.get('description', '')[:30]
+                            detail = f"Agent: {desc}" if desc else 'Agent'
+                        result['state'] = 'tool_use'
+                        result['detail'] = detail
+                    elif last_block.get('type') == 'text':
+                        result['state'] = 'responding'
+                        text = last_block.get('text', '')
+                        if len(text) > 40:
+                            result['detail'] = text[:37] + '...'
+                        else:
+                            result['detail'] = text[:40]
+                    else:
+                        result['state'] = 'responding'
+                else:
+                    result['state'] = 'responding'
+            else:
+                result['state'] = 'responding'
+        elif msg_type == 'tool_result':
+            result['state'] = 'tool_result'
+            result['detail'] = 'processing result...'
+
+    except OSError:
+        pass
+
+    return result
+
 # ─── Session JSONL token aggregator ─────────────────────────────
+
+# Cost rates per million tokens
+COST_RATES = {
+    'opus': (15.0, 75.0),
+    'sonnet': (3.0, 15.0),
+    'haiku': (0.25, 1.25),
+}
+
+def estimate_cost(model_short, input_tokens, output_tokens):
+    rate_in, rate_out = COST_RATES.get(model_short, (0, 0))
+    if input_tokens > 0 or output_tokens > 0:
+        return round((input_tokens * rate_in + output_tokens * rate_out) / 1_000_000, 4)
+    return 0.0
 
 def get_session_tokens(pid, cwd):
     """Find the active session JSONL for a PID and aggregate token usage."""
     result = {'model': 'unknown', 'input_tokens': 0, 'output_tokens': 0,
               'cache_read': 0, 'cache_create': 0, 'cost_usd': 0.0,
-              'session_id': '', 'turns': 0}
+              'session_id': '', 'turns': 0, 'tool_calls': 0,
+              'jsonl_path': ''}
 
     if not cwd or not os.path.isdir(projects_dir):
         return result
 
     # Derive project slug from CWD
-    # ~/.claude/projects/ uses path-with-dashes as dir names
     slug = cwd.replace('/', '-').lstrip('-')
     proj_dir = os.path.join(projects_dir, '-' + slug)
 
     if not os.path.isdir(proj_dir):
-        # Try without leading dash
         proj_dir = os.path.join(projects_dir, slug)
     if not os.path.isdir(proj_dir):
         return result
@@ -82,14 +261,14 @@ def get_session_tokens(pid, cwd):
     jsonl_files.sort(reverse=True)
     _, filepath, fname = jsonl_files[0]
     result['session_id'] = Path(filepath).stem
+    result['jsonl_path'] = filepath
 
     # Read the file — aggregate usage from assistant messages
-    # For large files, only read last 500 lines for speed
+    # For large files, only read last 500KB for speed
     try:
         size = os.path.getsize(filepath)
         lines = []
         if size > 500_000:
-            # Tail approach for large files
             with open(filepath, 'rb') as f:
                 f.seek(max(0, size - 500_000))
                 f.readline()  # skip partial line
@@ -99,6 +278,7 @@ def get_session_tokens(pid, cwd):
                 lines = f.readlines()
 
         turn_count = 0
+        tool_call_count = 0
         for line in lines:
             line = line.strip()
             if not line:
@@ -121,8 +301,15 @@ def get_session_tokens(pid, cwd):
                     result['output_tokens'] += usage.get('output_tokens', 0)
                     result['cache_read'] += usage.get('cache_read_input_tokens', 0)
                     result['cache_create'] += usage.get('cache_creation_input_tokens', 0)
+                # Count tool_use blocks in content
+                content = msg.get('content', [])
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get('type') == 'tool_use':
+                            tool_call_count += 1
 
         result['turns'] = turn_count
+        result['tool_calls'] = tool_call_count
 
     except OSError:
         pass
@@ -159,8 +346,7 @@ def get_live_instances():
 
             pid = int(pid_str)
 
-            # Get CWD via lsof — must match exact PID in output
-            # lsof -Fn output: p<pid>\nfcwd\nn<path> for each process
+            # Get CWD via lsof
             cwd = ''
             try:
                 lsof = subprocess.run(
@@ -177,7 +363,6 @@ def get_live_instances():
                         cwd = lline[1:]
                         break
                     elif found_pid and lline.startswith('p'):
-                        # Moved past our PID to another process
                         break
             except (subprocess.TimeoutExpired, OSError):
                 pass
@@ -210,10 +395,22 @@ def get_live_instances():
             # Read statusline metrics
             statusline = read_statusline(pid)
 
+            # Read context remaining %
+            ctx_remaining = read_context_remaining(pid)
+
             # Get session tokens and model from JSONL
             session_data = get_session_tokens(pid, cwd)
             if model_flag == 'unknown' and session_data['model'] != 'unknown':
                 model_flag = session_data['model']
+
+            # Read tab title
+            tab_title = read_tab_title(session_data['session_id'])
+
+            # Count subagents
+            subagent_count = count_subagents(pid)
+
+            # Infer session state
+            session_state = infer_session_state(session_data['jsonl_path'], pid)
 
             # Shorten model name for display
             model_display = model_flag
@@ -224,8 +421,13 @@ def get_live_instances():
             elif 'haiku' in model_flag:
                 model_display = 'haiku'
 
+            # Estimate cost
+            cost_usd = estimate_cost(model_display,
+                                      session_data['input_tokens'],
+                                      session_data['output_tokens'])
+
             # Shorten CWD for display
-            cwd_short = cwd.replace(os.path.expanduser('~'), '~') if cwd else '?'
+            cwd_short = cwd.replace(home, '~') if cwd else '?'
 
             instances.append({
                 'pid': pid,
@@ -240,6 +442,11 @@ def get_live_instances():
                 'output_tokens': session_data['output_tokens'],
                 'cache_read': session_data['cache_read'],
                 'turns': session_data['turns'],
+                'tool_calls': session_data['tool_calls'],
+                'cost_usd': cost_usd,
+                'tab_title': tab_title,
+                'subagent_count': subagent_count,
+                'session_state': session_state,
                 'statusline': {
                     'cpu': statusline.get('proc_cpu', ''),
                     'mem': statusline.get('proc_mem', ''),
@@ -250,12 +457,60 @@ def get_live_instances():
                     'mcp_down': statusline.get('mcp_down', ''),
                     'focus_file': statusline.get('focus_file', ''),
                     'wal_since_cp': statusline.get('wal_since_checkpoint', ''),
+                    'ctx_remaining': ctx_remaining,
+                    'scratchpad_count': statusline.get('scratchpad_count', ''),
+                    'pm2_online': statusline.get('pm2_online', ''),
+                    'pm2_errored': statusline.get('pm2_errored', ''),
                 },
             })
     except (subprocess.TimeoutExpired, OSError):
         pass
 
     return instances
+
+# ─── Session model cache (for event enrichment) ────────────────
+
+_session_model_cache = {}
+
+def get_session_model(session_id):
+    """Look up model for a session ID from JSONL first-lines cache."""
+    if session_id in _session_model_cache:
+        return _session_model_cache[session_id]
+
+    if not os.path.isdir(projects_dir):
+        return ''
+
+    # Search all project dirs for this session's JSONL
+    try:
+        for d in os.listdir(projects_dir):
+            path = os.path.join(projects_dir, d, f"{session_id}.jsonl")
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r', errors='replace') as f:
+                        for i, line in enumerate(f):
+                            if i > 30:
+                                break
+                            try:
+                                obj = json.loads(line.strip())
+                                if obj.get('type') == 'assistant':
+                                    model = obj.get('message', {}).get('model', '')
+                                    if model:
+                                        short = model
+                                        if 'opus' in model: short = 'opus'
+                                        elif 'sonnet' in model: short = 'sonnet'
+                                        elif 'haiku' in model: short = 'haiku'
+                                        _session_model_cache[session_id] = short
+                                        return short
+                            except json.JSONDecodeError:
+                                continue
+                except OSError:
+                    pass
+                break
+    except OSError:
+        pass
+
+    _session_model_cache[session_id] = ''
+    return ''
 
 # ─── Session history ─────────────────────────────────────────────
 
@@ -289,7 +544,6 @@ def get_session_history(max_sessions=20):
 
         try:
             size = os.path.getsize(filepath)
-            # Read first 50 lines for model detection + count all lines
             with open(filepath, 'r', errors='replace') as f:
                 first_lines = []
                 for i, line in enumerate(f):
@@ -298,31 +552,26 @@ def get_session_history(max_sessions=20):
                     turn_count += 1
                     last_line = line.strip()
 
-            # Extract model from first assistant/result message with model info
             for line in first_lines:
                 try:
                     obj = json.loads(line)
                     msg_type = obj.get('type', '')
-                    # Check assistant messages
                     if msg_type == 'assistant':
                         m = obj.get('message', {}).get('model', '')
                         if m:
                             model = m
                             break
-                    # Check result messages (some sessions log model in result)
                     elif msg_type == 'result':
                         m = obj.get('model', '') or obj.get('result', {}).get('model', '')
                         if m:
                             model = m
                             break
-                    # Check system messages that may reference model
                     elif msg_type == 'system' and obj.get('model'):
                         model = obj['model']
                         break
                 except json.JSONDecodeError:
                     pass
 
-            # Extract token totals from last line if it has usage
             if last_line:
                 try:
                     obj = json.loads(last_line)
@@ -340,7 +589,6 @@ def get_session_history(max_sessions=20):
         project_display = project_dir_name.replace('-', '/')
         if project_display.startswith('/'):
             project_display = project_display[1:]
-        # Take last 2 meaningful segments
         segs = [s for s in project_display.split('/') if s]
         if len(segs) > 2:
             project_display = '/'.join(segs[-2:])
@@ -354,18 +602,10 @@ def get_session_history(max_sessions=20):
         elif 'haiku' in model:
             model_short = 'haiku'
 
-        # Estimate cost from model + tokens (per-million pricing)
-        # Approximate rates: opus $15/M in + $75/M out, sonnet $3/M in + $15/M out, haiku $0.25/M in + $1.25/M out
-        cost_usd = 0.0
-        rate_in, rate_out = 0.0, 0.0
-        if model_short == 'opus':
-            rate_in, rate_out = 15.0, 75.0
-        elif model_short == 'sonnet':
-            rate_in, rate_out = 3.0, 15.0
-        elif model_short == 'haiku':
-            rate_in, rate_out = 0.25, 1.25
-        if total_input > 0 or total_output > 0:
-            cost_usd = round((total_input * rate_in + total_output * rate_out) / 1_000_000, 4)
+        cost_usd = estimate_cost(model_short, total_input, total_output)
+
+        # Cache model for event enrichment
+        _session_model_cache[session_id] = model_short
 
         modified = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
@@ -385,30 +625,98 @@ def get_session_history(max_sessions=20):
 
 # ─── Recent events ───────────────────────────────────────────────
 
-def get_recent_events(max_events=10):
-    """Get the most recent notable events."""
+# Expanded event types
+TRACKED_EVENTS = {
+    'SessionStart', 'Stop', 'PermissionRequest', 'PostCompact', 'PreCompact',
+    'SubagentStart', 'SubagentStop', 'Notification',
+    'PostToolUse',
+}
+
+# Tool types worth showing in events (skip noisy reads/searches)
+NOTABLE_TOOLS = {'Edit', 'Write', 'Bash', 'Agent'}
+
+def get_recent_events(max_events=10, deep_max=50):
+    """Get the most recent notable events with model + tab title enrichment."""
     events = []
     if not os.path.exists(events_file):
-        return events
+        return events, []
     try:
         with open(events_file, 'r') as f:
             lines = f.readlines()
-        for line in lines[-200:]:
+
+        all_events = []
+        for line in lines[-500:]:
             try:
                 obj = json.loads(line.strip())
                 event = obj.get('event', '')
-                if event in ('SessionStart', 'Stop', 'PermissionRequest', 'PostCompact'):
-                    events.append({
-                        'ts': obj.get('ts', ''),
-                        'event': event,
-                        'project': obj.get('project', ''),
-                        'session_id': obj.get('session_id', ''),
-                    })
+                if event not in TRACKED_EVENTS:
+                    continue
+                # Filter PostToolUse to only notable tools
+                if event == 'PostToolUse':
+                    tool = obj.get('tool', '')
+                    if tool not in NOTABLE_TOOLS:
+                        continue
+
+                sid = obj.get('session_id', '')
+                evt = {
+                    'ts': obj.get('ts', ''),
+                    'event': event,
+                    'project': obj.get('project', ''),
+                    'session_id': sid,
+                    'model': get_session_model(sid) if sid else '',
+                    'tab_title': read_tab_title(sid) if sid else '',
+                    'tool': obj.get('tool', ''),
+                }
+                all_events.append(evt)
             except json.JSONDecodeError:
                 pass
+
+        # Recent events (for main menu display)
+        recent = all_events[-max_events:]
+        # Deep events (for submenu)
+        deep = all_events[-deep_max:]
+
+        return recent, deep
     except OSError:
         pass
-    return events[-max_events:]
+    return [], []
+
+# ─── Aggregates ──────────────────────────────────────────────────
+
+def compute_aggregates(history):
+    """Compute today/week session stats and model breakdown."""
+    now = datetime.now(timezone.utc)
+    today_str = now.strftime('%Y-%m-%d')
+    week_ago = (now - timedelta(days=7)).strftime('%Y-%m-%d')
+
+    today_sessions = []
+    week_sessions = []
+    model_counts = {}
+
+    for s in history:
+        mod = s.get('modified', '')[:10]
+        model = s.get('model', 'unknown')
+        model_counts[model] = model_counts.get(model, 0) + 1
+
+        if mod == today_str:
+            today_sessions.append(s)
+        if mod >= week_ago:
+            week_sessions.append(s)
+
+    def summarize(sessions):
+        return {
+            'sessions': len(sessions),
+            'turns': sum(s.get('turns', 0) for s in sessions),
+            'tokens_in': sum(s.get('tokens_in', 0) for s in sessions),
+            'tokens_out': sum(s.get('tokens_out', 0) for s in sessions),
+            'cost_usd': round(sum(s.get('cost_usd', 0) for s in sessions), 4),
+        }
+
+    return {
+        'today': summarize(today_sessions),
+        'week': summarize(week_sessions),
+        'model_breakdown': model_counts,
+    }
 
 # ─── Limits ──────────────────────────────────────────────────────
 
@@ -421,22 +729,121 @@ def get_limits():
             pass
     return None
 
+# ─── claudew metrics ─────────────────────────────────────────────
+
+CLAUDEW_EVENTS = os.path.join(home, '.claude', 'claudew', 'events.jsonl')
+CLAUDEW_STATE = os.path.join(home, '.claude', 'claudew', 'state')
+
+def get_claudew_metrics():
+    """Read claudew lifecycle events and plugin state for widget display."""
+    metrics = {
+        'recent_exits': [],
+        'recovery_attempts': 0,
+        'total_exits': 0,
+        'last_class': '',
+        'enabled_plugins': [],
+    }
+
+    # Read host events (last 50 lines)
+    if os.path.exists(CLAUDEW_EVENTS):
+        try:
+            with open(CLAUDEW_EVENTS, 'r') as f:
+                lines = f.readlines()
+            exits = []
+            for line in lines[-50:]:
+                try:
+                    obj = json.loads(line.strip())
+                    if obj.get('event') == 'exit':
+                        exits.append({
+                            'ts': obj.get('ts', ''),
+                            'class': obj.get('class', ''),
+                            'exit_code': obj.get('exit_code', 0),
+                            'retry': obj.get('retry', 0),
+                        })
+                except json.JSONDecodeError:
+                    continue
+            metrics['recent_exits'] = exits[-10:]  # last 10
+            metrics['total_exits'] = len(exits)
+            metrics['recovery_attempts'] = sum(1 for e in exits if e.get('retry', 0) > 0)
+            if exits:
+                metrics['last_class'] = exits[-1].get('class', '')
+        except OSError:
+            pass
+
+    # Read auto-resume plugin state
+    resume_exits_path = os.path.join(CLAUDEW_STATE, '00-auto-resume', 'exits.jsonl')
+    if os.path.exists(resume_exits_path):
+        try:
+            with open(resume_exits_path, 'r') as f:
+                resume_lines = f.readlines()
+            rate_limits = sum(1 for l in resume_lines[-50:]
+                              if '"RATE_LIMIT"' in l)
+            api_errors = sum(1 for l in resume_lines[-50:]
+                             if '"API_ERROR"' in l)
+            metrics['rate_limit_exits'] = rate_limits
+            metrics['api_error_exits'] = api_errors
+        except OSError:
+            pass
+
+    # Read enabled plugins from config.toml
+    config_path = os.path.join(home, '.claude', 'claudew', 'config.toml')
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('enabled'):
+                        # Parse single-line array: enabled = ["00-auto-resume", ...]
+                        m = re.search(r'\[(.+)\]', line)
+                        if m:
+                            raw = m.group(1)
+                            plugins = [p.strip().strip('"').strip("'")
+                                       for p in raw.split(',') if p.strip()]
+                            metrics['enabled_plugins'] = plugins
+                        break
+        except OSError:
+            pass
+
+    return metrics
+
 # ─── Assemble ────────────────────────────────────────────────────
 
 live = get_live_instances()
-history = get_session_history()
-events = get_recent_events()
-limits = get_limits()
 
 output = {
     'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'live_count': len(live),
     'live': live,
-    'history': history,
-    'recent_events': events,
 }
-if limits:
-    output['limits'] = limits
+
+if quick_mode:
+    # Quick mode: only live data, skip expensive operations
+    output['history'] = []
+    output['recent_events'] = []
+    output['deep_events'] = []
+    output['aggregates'] = {'today': {}, 'week': {}, 'model_breakdown': {}}
+    # Limits are a trivial file read — always include them
+    limits = get_limits()
+    if limits:
+        output['limits'] = limits
+else:
+    # Full scan: include everything
+    history = get_session_history()
+    recent_events, deep_events = get_recent_events()
+    limits = get_limits()
+    aggregates = compute_aggregates(history)
+
+    output['history'] = history
+    output['recent_events'] = recent_events
+    output['deep_events'] = deep_events
+    output['aggregates'] = aggregates
+    if limits:
+        output['limits'] = limits
+
+# claudew metrics — lightweight file reads, include in both modes
+claudew = get_claudew_metrics()
+if claudew.get('total_exits', 0) > 0 or claudew.get('enabled_plugins'):
+    output['claudew'] = claudew
 
 print(json.dumps(output))
 PYEOF
