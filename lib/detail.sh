@@ -137,9 +137,14 @@ total_input = 0
 total_output = 0
 total_cache_read = 0
 session_id = ''
+ai_title = ''           # auto-generated session title from `type: ai-title`
+git_branch = ''         # cwd's git branch as reported on most recent event
+permission_mode = ''    # current permission mode (auto / plan / default / ...)
 pending_tools = []      # accumulator for consecutive tool-only assistant turns
 tool_counter = Counter()
 activity_dots = []      # one dot per turn for the timeline ribbon
+hook_summaries = 0      # how many `stop_hook_summary` events have run
+hook_errors_total = 0   # accumulated hook errors (red badge in header)
 
 def flush_tools():
     global pending_tools
@@ -172,6 +177,53 @@ if jsonl_file and os.path.exists(jsonl_file):
 
             msg_type = obj.get('type', '')
             ts = fmt_ts(obj.get('timestamp', ''))
+            sidechain = bool(obj.get('isSidechain', False))
+            if obj.get('gitBranch'): git_branch = obj.get('gitBranch')
+
+            # Lightweight events without a message body — surfaced as inline
+            # markers in the stream so users can see the "ambient" things
+            # (hooks running, mode toggles, generated titles) that previously
+            # were invisible in the transcript view.
+            if msg_type == 'ai-title':
+                t = obj.get('aiTitle', '')
+                if t: ai_title = t
+                continue
+
+            if msg_type == 'permission-mode':
+                pm = obj.get('permissionMode', '')
+                if pm and pm != permission_mode:
+                    permission_mode = pm
+                    flush_tools()
+                    messages.append({
+                        'role': 'mode-change', 'kind': 'event', 'ts': ts,
+                        'text': f"🔓 permission mode → {pm}",
+                        'cls': 'mode',
+                    })
+                continue
+
+            if msg_type == 'system':
+                subtype = obj.get('subtype', '')
+                if subtype == 'stop_hook_summary':
+                    hc = obj.get('hookCount') or 0
+                    he = obj.get('hookErrors') or []
+                    pc = obj.get('preventedContinuation') or False
+                    if hc or he or pc:
+                        hook_summaries += 1
+                        hook_errors_total += len(he)
+                        err_chunk = (
+                            f' · {len(he)} error{"s" if len(he) != 1 else ""}'
+                            if he else ''
+                        )
+                        prev_chunk = ' · prevented continuation' if pc else ''
+                        cls = 'err' if (he or pc) else 'hooks'
+                        flush_tools()
+                        messages.append({
+                            'role': 'hook-summary', 'kind': 'event', 'ts': ts,
+                            'text': f"⚙ {hc} hook{'s' if hc != 1 else ''} ran{err_chunk}{prev_chunk}",
+                            'cls': cls,
+                            'errors': he,
+                        })
+                continue
 
             if msg_type == 'user':
                 flush_tools()
@@ -190,6 +242,7 @@ if jsonl_file and os.path.exists(jsonl_file):
                     messages.append({
                         'role': 'user', 'kind': 'user', 'ts': ts,
                         'content_raw': content.strip(),
+                        'sidechain': sidechain,
                     })
                     activity_dots.append(('u', ts))
 
@@ -228,6 +281,7 @@ if jsonl_file and os.path.exists(jsonl_file):
                         'content_raw': text_part.strip(),
                         'tokens_in':  usage.get('input_tokens', 0),
                         'tokens_out': usage.get('output_tokens', 0),
+                        'sidechain': sidechain,
                     })
                     activity_dots.append(('a', ts))
                     if tool_calls:
@@ -320,12 +374,37 @@ for i, m in enumerate(display_messages):
     ts = m.get('ts', '')
     ts_html = f'<span class="ts">{ts}</span>' if ts else ''
 
+    sidechain = m.get('sidechain', False)
+    sc_class = ' sidechain' if sidechain else ''
+    sc_badge = '<span class="sidechain-badge" title="Subagent (Task tool sidechain)">↳ subagent</span>' if sidechain else ''
+
     if role == 'user':
-        raw = safe_md(m['content_raw'])
+        raw = m['content_raw']
+        # Collapse <system-reminder> blocks (CLAUDE.md context, hooks, etc.)
+        # into an expandable summary so they don't dwarf the actual prompt.
+        sysrem_count = raw.count('<system-reminder>')
+        sysrem_html = ''
+        if sysrem_count > 0:
+            sysrem_html = (
+                f'<details class="sysrem"><summary>'
+                f'ⓘ {sysrem_count} system-reminder block{"s" if sysrem_count != 1 else ""} '
+                f'(CLAUDE.md context, hook injections, system-reminder)</summary>'
+                f'<pre><code>{html.escape(raw)}</code></pre></details>'
+            )
+            # Strip them from the visible body so the user prompt is the focus.
+            visible = re.sub(r'<system-reminder>.*?</system-reminder>', '', raw, flags=re.DOTALL).strip()
+            raw_md = safe_md(visible) if visible else '<i class="dim">(only system-reminder content)</i>'
+        else:
+            raw_md = safe_md(raw)
+        body = (
+            f'<div class="content" data-md><script type="text/markdown">{raw_md}</script></div>'
+            if not raw_md.startswith('<i') else
+            f'<div class="content">{raw_md}</div>'
+        )
         msg_html += (
-            f'<div class="msg user" data-role="user" data-search="{html.escape(m["content_raw"].lower())}">'
-            f'  <div class="role"><span>You</span>{ts_html}</div>'
-            f'  <div class="content" data-md><script type="text/markdown">{raw}</script></div>'
+            f'<div class="msg user{sc_class}" data-role="user" data-search="{html.escape(raw.lower())}">'
+            f'  <div class="role"><span class="role-icon">👤</span><span>You</span>{sc_badge}{ts_html}</div>'
+            f'  {body}{sysrem_html}'
             f'</div>\n'
         )
     elif role == 'assistant':
@@ -338,8 +417,8 @@ for i, m in enumerate(display_messages):
             if tok_in:
                 badge += f'<span class="tok-badge dim">↓{tok_in}</span>'
         msg_html += (
-            f'<div class="msg assistant" data-role="assistant" data-search="{html.escape(m["content_raw"].lower())}">'
-            f'  <div class="role"><span>Claude ({model_short})</span>{badge}{ts_html}</div>'
+            f'<div class="msg assistant{sc_class}" data-role="assistant" data-search="{html.escape(m["content_raw"].lower())}">'
+            f'  <div class="role"><span class="role-icon">✨</span><span>Claude ({model_short})</span>{sc_badge}{badge}{ts_html}</div>'
             f'  <div class="content" data-md><script type="text/markdown">{raw}</script></div>'
             f'</div>\n'
         )
@@ -347,13 +426,30 @@ for i, m in enumerate(display_messages):
         tools_html = ''.join(render_tool_detail(t) for t in m['tools'])
         msg_html += (
             f'<div class="msg tools" data-role="tools" data-search="">'
-            f'  <div class="role"><span class="dim">tools</span>{ts_html}</div>'
+            f'  <div class="role"><span class="role-icon">🔧</span><span class="dim">tools</span>{ts_html}</div>'
             f'  <div class="content">'
             f'    <details open>'
             f'      <summary>{m["summary"]}</summary>'
             f'      <ul class="tool-list">{tools_html}</ul>'
             f'    </details>'
             f'  </div>'
+            f'</div>\n'
+        )
+    elif m.get('kind') == 'event':
+        # Inline event row — hooks, mode changes, future event types.
+        cls = m.get('cls', 'event')
+        text = html.escape(m.get('text', ''))
+        errors_html = ''
+        if m.get('errors'):
+            err_lines = '\n'.join(json.dumps(e) if not isinstance(e, str) else e for e in m['errors'])
+            errors_html = (
+                f'<details class="event-err"><summary>view errors</summary>'
+                f'<pre><code>{html.escape(err_lines)}</code></pre></details>'
+            )
+        msg_html += (
+            f'<div class="msg event event-{cls}" data-role="event" data-search="{text.lower()}">'
+            f'  <div class="event-line">{text}{ts_html}</div>'
+            f'  {errors_html}'
             f'</div>\n'
         )
 
@@ -431,8 +527,25 @@ page_html = f'''<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Auto-refresh removed: reload + CDN reparse + marked/hljs re-render every 5s
-     caused a visible flicker. Use the Refresh button or hit ⌘R / F5 instead.
+     caused a visible flicker. The background daemon refreshes the file on disk
+     every 5 minutes; click ↻ Refresh (or ⌘R / F5) to pull in fresh content.
      Live-mode (background regen + JS DOM patch) is parked for follow-up. -->
+
+<!-- Favicon + descriptive metadata. Favicon is the Anthropic Claude mark
+     (externally linked — survives without local assets). theme-color makes
+     the browser chrome match dark/light mode on platforms that honor it. -->
+<link rel="icon" type="image/x-icon" href="https://claude.ai/favicon.ico">
+<link rel="apple-touch-icon" href="https://claude.ai/apple-touch-icon.png">
+<meta name="description" content="Claude transcript — {model_short} · PID {pid} · session {session_id[:8]}">
+<meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f8fa" media="(prefers-color-scheme: light)">
+<meta name="generator" content="claude-instances/lib/detail.sh">
+<meta name="claude-pid" content="{pid}">
+<meta name="claude-session-id" content="{session_id}">
+<meta name="claude-model" content="{model_short}">
+<meta property="og:title" content="Claude {model_short} · {session_id[:12]}">
+<meta property="og:description" content="Live transcript — {len(messages)} turns, {fmt_tokens(total_output)} output tokens">
+<meta property="og:type" content="website">
 <title>Claude — {model_short} · PID {pid}</title>
 
 <!-- Restore theme BEFORE first paint to avoid the flash on every 5s reload. -->
@@ -480,8 +593,19 @@ body {{
 
 .header {{ padding: 18px 24px 12px; border-bottom: 1px solid var(--border); }}
 .header h1 {{ font-size: 17px; margin-bottom: 4px; font-weight: 600; }}
-.header .meta {{ color: var(--dim); font-size: 12px; }}
-.header .meta code {{ background: var(--surface2); padding: 1px 5px; border-radius: 3px; font-size: 11px; }}
+.header .meta {{
+    color: var(--dim); font-size: 12px;
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+}}
+.header .meta code {{ background: transparent; padding: 0; font-size: 11px; }}
+.hpill {{
+    background: var(--surface2); border: 1px solid var(--border);
+    padding: 2px 8px; border-radius: 999px; font-size: 11px;
+    font-family: ui-monospace, Menlo, monospace; color: var(--text);
+    display: inline-flex; align-items: center; gap: 4px;
+}}
+.hpill.warn-pill {{ background: rgba(248, 81, 73, 0.12); color: var(--err); border-color: var(--err); }}
+.hpill.dim-pill  {{ background: transparent; border: none; color: var(--dim); padding-left: 0; }}
 
 .stats {{
     display: flex; gap: 24px; padding: 14px 24px; flex-wrap: wrap;
@@ -578,6 +702,75 @@ body {{
 .msg.tools     {{ background: var(--tools-bg); border-left-color: var(--warn); }}
 .msg.hidden    {{ display: none; }}
 
+/* Sidechain (Task subagent) — visually offset so they don't read as the
+   main conversation thread. */
+.msg.sidechain {{
+    margin-left: 32px;
+    border-left-style: dashed;
+    opacity: 0.92;
+}}
+.sidechain-badge {{
+    background: rgba(168, 85, 247, 0.18); color: #c084fc;
+    padding: 1px 7px; border-radius: 999px;
+    font-size: 10px; font-weight: 600;
+    font-family: ui-monospace, monospace;
+}}
+
+/* Role icon — small leading glyph that gives quick visual differentiation
+   without relying on color alone (especially in light mode where bg colors
+   are subtle). */
+.role-icon {{
+    display: inline-block; width: 18px; text-align: center;
+    font-size: 12px; opacity: 0.85;
+}}
+
+/* Inline event rows — hooks, permission-mode changes, etc. Don't read as
+   conversation; sit between turns as ambient signals. Smaller, mono, no
+   bubble background. */
+.msg.event {{
+    background: transparent;
+    border: none; border-left: 2px dashed var(--border);
+    padding: 4px 14px; margin: 2px 0 2px 4px;
+}}
+.msg.event .event-line {{
+    display: flex; align-items: center; gap: 10px;
+    font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+    color: var(--dim);
+}}
+.msg.event-hooks .event-line {{ color: var(--accent2); }}
+.msg.event-err   .event-line {{ color: var(--err); }}
+.msg.event-mode  .event-line {{ color: var(--warn); }}
+.msg.event .event-line .ts {{ margin-left: auto; }}
+.msg.event .event-err {{ margin-top: 2px; padding-left: 24px; }}
+
+/* CLAUDE.md / system-reminder collapse — keeps user prompt readable. */
+details.sysrem {{
+    margin-top: 8px; font-size: 11px; color: var(--dim);
+    border-top: 1px solid var(--border); padding-top: 6px;
+}}
+details.sysrem summary {{ cursor: pointer; font-family: ui-monospace, monospace; }}
+details.sysrem pre {{ margin-top: 4px; max-height: 360px; overflow: auto; }}
+
+/* Long-message handling — cap height with fade-out + "show more" toggle.
+   Without this a single 5000-char assistant turn can dominate the viewport. */
+.msg .content {{ max-height: 720px; overflow: hidden; position: relative; }}
+.msg.expanded .content {{ max-height: none; }}
+.msg .content::after {{
+    content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 60px;
+    background: linear-gradient(to bottom, transparent, var(--asst-bg));
+    pointer-events: none; opacity: 0; transition: opacity 0.15s;
+}}
+.msg.user .content::after {{ background: linear-gradient(to bottom, transparent, var(--user-bg)); }}
+.msg.tools .content::after, .msg.event .content::after {{ display: none; }}
+.msg.overflow .content::after {{ opacity: 1; }}
+.msg.expanded .content::after {{ display: none; }}
+.show-more-btn {{
+    display: none; margin-top: 6px; background: var(--surface2);
+    border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 4px 12px; font-size: 11px; cursor: pointer;
+}}
+.msg.overflow .show-more-btn {{ display: inline-block; }}
+
 .role {{
     display: flex; align-items: center; gap: 8px;
     font-size: 12px; font-weight: 600; color: var(--dim); margin-bottom: 4px;
@@ -618,7 +811,16 @@ body {{
 .content pre {{
     background: var(--surface2); padding: 10px 12px; border-radius: 6px;
     overflow-x: auto; margin: 8px 0; border: 1px solid var(--border);
+    position: relative;
 }}
+.content pre .code-copy {{
+    position: absolute; top: 6px; right: 6px;
+    background: var(--surface); border: 1px solid var(--border); color: var(--dim);
+    border-radius: 4px; padding: 1px 8px; font-size: 10px; cursor: pointer;
+    font-family: ui-monospace, monospace; opacity: 0; transition: opacity 0.15s;
+}}
+.content pre:hover .code-copy {{ opacity: 1; }}
+.content pre .code-copy:hover {{ color: var(--text); border-color: var(--accent); }}
 .content pre code {{
     background: transparent; padding: 0; font-size: 12px; line-height: 1.5;
     font-family: ui-monospace, Menlo, monospace;
@@ -660,14 +862,18 @@ body {{
 
 details summary {{ cursor: pointer; font-size: 12px; color: var(--text); }}
 
-/* Click-to-copy chips with hover tooltip */
+/* Click-to-copy chips: underline-on-hover (no fill — the previous "fill the
+   chip with the accent color" was visually too loud, especially around long
+   file paths). Tooltip + flash on copy preserved. */
 .copyable {{
-    cursor: pointer; padding: 1px 4px; border-radius: 3px;
-    transition: background 0.12s, color 0.12s;
+    cursor: pointer; padding: 0 1px; border-radius: 2px;
+    text-decoration: underline transparent;
+    text-decoration-thickness: 1px; text-underline-offset: 2px;
+    transition: text-decoration-color 0.12s;
     display: inline-flex; align-items: center; gap: 4px;
     position: relative;
 }}
-.copyable:hover {{ background: var(--accent); color: var(--bg); }}
+.copyable:hover {{ text-decoration-color: var(--accent); }}
 .copyable::after {{
     content: 'Copy'; position: absolute;
     bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%);
@@ -679,6 +885,9 @@ details summary {{ cursor: pointer; font-size: 12px; color: var(--text); }}
     z-index: 200;
 }}
 .copyable:hover::after {{ opacity: 0.95; }}
+.copyable.copied {{
+    text-decoration-color: var(--accent2);
+}}
 .copyable.copied::after {{ content: '✓ Copied'; opacity: 1; background: var(--accent2); color: white; }}
 
 .empty {{ color: var(--dim); text-align: center; padding: 60px; font-style: italic; }}
@@ -688,11 +897,15 @@ details summary {{ cursor: pointer; font-size: 12px; color: var(--text); }}
 <button class="theme-toggle" id="themeToggle" title="Toggle light/dark">☀ / ☾</button>
 
 <div class="header">
-    <h1>Claude {model_short} · PID {pid}</h1>
+    <h1>{html.escape(ai_title) if ai_title else f"Claude {model_short}"}</h1>
     <div class="meta">
-        Session <code class="copyable" data-copy="{session_id}" title="Click to copy session id">{session_id[:12]}{'…' if len(session_id) > 12 else ''}</code>
-        · Last refresh {now}
-        · Auto-refresh 5s
+        <span class="hpill">{model_short}</span>
+        <span class="hpill">PID {pid}</span>
+        <span class="hpill">Session <code class="copyable" data-copy="{session_id}" title="Click to copy">{session_id[:12]}{'…' if len(session_id) > 12 else ''}</code></span>
+        {f'<span class="hpill">⎇ {html.escape(git_branch)}</span>' if git_branch else ''}
+        {f'<span class="hpill">🔓 {html.escape(permission_mode)}</span>' if permission_mode else ''}
+        {f'<span class="hpill warn-pill">⚠ {hook_errors_total} hook error{"s" if hook_errors_total != 1 else ""}</span>' if hook_errors_total else ''}
+        <span class="hpill dim-pill">refresh {now}</span>
     </div>
 </div>
 
@@ -712,10 +925,10 @@ details summary {{ cursor: pointer; font-size: 12px; color: var(--text); }}
     <button class="chip" data-filter="assistant" aria-pressed="true">Claude</button>
     <button class="chip" data-filter="tools"     aria-pressed="true">Tools</button>
     <button class="chip refresh-btn" id="refreshBtn"
-            title="Reload page — file is regenerated every 5s in the background">↻ Refresh</button>
-    <span class="live-tag" title="Background regenerator running every 5s">
+            title="Reload page — file regenerates every 5 minutes in the background">↻ Refresh</button>
+    <span class="live-tag" title="Background regenerator runs every 5 minutes — click ↻ for fresh content sooner">
         <span class="live-dot"></span>
-        <span class="live-label">live</span>
+        <span class="live-label">5m</span>
     </span>
     <span class="count" id="count"></span>
 </div>
@@ -833,6 +1046,55 @@ chips.forEach(c => c.addEventListener('click', () => {{
 }}));
 applyFilter();
 
+// ── Long-message overflow → "show more" toggle ───────────────────────────────
+// After markdown is rendered we know the real height. If the rendered content
+// is taller than the CSS max-height (720px), mark the message .overflow so the
+// fade-out + button appear; click to expand.
+function annotateOverflow() {{
+    document.querySelectorAll('.msg').forEach(msg => {{
+        const c = msg.querySelector('.content');
+        if (!c) return;
+        if (msg.classList.contains('event') || msg.classList.contains('tools')) return;
+        if (c.scrollHeight > c.clientHeight + 4) {{
+            msg.classList.add('overflow');
+            if (!msg.querySelector('.show-more-btn')) {{
+                const btn = document.createElement('button');
+                btn.className = 'show-more-btn';
+                btn.textContent = 'Show full message';
+                btn.addEventListener('click', () => {{
+                    msg.classList.toggle('expanded');
+                    btn.textContent = msg.classList.contains('expanded') ? 'Collapse' : 'Show full message';
+                }});
+                msg.appendChild(btn);
+            }}
+        }}
+    }});
+}}
+// Run after markdown render (next animation frame to let layout settle).
+requestAnimationFrame(annotateOverflow);
+
+// ── Code-block copy button ───────────────────────────────────────────────────
+// Each <pre> in rendered markdown gets a small "copy" button in the top-right
+// that lifts the code text without surrounding markdown noise.
+document.querySelectorAll('.content pre').forEach(pre => {{
+    if (pre.querySelector('.code-copy')) return;
+    pre.style.position = pre.style.position || 'relative';
+    const btn = document.createElement('button');
+    btn.className = 'code-copy';
+    btn.textContent = 'copy';
+    btn.title = 'Copy code';
+    btn.addEventListener('click', e => {{
+        e.stopPropagation();
+        const code = pre.querySelector('code');
+        const text = code ? code.textContent : pre.textContent;
+        navigator.clipboard.writeText(text).then(() => {{
+            btn.textContent = '✓';
+            setTimeout(() => {{ btn.textContent = 'copy'; }}, 1200);
+        }}).catch(() => {{}});
+    }});
+    pre.appendChild(btn);
+}});
+
 // ── Scroll position preservation across the 5s meta-refresh ──────────────────
 const SCROLL_KEY = 'claude-detail-scroll-{pid}';
 const savedScroll = parseInt(sessionStorage.getItem(SCROLL_KEY) || '0', 10);
@@ -885,12 +1147,12 @@ if [[ -f "$DAEMON_PID_FILE" ]]; then
 fi
 
 (
-    REGEN_DEADLINE=$(( $(date +%s) + 1800 ))  # 30-minute hard stop
+    REGEN_DEADLINE=$(( $(date +%s) + 7200 ))  # 2-hour hard stop
     while true; do
-        sleep 5
+        sleep 300   # 5 minutes — was 5s, dropped to a low-overhead cadence
         # Stop if Claude PID is gone.
         if [[ -n "$PID" ]] && ! kill -0 "$PID" 2>/dev/null; then break; fi
-        # Stop after 30 minutes regardless.
+        # Stop after 2 hours regardless (was 30min — bumped because cadence is longer).
         if (( $(date +%s) > REGEN_DEADLINE )); then break; fi
         bash "$SCRIPT_PATH" --regen "$PID" "$SESSION_ID" >/dev/null 2>&1 || true
     done
