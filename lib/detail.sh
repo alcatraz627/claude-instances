@@ -582,8 +582,13 @@ page_html = f'''<!DOCTYPE html>
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
 html, body {{ height: 100%; }}
 body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI Variable",
+                 "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
     background: var(--bg); color: var(--text); font-size: 14px;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "kern", "liga", "calt";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }}
 .theme-toggle {{
     position: fixed; top: 12px; right: 16px; z-index: 100;
@@ -771,6 +776,35 @@ details.sysrem pre {{ margin-top: 4px; max-height: 360px; overflow: auto; }}
 }}
 .msg.overflow .show-more-btn {{ display: inline-block; }}
 
+/* Flow arrows between consecutive cards. Subtle dashed line on either side
+   of a small circular badge containing the next speaker's icon, color-tinted
+   per role. Border color hints at what kind of card comes next so you can
+   skim the conversation rhythm at a glance. */
+.flow-arrow {{
+    display: flex; align-items: center; gap: 10px;
+    padding: 2px 24px; margin: 1px 0;
+}}
+.arrow-line {{
+    flex: 1; height: 0;
+    border-top: 1px dashed var(--border);
+}}
+.arrow-icon {{
+    flex: 0 0 auto;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    width: 22px; height: 22px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11px;
+    line-height: 1;
+}}
+.flow-user      .arrow-icon {{ border-color: var(--accent);  background: rgba(88, 166, 255, 0.10); }}
+.flow-assistant .arrow-icon {{ border-color: var(--accent2); background: rgba(63, 185, 80, 0.10); }}
+.flow-tools     .arrow-icon {{ border-color: var(--warn);    background: rgba(210, 153, 34, 0.10); }}
+.flow-event     .arrow-icon {{ border-color: var(--border);  background: var(--surface2); opacity: 0.7; }}
+/* Hide arrows that ended up adjacent to a hidden msg (filter race) */
+.flow-arrow + .msg.hidden + .flow-arrow {{ display: none; }}
+
 .role {{
     display: flex; align-items: center; gap: 8px;
     font-size: 12px; font-weight: 600; color: var(--dim); margin-bottom: 4px;
@@ -783,30 +817,52 @@ details.sysrem pre {{ margin-top: 4px; max-height: 360px; overflow: auto; }}
 }}
 .tok-badge.dim {{ color: var(--dim); }}
 
-/* Markdown content (rendered by marked + hljs at runtime) */
-.content {{ font-size: 13px; line-height: 1.55; word-break: break-word; }}
+/* Markdown content. Sized for readable prose: 14.5px / 1.65 lh. Code blocks
+   stay slightly smaller (mono fonts compensate). Headings get more breathing
+   room than the previous tight rhythm. */
+.content {{
+    font-size: 14.5px; line-height: 1.65; word-break: break-word;
+    color: var(--text);
+}}
 .content h1, .content h2, .content h3, .content h4 {{
-    font-weight: 700; margin: 14px 0 6px; line-height: 1.25;
+    font-weight: 700; line-height: 1.3;
+    margin: 18px 0 8px;
+    letter-spacing: -0.01em;
 }}
-.content h1 {{ font-size: 18px; }}
-.content h2 {{ font-size: 16px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }}
-.content h3 {{ font-size: 14px; }}
-.content h4 {{ font-size: 13px; color: var(--dim); }}
-.content p  {{ margin: 6px 0; }}
-.content ul, .content ol {{ margin: 6px 0 6px 22px; }}
-.content li {{ margin: 2px 0; }}
+.content h1 {{ font-size: 20px; }}
+.content h2 {{
+    font-size: 17px; padding-bottom: 5px;
+    border-bottom: 1px solid var(--border);
+}}
+.content h3 {{ font-size: 15px; }}
+.content h4 {{ font-size: 14px; color: var(--dim); text-transform: none; }}
+.content > *:first-child {{ margin-top: 0; }}
+.content p  {{ margin: 10px 0; }}
+.content ul, .content ol {{ margin: 10px 0 10px 24px; padding-left: 4px; }}
+.content li {{ margin: 4px 0; }}
+.content li > p {{ margin: 4px 0; }}
+.content li::marker {{ color: var(--dim); }}
 .content blockquote {{
-    border-left: 3px solid var(--border); padding: 4px 12px;
-    color: var(--dim); margin: 8px 0;
+    border-left: 3px solid var(--accent); padding: 6px 14px;
+    color: var(--dim); margin: 12px 0;
+    background: var(--surface2);
+    border-radius: 0 4px 4px 0;
 }}
-.content table {{ border-collapse: collapse; margin: 8px 0; font-size: 12px; }}
+.content blockquote p {{ margin: 4px 0; }}
+.content table {{
+    border-collapse: collapse; margin: 12px 0; font-size: 13px;
+    width: 100%; max-width: max-content;
+}}
 .content th, .content td {{
-    border: 1px solid var(--border); padding: 4px 8px; text-align: left;
+    border: 1px solid var(--border); padding: 6px 10px; text-align: left;
+    vertical-align: top;
 }}
 .content th {{ background: var(--surface2); font-weight: 600; }}
+.content tr:nth-child(even) td {{ background: rgba(127,127,127,0.04); }}
 .content code:not(pre code) {{
-    background: var(--surface2); padding: 1px 5px; border-radius: 3px;
-    font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+    background: var(--surface2); padding: 1px 6px; border-radius: 3px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.88em; font-feature-settings: "calt" 0;
 }}
 .content pre {{
     background: var(--surface2); padding: 10px 12px; border-radius: 6px;
@@ -822,8 +878,10 @@ details.sysrem pre {{ margin-top: 4px; max-height: 360px; overflow: auto; }}
 .content pre:hover .code-copy {{ opacity: 1; }}
 .content pre .code-copy:hover {{ color: var(--text); border-color: var(--accent); }}
 .content pre code {{
-    background: transparent; padding: 0; font-size: 12px; line-height: 1.5;
-    font-family: ui-monospace, Menlo, monospace;
+    background: transparent; padding: 0;
+    font-size: 12.5px; line-height: 1.55;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-feature-settings: "calt" 0;
 }}
 .content a {{ color: var(--accent); text-decoration: none; }}
 .content a:hover {{ text-decoration: underline; }}
@@ -851,14 +909,20 @@ details.sysrem pre {{ margin-top: 4px; max-height: 360px; overflow: auto; }}
 .bash-cmd {{ margin: 6px 0 4px !important; }}
 .bash-desc {{ color: var(--dim); font-size: 12px; padding: 2px 4px; }}
 
-/* Edit diff side-by-side */
+/* Edit diff side-by-side. min-width:0 forces grid columns to respect the
+   1fr 1fr split — without it, a <pre> with long lines balloons its column
+   and crops the other side. Both axes scroll inside the pre. */
 .diff-pair {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 6px 0; }}
-.diff-side {{ }}
+.diff-side {{ min-width: 0; }}
 .diff-label {{
     font-size: 10px; font-weight: 700; text-transform: uppercase;
     color: var(--dim); padding: 2px 4px;
 }}
-.diff-side pre {{ max-height: 200px; overflow: auto; font-size: 11px; }}
+.diff-side pre {{
+    max-height: 360px; overflow: auto;
+    font-size: 11px; line-height: 1.5;
+    white-space: pre;  /* prevent wrap so horizontal scroll works */
+}}
 
 details summary {{ cursor: pointer; font-size: 12px; color: var(--text); }}
 
@@ -1035,6 +1099,7 @@ function applyFilter() {{
     }}
     count.textContent = `${{shown}} / ${{msgs.length}}`;
     persist();
+    if (typeof rebuildFlowArrows === 'function') rebuildFlowArrows();
 }}
 
 q.addEventListener('input', applyFilter);
@@ -1045,6 +1110,44 @@ chips.forEach(c => c.addEventListener('click', () => {{
     applyFilter();
 }}));
 applyFilter();
+
+// ── Flow arrows between visible messages ────────────────────────────────────
+// A small dashed connector with the next speaker's icon, between every pair
+// of visible cards. Recomputed every time the filter changes so search /
+// chip toggles don't leave dangling arrows. Hidden between consecutive
+// inline events (would be too noisy).
+const FLOW_ICONS = {{
+    user: '👤', assistant: '✨', tools: '🔧', event: 'ⓘ'
+}};
+const FLOW_LABELS = {{
+    user: 'You', assistant: 'Claude', tools: 'tools', event: 'event'
+}};
+
+function rebuildFlowArrows() {{
+    document.querySelectorAll('.flow-arrow').forEach(a => a.remove());
+    const visible = Array.from(document.querySelectorAll('#msgs > .msg:not(.hidden)'));
+    for (let i = 0; i < visible.length - 1; i++) {{
+        const cur = visible[i];
+        const nxt = visible[i + 1];
+        // Don't put arrows between two consecutive inline events — too noisy.
+        if (cur.classList.contains('event') && nxt.classList.contains('event')) continue;
+        const role = nxt.dataset.role;
+        const icon = FLOW_ICONS[role] || '·';
+        const label = FLOW_LABELS[role] || '';
+        const arrow = document.createElement('div');
+        arrow.className = `flow-arrow flow-${{role}}`;
+        arrow.innerHTML = `
+            <span class="arrow-line"></span>
+            <span class="arrow-icon" title="next: ${{label}}">${{icon}}</span>
+            <span class="arrow-line"></span>`;
+        cur.insertAdjacentElement('afterend', arrow);
+    }}
+}}
+
+// applyFilter() calls rebuildFlowArrows() itself; the initial pass already
+// happened in applyFilter() above. Run once more here to handle the case
+// where rebuildFlowArrows wasn't yet defined when applyFilter first ran.
+rebuildFlowArrows();
 
 // ── Long-message overflow → "show more" toggle ───────────────────────────────
 // After markdown is rendered we know the real height. If the rendered content
