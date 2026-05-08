@@ -1,10 +1,23 @@
 # Claude Instances Widget — Major Upgrade Plan
 
-<!-- sessions: forge-auto-8c@2026-04-22 -->
+<!-- sessions: forge-auto-8c@2026-04-22, tran-rport-7c@2026-05-08, refr-cade-9d@2026-05-09 -->
 
-## Overview
+## Status (as of 2026-05-09)
 
-Four upgrade areas requested by user, plus implementation strategy for data freshness without resource drain.
+**Mostly shipped** — Areas 1-5 below are largely landed. The bar binary, scan.sh,
+and the new transcript HTML generator together implement nearly everything in the
+original plan.
+
+| Area | Status | Notes |
+|------|--------|-------|
+| 1. Per-session enhancements | ✓ shipped | Tab title, statusline metrics, click→submenu (Finder/Terminal/VSCode), subagent count, session state, blinking, branch + modified-files + last-prompt |
+| 2. Top-level usage limits | ✓ shipped | 5h + 7d bars with reset countdowns, color thresholds, configurable warning slider |
+| 3. Events deep history | ✓ shipped | Both shallow (menu) and deep (dashboard Events tab) lists from scan.sh |
+| 4. Overall usage stats | ✓ shipped | today/week aggregates + model breakdown in scan.sh + Overview tab |
+| 5. Update strategy | ✓ shipped | Quick (5s) / Full (30s) tiered scan. User-selectable cadence (1/2/5/10/30/60s + Pause) |
+
+**Still parked** — see "Outstanding work" at the bottom for the two live-update
+items and remote-session brainstorm.
 
 ---
 
@@ -559,4 +572,125 @@ Start with **A** (SSH-tail). Weekend project, proves whether remote visibility i
 3. Bar's `runScanner` becomes `runScanners` — fans out to each configured host in parallel, merges results
 4. Header bar adds `· 🌐 N remotes` count when any are configured
 5. Per-remote status: a small "⚠ unreachable" badge if SSH fails N times in a row
+
+---
+
+## PARKED — Live-update while menu is open
+
+<!-- sessions: refr-cade-9d@2026-05-09 -->
+
+> Mentioned in commit `cfd3ec0` ("Note: macOS NSMenu items don't auto-update
+> while the menu is held open"). Still parked because the fix is a real
+> structural change.
+
+### Why it's parked
+
+NSMenu in AppKit re-evaluates `menuNeedsUpdate(_:)` only when the menu is *about
+to open*. While the menu is held visible, item attributedTitles are static. The
+scan timer (now user-configurable cadence) keeps `cachedData` fresh in the
+background, but the on-screen rows don't reflect the new data until close + reopen.
+
+### What needs to change
+
+1. **Convert per-instance rows to view-based items.** Replace the chain of
+   `attributedTitle`-based NSMenuItems (row1 / row1.25 / row1.5 / row2 / focus
+   file / MCP-down) with a single `RunningInstanceRowView: NSView` that owns
+   its own NSTextField/NSStackView for each piece. NSMenuItem.view wires it in.
+2. **Track the view-set per pid.** BarDelegate holds `[Int: RunningInstanceRowView]`.
+   When `refreshData()` updates `cachedData`, iterate the dict and call each
+   view's `update(with: LiveInstance)` method to mutate its labels in place.
+   View-based items DO live-redraw while the menu is open — that's the whole
+   point of the change.
+3. **Handle add/remove.** When a new instance appears or one dies between
+   ticks, splice the menu items inline (NSMenu supports this for view-based
+   items without flicker, IF the menu doesn't have to recompute layout
+   substantially).
+4. **Preserve hover/click semantics.** The current row1 has a submenu attached;
+   verify view-based items still propagate hover-over to reveal the submenu.
+
+### First concrete commit
+
+- New `RunningInstanceRowView.swift` (or inline in the bar file) — pure view,
+  takes a `LiveInstance`, exposes `update(with:)`.
+- Extract the existing row-build logic (lines ~1075–1175 of the bar source)
+  into `RunningInstanceRowView.populate(from:)`.
+- BarDelegate gains `runningRows: [Int: RunningInstanceRowView]` keyed by pid.
+- `refreshData()` end branch: for each cached live instance, find or create
+  the row view, call `update(with: inst)`. Stale pids removed.
+
+### Risk / cost
+
+Medium-large. ~200-400 LoC. Visual regression risk: hover behavior, submenu
+attachment, scroll-when-many-instances all need re-verifying. Recommend
+implementing behind a feature flag (UserDefaults `liveMenuRefresh: Bool`)
+so it can be A/B'd against the current static behavior.
+
+---
+
+## PARKED — Live-update while transcript is open
+
+<!-- sessions: tran-rport-7c@2026-05-08 -->
+
+> Mentioned in commit `892a1e2` ("Live-mode (background regen + JS DOM patch)
+> is parked for follow-up"). Still parked because Chrome's `file://` CORS
+> behavior forces an HTTP server.
+
+### Why it's parked
+
+The transcript page lives at `file:///tmp/claude-widget-<pid>.html`. Chrome
+(since 67, 2018) blocks `fetch()` between `file://` URLs as a security
+measure. The current page does NOT auto-refresh the DOM — the daemon
+regenerates the file on disk every 5 minutes, and the user clicks ↻ Refresh
+to do a full page reload. That works but isn't truly live.
+
+### What needs to change
+
+1. **Spawn a tiny HTTP server in detail.sh.** Per-PID port (e.g.
+   `5400 + (pid % 500)`), bind to `127.0.0.1`, serve the `/tmp/` directory.
+   Use Python's built-in `http.server` module so no new dependencies. Dedupe
+   via lockfile so re-clicks don't spawn duplicates.
+2. **Open the page via `http://127.0.0.1:port/claude-widget-<pid>.html`**
+   instead of `file://`. The fetch + same-origin checks now succeed.
+3. **JS polling loop.** Every 30s (or user-configurable), `fetch(self_url + '?_=' + Date.now(), {cache: 'no-store'})`.
+   Parse with `DOMParser`, extract `#msgs` innerHTML, swap in place. Re-run
+   marked + hljs only on the NEW message nodes (not the whole page).
+4. **State preservation.** Theme, search, scroll, expanded `<details>`, role
+   chip toggles all stay in place because we're patching DOM, not reloading.
+
+### First concrete commit
+
+- detail.sh starts a localhost http.server (idempotent) before opening browser.
+- Replace meta-refresh (already removed) with a JS poll loop.
+- Diff messages by `data-search` + count: only patch when content actually
+  changed (avoids unnecessary marked/hljs re-runs).
+
+### Risk / cost
+
+Medium. ~150 LoC + browser CORS testing. Risk: server lifecycle (when do we
+shut it down? on Claude PID death? after N minutes idle?). Use the same
+exit-when-Claude-dies mechanic as the regen daemon already has.
+
+---
+
+## PARKED — True line-level red/green diff
+
+> Mentioned in commit `9434db5` ("True line-level diff … is parked because
+> it needs to interleave with hljs's <span> output").
+
+Currently OLD/NEW panes get red/green pane *tints* but no per-line markers.
+Doing real line-level diff requires running diff before hljs (so hljs sees
+clean code) and then wrapping line spans with `.diff-removed` / `.diff-added`
+classes. Or running hljs first and post-processing the rendered HTML.
+Either way is invasive — diff2html (~30KB CDN) would do it cleanly.
+
+---
+
+## Outstanding work — short list (priority for next pickup)
+
+1. **Live-update while menu is open** (above) — best UX win
+2. **Live-update while transcript is open** (above) — adjacent technique
+3. **Remote sessions: SSH-tail mode** (above) — totally optional, weekend project
+4. **True diff for Edit panes** (above) — nice-to-have
+
+Everything else in the original plan has shipped.
 

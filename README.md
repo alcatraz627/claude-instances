@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/platform-macOS_13+-black" alt="Platform">
   <img src="https://img.shields.io/badge/language-Swift_5.9-F05138" alt="Swift">
   <img src="https://img.shields.io/badge/build-swiftc_(no_Xcode)-blue" alt="Build">
-  <img src="https://img.shields.io/badge/lines-~3300-informational" alt="Lines">
+  <img src="https://img.shields.io/badge/lines-~6500-informational" alt="Lines">
   <img src="https://img.shields.io/github/last-commit/alcatraz627/claude-instances" alt="Last Commit">
 </p>
 
@@ -85,14 +85,42 @@ The Claude logo appears in your menu bar. Click it to see your running sessions.
   style, with 4-tier color thresholds (green <50% / yellow 50-75% / orange 75-90% / red >90%)
 - **Usage stats** -- Today/Week aggregates: sessions, turns, cost, inline model badges
   (`*11 .5 o2` for Opus/Sonnet/Haiku counts)
-- **Live instances** -- model badge, tab title or project path, elapsed time, session
-  state (thinking/responding/tool_use with blinking icons). Click to focus the Ghostty tab.
-  Row 2: context remaining (color-coded), turns, tool calls, tokens, cost, RAM, tok/s.
-  Focus file shown when available. Right-arrow submenu: View Transcript, Copy PID, Terminate.
+- **Live instances** -- model badge, leaf folder + full path (wrapping), tab title,
+  elapsed, ↳ subagent count (purple), ⎇ git branch (teal) + `*N` modified-files count
+  (orange/red by burn level). Last user prompt shown as `❯ <prompt>` below.
+  Row 2: context remaining (color-coded green/orange/red), turns, tool calls (orange),
+  output tokens (green), cost (stepped gray/orange/red), RAM (stepped), tok/s (stepped).
+  Compaction warning row when ctx < 15%. Focus file path wraps. MCP-down warning in red.
+  Click row to open submenu: Open in Finder / Terminal (Ghostty) / VSCode, View Transcript,
+  Copy PID, Terminate.
 - **Recent events** -- per-type Unicode symbols with semantic color + inline model badge
 - **Session history** -- last 6 sessions, clickable to resume via `claude --resume`
   in a new Ghostty tab
-- **Actions** -- New Session (Cmd+N), Dashboard (Cmd+D), Refresh (Cmd+R), Terminate All, Quit
+- **Actions** -- New Session (Cmd+N), Dashboard (Cmd+D), Refresh submenu (cadence picker:
+  1/2/5/10/30/60s + Pause), Terminate All, Quit. Footer shows "Updated Ns ago · refresh: cadence"
+  with paused state escalating to orange.
+
+### Transcript View (HTML)
+
+Click "View Transcript" on any instance's submenu to open a styled HTML view of
+its conversation in your default browser. Background daemon regenerates the file
+on disk every 5 minutes; click ↻ Refresh in the page toolbar to pick up fresh
+content sooner.
+
+- **Header** — AI-generated title, model · PID · session · branch · permission-mode pills
+- **Stats** — input / output / cache-read / turns; CPU / MEM / MCP-up / MCP-down
+- **Tools used** — horizontal-bar breakdown by tool name
+- **Activity timeline** — clickable colored buttons; each jumps to its block + flashes
+- **Toolbar** — search, role chips (You / Claude / Tools), ↻ Refresh, live indicator
+- **Conversation** — markdown rendering via `marked.js` + `highlight.js` (CDN). Headings,
+  lists, tables, blockquotes, syntax-highlighted code blocks. Auto-link bare URLs.
+- **Tool calls** — grouped, expandable. Each shows tool name, copyable file paths,
+  full input JSON, and (for `Edit`) red/green-tinted side-by-side OLD/NEW with
+  language-specific highlighting.
+- **Inline events** — `⚙ N hooks ran`, `🔓 permission mode → auto`, `↳ subagent` markers
+- **Block index + datetime** — every card shows `#N` index and HH:MM:SS with full-datetime tooltip
+- **Light/dark theme toggle** — persists across reloads via localStorage
+- **State persistence** — search, chip toggles, scroll position survive reload via sessionStorage
 
 ### Native Dashboard (SwiftUI)
 
@@ -149,12 +177,14 @@ A floating `NSPanel` with `NavigationSplitView` sidebar and `.ultraThinMaterial`
 ```
 ~/.claude/widgets/claude-instances/
 +-- native/
-|   +-- claude-instances-bar.swift    # Single-file app (~3300 lines)
+|   +-- claude-instances-bar.swift    # Single-file app (~3900 lines)
+|   +-- claude-logo.svg               # Menu-bar icon
+|   +-- color-sampler.swift           # Internal: vibrancy color preview tool
 |   +-- build.sh                      # Compile + install + manage
 |   +-- .build-info                   # Auto-generated build metadata
 +-- lib/
-|   +-- scan.sh                       # Python scanner --> JSON output (~770 lines)
-|   +-- detail.sh                     # Session transcript HTML generator
+|   +-- scan.sh                       # Python scanner --> JSON output (~950 lines)
+|   +-- detail.sh                     # Transcript HTML generator (~1500 lines)
 +-- plugin.sh                         # Legacy SwiftBar plugin (kept)
 +-- render.sh                         # Legacy HTML dashboard renderer
 +-- dashboard.html                    # Legacy HTML dashboard
