@@ -10,3 +10,8 @@ _*.claude.md
 
 # Debug logs
 *.log
+
+  # Chrome DevTools test screenshots                                          
+                                                                              
+  .tmp-test/                                                                  
+

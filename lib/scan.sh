@@ -101,6 +101,96 @@ def read_tab_title(session_id):
         pass
     return ''
 
+# ─── Per-cwd git enrichment ────────────────────────────────────
+#
+# Two cheap git lookups per FULL scan (skipped on --quick):
+#   - branch name: `git rev-parse --abbrev-ref HEAD`  — ~5ms
+#   - modified-file count: `git status --porcelain | wc -l` — ~10–30ms
+#
+# Both fail silently if the cwd isn't a git repo (returns empty/0).
+#
+# Cached per cwd within a single scan invocation so we don't shell out
+# multiple times when the same project hosts multiple live instances.
+
+_git_cache = {}
+
+def git_branch(cwd):
+    if not cwd or not os.path.isdir(cwd): return ''
+    if cwd in _git_cache and 'branch' in _git_cache[cwd]:
+        return _git_cache[cwd]['branch']
+    try:
+        r = subprocess.run(
+            ['git', '-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'],
+            capture_output=True, text=True, timeout=2
+        )
+        out = r.stdout.strip() if r.returncode == 0 else ''
+        # 'HEAD' from a detached state isn't useful; treat as empty.
+        if out == 'HEAD': out = ''
+    except (subprocess.TimeoutExpired, OSError):
+        out = ''
+    _git_cache.setdefault(cwd, {})['branch'] = out
+    return out
+
+def git_modified_count(cwd):
+    if not cwd or not os.path.isdir(cwd): return 0
+    if cwd in _git_cache and 'modified' in _git_cache[cwd]:
+        return _git_cache[cwd]['modified']
+    try:
+        r = subprocess.run(
+            ['git', '-C', cwd, 'status', '--porcelain'],
+            capture_output=True, text=True, timeout=2
+        )
+        n = len([l for l in r.stdout.splitlines() if l.strip()]) if r.returncode == 0 else 0
+    except (subprocess.TimeoutExpired, OSError):
+        n = 0
+    _git_cache.setdefault(cwd, {})['modified'] = n
+    return n
+
+# ─── Last user prompt extraction ───────────────────────────────
+#
+# Walks the JSONL backwards looking for the most recent `type: user`
+# message with non-empty text content. Returns the first 80 chars so the
+# bar can render it inline as a "what is this session asking about" hint.
+# Skips Task-tool sidechain user messages (those are agent prompts, not
+# the human's typed prompt).
+
+def last_user_prompt(filepath):
+    if not filepath or not os.path.isfile(filepath):
+        return ''
+    try:
+        # Reading the whole file: typical session JSONL is <2MB, parse is ~10ms.
+        # Tail-only scanning miss-fires when the recent window is all
+        # tool_result messages and the human's last actual prompt is deeper.
+        with open(filepath, 'r', errors='replace') as f:
+            data = f.read()
+        last_text = ''
+        for line in data.splitlines():
+            try:
+                obj = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if obj.get('type') != 'user' or obj.get('isSidechain'):
+                continue
+            msg = obj.get('message', {})
+            text = ''
+            if isinstance(msg, dict):
+                for block in msg.get('content', []):
+                    if isinstance(block, dict) and block.get('type') == 'text':
+                        text += block.get('text', '')
+                    elif isinstance(block, str):
+                        text += block
+            elif isinstance(msg, str):
+                text = msg
+            # Strip <system-reminder> wrappers — those aren't human prompts.
+            text = re.sub(r'<system-reminder>.*?</system-reminder>', '', text, flags=re.DOTALL).strip()
+            if text:
+                last_text = text  # keep updating; we want the LAST one
+        if not last_text: return ''
+        last = ' '.join(last_text.split())
+        return last[:80] + ('…' if len(last) > 80 else '')
+    except OSError:
+        return ''
+
 # ─── Subagent counter ──────────────────────────────────────────
 
 def count_subagents(pid):
@@ -409,6 +499,15 @@ def get_live_instances():
             # Count subagents
             subagent_count = count_subagents(pid)
 
+            # Git enrichment + last user prompt — full-scan only (skipped on
+            # --quick to keep the 5s tick fast).
+            if not quick_mode:
+                branch         = git_branch(cwd)
+                modified_files = git_modified_count(cwd)
+                last_prompt    = last_user_prompt(session_data.get('jsonl_path', ''))
+            else:
+                branch, modified_files, last_prompt = '', 0, ''
+
             # Infer session state
             session_state = infer_session_state(session_data['jsonl_path'], pid)
 
@@ -447,6 +546,9 @@ def get_live_instances():
                 'tab_title': tab_title,
                 'subagent_count': subagent_count,
                 'session_state': session_state,
+                'git_branch': branch,
+                'git_modified': modified_files,
+                'last_prompt': last_prompt,
                 'statusline': {
                     'cpu': statusline.get('proc_cpu', ''),
                     'mem': statusline.get('proc_mem', ''),

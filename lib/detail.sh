@@ -1063,7 +1063,15 @@ details.sysrem pre {{ margin-top: 4px; max-height: 360px; overflow: auto; }}
     max-height: 360px; overflow: auto;
     font-size: 11px; line-height: 1.5;
     white-space: pre;  /* prevent wrap so horizontal scroll works */
+    border-left-width: 3px; border-left-style: solid;
 }}
+/* Tint each pane to telegraph removed-vs-added without doing full line-diff
+   (which would compete with hljs syntax coloring). Subtle: 6% bg + colored
+   border on the left edge. */
+.diff-side:nth-child(1) pre {{ border-left-color: var(--err);     background: rgba(248,  81,  73, 0.06); }}
+.diff-side:nth-child(2) pre {{ border-left-color: var(--accent2); background: rgba( 63, 185,  80, 0.06); }}
+.diff-side:nth-child(1) .diff-label {{ color: var(--err); }}
+.diff-side:nth-child(2) .diff-label {{ color: var(--accent2); }}
 
 details summary {{ cursor: pointer; font-size: 12px; color: var(--text); }}
 
@@ -1187,7 +1195,54 @@ if (window.marked) {{
         el.querySelectorAll('pre code').forEach(b => {{
             if (!b.classList.contains('hljs')) hljs.highlightElement(b);
         }});
+        // Auto-link bare URLs in text nodes. marked@12 with gfm only handles
+        // <bracketed> form; anything pasted plain stays plain. We walk text
+        // nodes, skipping anything inside code/pre/a, and split on URL matches.
+        autolinkTextNodes(el);
     }});
+}}
+
+// Walk every text descendant of `root`, replacing bare URLs with <a> nodes.
+// Skips anything inside <code>, <pre>, or already-anchored <a> to avoid
+// double-linking and to preserve syntax-highlighted code.
+function autolinkTextNodes(root) {{
+    const URL_RE = /https?:\/\/[^\s<>"'`]+[^\s<>"'`.,;!?:)\]]/g;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {{
+        acceptNode(n) {{
+            for (let p = n.parentElement; p && p !== root; p = p.parentElement) {{
+                const tag = p.tagName;
+                if (tag === 'CODE' || tag === 'PRE' || tag === 'A') {{
+                    return NodeFilter.FILTER_REJECT;
+                }}
+            }}
+            return URL_RE.test(n.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+        }}
+    }});
+    const targets = [];
+    let n; while (n = walker.nextNode()) targets.push(n);
+    for (const node of targets) {{
+        const text = node.nodeValue;
+        const frag = document.createDocumentFragment();
+        let lastIndex = 0;
+        URL_RE.lastIndex = 0;  // reset because we used .test() above
+        let m;
+        while ((m = URL_RE.exec(text)) !== null) {{
+            if (m.index > lastIndex) {{
+                frag.appendChild(document.createTextNode(text.slice(lastIndex, m.index)));
+            }}
+            const a = document.createElement('a');
+            a.href = m[0]; a.target = '_blank'; a.rel = 'noopener noreferrer';
+            a.textContent = m[0];
+            frag.appendChild(a);
+            lastIndex = URL_RE.lastIndex;
+        }}
+        if (lastIndex < text.length) {{
+            frag.appendChild(document.createTextNode(text.slice(lastIndex)));
+        }}
+        if (frag.childNodes.length > 0) {{
+            node.parentNode.replaceChild(frag, node);
+        }}
+    }}
 }}
 
 // Highlight any pre>code with a language-* class that didn't go through marked
@@ -1400,24 +1455,32 @@ if [[ -f "$DAEMON_PID_FILE" ]]; then
     if [[ -n "$OLD_DPID" ]] && kill -0 "$OLD_DPID" 2>/dev/null; then
         kill "$OLD_DPID" 2>/dev/null || true
     fi
-    rm -f "$DAEMON_PID_FILE"
+    # Don't `rm -f` here — the old daemon's exit cleanup will do that,
+    # and racing with it would trample the new daemon's PID write below.
 fi
 
 (
+    DAEMON_SELF_PID=$BASHPID                  # subshell's own PID
     REGEN_DEADLINE=$(( $(date +%s) + 7200 ))  # 2-hour hard stop
     while true; do
-        sleep 300   # 5 minutes — was 5s, dropped to a low-overhead cadence
+        sleep 300   # 5 minutes — low-overhead disk regen cadence.
         # Stop if Claude PID is gone.
         if [[ -n "$PID" ]] && ! kill -0 "$PID" 2>/dev/null; then break; fi
-        # Stop after 2 hours regardless (was 30min — bumped because cadence is longer).
+        # Stop after 2 hours regardless.
         if (( $(date +%s) > REGEN_DEADLINE )); then break; fi
         bash "$SCRIPT_PATH" --regen "$PID" "$SESSION_ID" >/dev/null 2>&1 || true
     done
-    rm -f "$DAEMON_PID_FILE"
+    # Only clear the PID file if its current content is still us. Prevents
+    # this exit cleanup from clobbering a NEW daemon's PID write that
+    # happened during our shutdown (race fix).
+    if [[ -f "$DAEMON_PID_FILE" ]] \
+       && [[ "$(cat "$DAEMON_PID_FILE" 2>/dev/null)" == "$DAEMON_SELF_PID" ]]; then
+        rm -f "$DAEMON_PID_FILE"
+    fi
 ) &
 DAEMON_PID=$!
 echo "$DAEMON_PID" > "$DAEMON_PID_FILE"
-disown "$DAEMON_PID" 2>/dev/null || true
+disown 2>/dev/null || true
 
 # Open in default browser (Chrome preferred).
 open -a "Google Chrome" "$OUTPUT" 2>/dev/null || open "$OUTPUT" 2>/dev/null

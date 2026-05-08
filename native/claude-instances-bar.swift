@@ -244,6 +244,9 @@ struct LiveInstance: Codable {
     let subagentCount: Int?
     let sessionState: SessionState?
     let statusline: StatuslineMetrics?
+    let gitBranch: String?
+    let gitModified: Int?
+    let lastPrompt: String?
 
     enum CodingKeys: String, CodingKey {
         case pid, model, cwd, elapsed, turns, statusline
@@ -259,6 +262,9 @@ struct LiveInstance: Codable {
         case tabTitle = "tab_title"
         case subagentCount = "subagent_count"
         case sessionState = "session_state"
+        case gitBranch = "git_branch"
+        case gitModified = "git_modified"
+        case lastPrompt = "last_prompt"
     }
 }
 
@@ -1100,6 +1106,23 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 ]))
             }
 
+            // Git branch + modified-files count when present.
+            if let br = inst.gitBranch, !br.isEmpty {
+                row1Attr.append(NSAttributedString(string: "  ⎇\(br)", attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                    .foregroundColor: menuTeal,
+                ]))
+                if let mod = inst.gitModified, mod > 0 {
+                    // Color-step: 1+ orange, 20+ red — matches the bar's "burn"
+                    // semantics already used for cost/memory.
+                    let modColor: NSColor = mod >= 20 ? .systemRed : .systemOrange
+                    row1Attr.append(NSAttributedString(string: " *\(mod)", attributes: [
+                        .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                        .foregroundColor: modColor,
+                    ]))
+                }
+            }
+
             row1.attributedTitle = row1Attr
             row1.representedObject = inst.cwd
             // No `action` on row1 — clicking opens the submenu (Open in Finder
@@ -1127,6 +1150,13 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if stateStr != "idle" && !stateDetail.isEmpty {
                 addColored(menu, "    \(stateIcon) \(stateStr): \(stateDetail)",
                           color: menuTeal, size: 11)
+            }
+
+            // Last user prompt (italic-ish dim) — gives the user a one-line
+            // "what did I ask this session" hint without expanding submenu.
+            if let lp = inst.lastPrompt, !lp.isEmpty {
+                addWrappingDim(menu, "      ❯ \(lp)",
+                              color: NSColor.secondaryLabelColor, size: 11)
             }
 
             // Row 2: Compact metrics line — semantic per-field colors
