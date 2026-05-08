@@ -154,8 +154,14 @@ private func rateLimitCountdown(_ resetsAt: String?) -> String? {
     guard let rd = resetDate else { return nil }
     let secs = rd.timeIntervalSinceNow
     guard secs > 0 else { return nil }
-    let h = Int(secs) / 3600
-    let m = (Int(secs) % 3600) / 60
+    let totalMin = Int(secs) / 60
+    let d = totalMin / 1440
+    let h = (totalMin % 1440) / 60
+    let m = totalMin % 60
+    // Use day-precision for week-scale windows so "5d 3h" doesn't show as
+    // "123h 0m". Keep minute precision for short windows so the 5h bar
+    // still ticks visibly.
+    if d > 0 { return "\(d)d \(h)h" }
     if h > 0 { return "\(h)h \(m)m" }
     return "\(m)m"
 }
@@ -333,12 +339,14 @@ struct RateLimitEntry: Codable {
 struct RateLimits: Codable {
     let fiveH: RateLimitEntry?
     let week: RateLimitEntry?
-    let resetsAt: String?
+    let resetsAt: String?       // 5h window reset
+    let resetsAtWeekly: String? // 7d window reset (added 2026-05)
 
     enum CodingKeys: String, CodingKey {
         case fiveH = "5h"
         case week
-        case resetsAt = "resets_at"
+        case resetsAt       = "resets_at"
+        case resetsAtWeekly = "resets_at_weekly"
     }
 }
 
@@ -887,8 +895,9 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if r7 > 90      { color7 = .systemRed }
             else if r7 > 75 { color7 = .systemPurple }
             else if r7 > 50 { color7 = .systemIndigo }
+            let countdown7 = rateLimitCountdown(limits.resetsAtWeekly)
             addBarItem("📅 7d", pct: r7, barChar: "▓", emptyChar: "░",
-                       color: color7, countdown: nil)
+                       color: color7, countdown: countdown7)
         }
 
         // Threshold setting — submenu with slider
