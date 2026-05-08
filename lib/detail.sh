@@ -87,12 +87,22 @@ def fmt_tokens(n):
     return str(n)
 
 def fmt_ts(iso):
+    """HH:MM:SS in local time — displayed inline."""
     if not iso: return ''
     try:
         dt = datetime.fromisoformat(iso.replace('Z', '+00:00'))
         return dt.astimezone().strftime('%H:%M:%S')
     except Exception:
         return ''
+
+def fmt_ts_full(iso):
+    """Full human-readable datetime — used as tooltip on the timestamp."""
+    if not iso: return ''
+    try:
+        dt = datetime.fromisoformat(iso.replace('Z', '+00:00')).astimezone()
+        return dt.strftime('%a %b %d %Y · %H:%M:%S %Z')
+    except Exception:
+        return iso
 
 def tool_preview(name, inp):
     """Compact one-line preview of a tool call's most diagnostic input."""
@@ -131,6 +141,28 @@ def file_paths_in_input(name, inp):
             paths.append(v)
     return paths
 
+LANG_BY_EXT = {
+    'ts': 'typescript', 'tsx': 'typescript',
+    'js': 'javascript', 'jsx': 'javascript', 'mjs': 'javascript', 'cjs': 'javascript',
+    'py': 'python', 'go': 'go', 'rs': 'rust', 'swift': 'swift',
+    'sh': 'bash', 'bash': 'bash', 'zsh': 'bash',
+    'json': 'json', 'md': 'markdown', 'mdx': 'markdown',
+    'html': 'html', 'css': 'css', 'scss': 'scss',
+    'yml': 'yaml', 'yaml': 'yaml',
+    'toml': 'ini', 'ini': 'ini',
+    'sql': 'sql', 'rb': 'ruby', 'php': 'php',
+    'c': 'c', 'h': 'c', 'cpp': 'cpp', 'cc': 'cpp', 'hpp': 'cpp',
+    'java': 'java', 'kt': 'kotlin', 'scala': 'scala',
+    'xml': 'xml', 'svg': 'xml', 'lua': 'lua',
+    'dart': 'dart', 'r': 'r',
+}
+
+def lang_from_path(path):
+    """Map a file path to a highlight.js language hint via its extension."""
+    if not path or '.' not in path: return ''
+    ext = path.rsplit('.', 1)[-1].lower()
+    return LANG_BY_EXT.get(ext, '')
+
 messages = []           # list of dicts: {role, content_raw, ts, tokens_in/out, kind}
 model = 'unknown'
 total_input = 0
@@ -154,7 +186,8 @@ def flush_tools():
     summary = f"🔧 {n} tool call{'s' if n != 1 else ''}"
     messages.append({
         'role': 'tools', 'kind': 'tools',
-        'ts': pending_tools[-1].get('ts', ''),
+        'ts':      pending_tools[-1].get('ts', ''),
+        'ts_full': pending_tools[-1].get('ts_full', ''),
         'tools': pending_tools,
         'summary': summary,
         'tokens_out': sum(t.get('tokens_out', 0) for t in pending_tools),
@@ -176,7 +209,9 @@ if jsonl_file and os.path.exists(jsonl_file):
                 continue
 
             msg_type = obj.get('type', '')
-            ts = fmt_ts(obj.get('timestamp', ''))
+            ts_iso = obj.get('timestamp', '')
+            ts = fmt_ts(ts_iso)
+            ts_full = fmt_ts_full(ts_iso)
             sidechain = bool(obj.get('isSidechain', False))
             if obj.get('gitBranch'): git_branch = obj.get('gitBranch')
 
@@ -195,7 +230,7 @@ if jsonl_file and os.path.exists(jsonl_file):
                     permission_mode = pm
                     flush_tools()
                     messages.append({
-                        'role': 'mode-change', 'kind': 'event', 'ts': ts,
+                        'role': 'mode-change', 'kind': 'event', 'ts': ts, 'ts_full': ts_full,
                         'text': f"🔓 permission mode → {pm}",
                         'cls': 'mode',
                     })
@@ -218,7 +253,7 @@ if jsonl_file and os.path.exists(jsonl_file):
                         cls = 'err' if (he or pc) else 'hooks'
                         flush_tools()
                         messages.append({
-                            'role': 'hook-summary', 'kind': 'event', 'ts': ts,
+                            'role': 'hook-summary', 'kind': 'event', 'ts': ts, 'ts_full': ts_full,
                             'text': f"⚙ {hc} hook{'s' if hc != 1 else ''} ran{err_chunk}{prev_chunk}",
                             'cls': cls,
                             'errors': he,
@@ -240,7 +275,7 @@ if jsonl_file and os.path.exists(jsonl_file):
                     content = msg
                 if content.strip():
                     messages.append({
-                        'role': 'user', 'kind': 'user', 'ts': ts,
+                        'role': 'user', 'kind': 'user', 'ts': ts, 'ts_full': ts_full,
                         'content_raw': content.strip(),
                         'sidechain': sidechain,
                     })
@@ -270,14 +305,14 @@ if jsonl_file and os.path.exists(jsonl_file):
                                 'input': tinp,
                                 'preview': tool_preview(tname, tinp),
                                 'paths': file_paths_in_input(tname, tinp),
-                                'ts': ts,
+                                'ts': ts, 'ts_full': ts_full,
                                 'tokens_out': usage.get('output_tokens', 0),
                             })
 
                 if text_part.strip():
                     flush_tools()
                     messages.append({
-                        'role': 'assistant', 'kind': 'assistant', 'ts': ts,
+                        'role': 'assistant', 'kind': 'assistant', 'ts': ts, 'ts_full': ts_full,
                         'content_raw': text_part.strip(),
                         'tokens_in':  usage.get('input_tokens', 0),
                         'tokens_out': usage.get('output_tokens', 0),
@@ -323,15 +358,19 @@ def render_tool_detail(t):
         ep = html.escape(p)
         paths_html += f'<span class="copyable" data-copy="{ep}" title="Click to copy">{ep}</span>'
 
-    # Special-case Edit: render old_string vs new_string side-by-side.
+    # Special-case Edit: render old_string vs new_string side-by-side, with
+    # syntax highlighting hinted by the file extension. hljs.highlightElement
+    # is invoked at runtime for any pre>code with language-* class.
     extras_html = ''
     if name == 'Edit' and isinstance(inp, dict):
-        old = inp.get('old_string', '')
-        new = inp.get('new_string', '')
+        old   = inp.get('old_string', '')
+        new   = inp.get('new_string', '')
+        lang  = lang_from_path(inp.get('file_path', ''))
+        lcls  = f' class="language-{lang}"' if lang else ''
         extras_html = (
             '<div class="diff-pair">'
-            f'<div class="diff-side"><div class="diff-label">old</div><pre><code>{html.escape(old)}</code></pre></div>'
-            f'<div class="diff-side"><div class="diff-label">new</div><pre><code>{html.escape(new)}</code></pre></div>'
+            f'<div class="diff-side"><div class="diff-label">old</div><pre><code{lcls}>{html.escape(old)}</code></pre></div>'
+            f'<div class="diff-side"><div class="diff-label">new</div><pre><code{lcls}>{html.escape(new)}</code></pre></div>'
             '</div>'
         )
 
@@ -372,7 +411,14 @@ msg_html = ''
 for i, m in enumerate(display_messages):
     role = m['role']
     ts = m.get('ts', '')
-    ts_html = f'<span class="ts">{ts}</span>' if ts else ''
+    ts_full = m.get('ts_full', '')
+    idx = i + 1                     # 1-based index in the displayed list
+    idx_html = f'<span class="msg-idx" title="Block #{idx} of {len(display_messages)}">#{idx}</span>'
+    # Timestamp shows HH:MM:SS, tooltip shows full human-readable datetime.
+    if ts:
+        ts_html = f'<span class="ts" title="{html.escape(ts_full) if ts_full else ts}">{ts}</span>'
+    else:
+        ts_html = ''
 
     sidechain = m.get('sidechain', False)
     sc_class = ' sidechain' if sidechain else ''
@@ -402,8 +448,8 @@ for i, m in enumerate(display_messages):
             f'<div class="content">{raw_md}</div>'
         )
         msg_html += (
-            f'<div class="msg user{sc_class}" data-role="user" data-search="{html.escape(raw.lower())}">'
-            f'  <div class="role"><span class="role-icon">👤</span><span>You</span>{sc_badge}{ts_html}</div>'
+            f'<div id="msg-{idx}" class="msg user{sc_class}" data-idx="{idx}" data-role="user" data-search="{html.escape(raw.lower())}">'
+            f'  <div class="role"><span class="role-icon">👤</span><span>You</span>{sc_badge}{idx_html}{ts_html}</div>'
             f'  {body}{sysrem_html}'
             f'</div>\n'
         )
@@ -417,16 +463,16 @@ for i, m in enumerate(display_messages):
             if tok_in:
                 badge += f'<span class="tok-badge dim">↓{tok_in}</span>'
         msg_html += (
-            f'<div class="msg assistant{sc_class}" data-role="assistant" data-search="{html.escape(m["content_raw"].lower())}">'
-            f'  <div class="role"><span class="role-icon">✨</span><span>Claude ({model_short})</span>{sc_badge}{badge}{ts_html}</div>'
+            f'<div id="msg-{idx}" class="msg assistant{sc_class}" data-idx="{idx}" data-role="assistant" data-search="{html.escape(m["content_raw"].lower())}">'
+            f'  <div class="role"><span class="role-icon">✨</span><span>Claude ({model_short})</span>{sc_badge}{badge}{idx_html}{ts_html}</div>'
             f'  <div class="content" data-md><script type="text/markdown">{raw}</script></div>'
             f'</div>\n'
         )
     elif role == 'tools':
         tools_html = ''.join(render_tool_detail(t) for t in m['tools'])
         msg_html += (
-            f'<div class="msg tools" data-role="tools" data-search="">'
-            f'  <div class="role"><span class="role-icon">🔧</span><span class="dim">tools</span>{ts_html}</div>'
+            f'<div id="msg-{idx}" class="msg tools" data-idx="{idx}" data-role="tools" data-search="">'
+            f'  <div class="role"><span class="role-icon">🔧</span><span class="dim">tools</span>{idx_html}{ts_html}</div>'
             f'  <div class="content">'
             f'    <details open>'
             f'      <summary>{m["summary"]}</summary>'
@@ -447,7 +493,7 @@ for i, m in enumerate(display_messages):
                 f'<pre><code>{html.escape(err_lines)}</code></pre></details>'
             )
         msg_html += (
-            f'<div class="msg event event-{cls}" data-role="event" data-search="{text.lower()}">'
+            f'<div id="msg-{idx}" class="msg event event-{cls}" data-idx="{idx}" data-role="event" data-search="{text.lower()}">'
             f'  <div class="event-line">{text}{ts_html}</div>'
             f'  {errors_html}'
             f'</div>\n'
@@ -471,21 +517,47 @@ if tool_counter:
     tools_breakdown_html = f'<div class="tools-breakdown"><div class="section-title">Tools used ({total_tools})</div>{rows}</div>'
 
 # ── Activity timeline ─────────────────────────────────────────────────────────
+#
+# Derived from display_messages so every dot's index matches a real msg-N id;
+# the dot becomes a clickable button that scrolls to its message and briefly
+# flashes a ring around it. Tooltip shows index + role + timestamp.
+
+ROLE_TO_KIND = {
+    'user': 'u', 'assistant': 'a', 'tools': 't',
+    'mode-change': 'm', 'hook-summary': 'h',
+}
+KIND_TO_LABEL = {
+    'u': 'You', 'a': 'Claude', 't': 'tools',
+    'm': 'mode change', 'h': 'hooks', 'e': 'event',
+}
 
 timeline_html = ''
-if activity_dots:
+if display_messages:
     dot_html = ''
-    for kind, ts in activity_dots[-120:]:
-        dot_html += f'<span class="dot dot-{kind}" title="{ts}"></span>'
+    for i, m in enumerate(display_messages):
+        idx = i + 1
+        kind = ROLE_TO_KIND.get(m['role'], 'e')
+        label = KIND_TO_LABEL.get(kind, 'event')
+        title_parts = [f'#{idx}', label]
+        if m.get('ts'): title_parts.append(m.get('ts_full') or m['ts'])
+        title = html.escape(' · '.join(title_parts))
+        dot_html += (
+            f'<button type="button" class="dot dot-{kind}" '
+            f'data-target="msg-{idx}" title="{title}" '
+            f'aria-label="Jump to {title}"></button>'
+        )
+    legend_items = (
+        '<span><span class="dot dot-u"></span>You</span>'
+        '<span><span class="dot dot-a"></span>Claude</span>'
+        '<span><span class="dot dot-t"></span>Tools</span>'
+        '<span><span class="dot dot-h"></span>Hooks</span>'
+        '<span><span class="dot dot-m"></span>Mode</span>'
+    )
     timeline_html = (
         '<div class="timeline">'
-        '  <div class="section-title">Activity (most recent →)</div>'
-        f'  <div class="dots">{dot_html}</div>'
-        '  <div class="legend">'
-        '    <span><span class="dot dot-u"></span>You</span>'
-        '    <span><span class="dot dot-a"></span>Claude</span>'
-        '    <span><span class="dot dot-t"></span>Tools</span>'
-        '  </div>'
+        f'<div class="section-title">━━ activity ({len(display_messages)} blocks) — click a dot to jump ━━</div>'
+        f'<div class="dots">{dot_html}</div>'
+        f'<div class="legend">{legend_items}</div>'
         '</div>'
     )
 
@@ -647,17 +719,78 @@ body {{
 .tb-fill  {{ display: block; background: var(--accent); height: 100%; }}
 .tb-count {{ color: var(--text); text-align: right; }}
 
-.timeline {{ padding: 12px 24px; border-bottom: 1px solid var(--border); }}
-.timeline .dots {{ display: flex; flex-wrap: wrap; gap: 3px; padding: 4px 0; }}
-.dot {{
-    width: 8px; height: 8px; border-radius: 2px;
-    display: inline-block; vertical-align: middle;
+.timeline {{ padding: 14px 24px; border-bottom: 1px solid var(--border); }}
+.timeline .section-title {{
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    color: var(--dim); margin-bottom: 8px;
+    text-transform: none; letter-spacing: 0;
 }}
-.dot-u {{ background: var(--accent); }}
-.dot-a {{ background: var(--accent2); }}
-.dot-t {{ background: var(--warn); }}
-.legend {{ display: flex; gap: 14px; margin-top: 6px; font-size: 11px; color: var(--dim); }}
+.timeline .dots {{
+    display: flex; flex-wrap: wrap;
+    gap: 4px; padding: 4px 0;
+    align-items: center;
+}}
+button.dot {{
+    /* Each dot grows to fill row width, capped so they don't become
+       grotesque on short transcripts. */
+    flex: 1 1 8px;
+    min-width: 6px;
+    max-width: 22px;
+    height: 14px;
+    border-radius: 2px;
+    border: 1px solid transparent;
+    padding: 0; margin: 0;
+    cursor: pointer;
+    transition: transform 0.1s ease, box-shadow 0.1s ease, filter 0.1s ease;
+}}
+button.dot:hover {{
+    transform: scaleY(1.3);
+    filter: brightness(1.2);
+    box-shadow: 0 0 0 2px var(--surface),
+                0 0 0 3px currentColor;
+    z-index: 5;
+}}
+button.dot:focus-visible {{
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}}
+.dot {{ /* legend swatches (non-button) */ display: inline-block; vertical-align: middle; }}
+.legend .dot {{ width: 10px; height: 10px; border-radius: 2px; flex: none; }}
+.dot-u {{ background: var(--accent);  color: var(--accent); }}
+.dot-a {{ background: var(--accent2); color: var(--accent2); }}
+.dot-t {{ background: var(--warn);    color: var(--warn); }}
+.dot-h {{ background: #a78bfa;        color: #a78bfa; }}     /* hooks: violet */
+.dot-m {{ background: var(--err);     color: var(--err); }}  /* mode: red */
+.dot-e {{ background: var(--dim);     color: var(--dim); }}
+.legend {{
+    display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px;
+    font-size: 11px; color: var(--dim);
+    font-family: ui-monospace, monospace;
+}}
 .legend span {{ display: inline-flex; align-items: center; gap: 6px; }}
+
+/* Flash a card briefly when scrolled to from the activity bar. */
+.msg.flash {{
+    animation: flash-ring 1.2s ease-out;
+}}
+@keyframes flash-ring {{
+    0%   {{ box-shadow: 0 0 0 0   var(--accent); }}
+    20%  {{ box-shadow: 0 0 0 4px var(--accent); }}
+    100% {{ box-shadow: 0 0 0 0   transparent; }}
+}}
+
+/* Numbered block index next to the timestamp — terminal-style mono. */
+.msg-idx {{
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 10px; color: var(--dim);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    padding: 1px 6px; border-radius: 3px;
+    margin-left: auto;
+    letter-spacing: 0.02em;
+}}
+.msg-idx + .ts {{ margin-left: 6px; }}
+.role .ts {{ margin-left: 0; }}  /* override: idx now takes auto-margin */
 
 .toolbar {{
     position: sticky; top: 0; z-index: 50;
@@ -699,7 +832,8 @@ body {{
 
 .messages {{ padding: 16px 24px 80px; max-width: 1100px; margin: 0 auto; }}
 .msg {{
-    padding: 10px 14px; margin-bottom: 10px; border-radius: 8px;
+    padding: 10px 14px; margin-bottom: 10px;
+    border-radius: 4px;                /* boxier — closer to terminal pane feel */
     border-left: 3px solid var(--border);
 }}
 .msg.user      {{ background: var(--user-bg);  border-left-color: var(--accent); }}
@@ -807,9 +941,16 @@ details.sysrem pre {{ margin-top: 4px; max-height: 360px; overflow: auto; }}
 
 .role {{
     display: flex; align-items: center; gap: 8px;
-    font-size: 12px; font-weight: 600; color: var(--dim); margin-bottom: 4px;
+    font-size: 12px; font-weight: 600; color: var(--dim);
+    margin-bottom: 6px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    letter-spacing: 0.01em;
 }}
-.role .ts {{ font-family: ui-monospace, monospace; font-size: 11px; color: var(--dim); margin-left: auto; }}
+/* Prompt-style label color per role — terminal-prompt feel. */
+.msg.user      > .role > span:nth-of-type(2) {{ color: var(--accent); }}
+.msg.assistant > .role > span:nth-of-type(2) {{ color: var(--accent2); }}
+.msg.tools     > .role > span:nth-of-type(2) {{ color: var(--warn); }}
+.role .ts {{ font-family: ui-monospace, monospace; font-size: 11px; color: var(--dim); }}
 .role .dim {{ color: var(--dim); font-weight: 500; }}
 .tok-badge {{
     background: var(--surface2); padding: 1px 7px; border-radius: 999px;
@@ -1049,8 +1190,10 @@ if (window.marked) {{
     }});
 }}
 
-// Highlight tool-detail JSON / bash blocks (these were emitted directly).
-document.querySelectorAll('pre code.language-json, pre code.language-bash').forEach(b => {{
+// Highlight any pre>code with a language-* class that didn't go through marked
+// (tool-detail JSON, bash, and now Edit-diff old/new panes).
+document.querySelectorAll('pre code[class*="language-"]').forEach(b => {{
+    if (b.classList.contains('hljs')) return;
     try {{ hljs.highlightElement(b); }} catch (e) {{}}
 }});
 
@@ -1064,6 +1207,37 @@ document.addEventListener('click', e => {{
         setTimeout(() => el.classList.remove('copied'), 1200);
     }}).catch(() => {{}});
 }});
+
+// ── Flow arrows between visible messages ────────────────────────────────────
+// Defined BEFORE applyFilter so the initial render doesn't hit a temporal
+// dead zone on FLOW_ICONS. (Earlier this block lived after applyFilter() and
+// the const-TDZ inside rebuildFlowArrows halted the entire script.)
+const FLOW_ICONS = {{
+    user: '👤', assistant: '✨', tools: '🔧', event: 'ⓘ'
+}};
+const FLOW_LABELS = {{
+    user: 'You', assistant: 'Claude', tools: 'tools', event: 'event'
+}};
+
+function rebuildFlowArrows() {{
+    document.querySelectorAll('.flow-arrow').forEach(a => a.remove());
+    const visible = Array.from(document.querySelectorAll('#msgs > .msg:not(.hidden)'));
+    for (let i = 0; i < visible.length - 1; i++) {{
+        const cur = visible[i];
+        const nxt = visible[i + 1];
+        if (cur.classList.contains('event') && nxt.classList.contains('event')) continue;
+        const role = nxt.dataset.role;
+        const icon = FLOW_ICONS[role] || '·';
+        const label = FLOW_LABELS[role] || '';
+        const arrow = document.createElement('div');
+        arrow.className = `flow-arrow flow-${{role}}`;
+        arrow.innerHTML = `
+            <span class="arrow-line"></span>
+            <span class="arrow-icon" title="next: ${{label}}">${{icon}}</span>
+            <span class="arrow-line"></span>`;
+        cur.insertAdjacentElement('afterend', arrow);
+    }}
+}}
 
 // ── Search + role filter (state persisted to survive 5s reloads) ─────────────
 const msgs = Array.from(document.querySelectorAll('.msg'));
@@ -1111,43 +1285,23 @@ chips.forEach(c => c.addEventListener('click', () => {{
 }}));
 applyFilter();
 
-// ── Flow arrows between visible messages ────────────────────────────────────
-// A small dashed connector with the next speaker's icon, between every pair
-// of visible cards. Recomputed every time the filter changes so search /
-// chip toggles don't leave dangling arrows. Hidden between consecutive
-// inline events (would be too noisy).
-const FLOW_ICONS = {{
-    user: '👤', assistant: '✨', tools: '🔧', event: 'ⓘ'
-}};
-const FLOW_LABELS = {{
-    user: 'You', assistant: 'Claude', tools: 'tools', event: 'event'
-}};
-
-function rebuildFlowArrows() {{
-    document.querySelectorAll('.flow-arrow').forEach(a => a.remove());
-    const visible = Array.from(document.querySelectorAll('#msgs > .msg:not(.hidden)'));
-    for (let i = 0; i < visible.length - 1; i++) {{
-        const cur = visible[i];
-        const nxt = visible[i + 1];
-        // Don't put arrows between two consecutive inline events — too noisy.
-        if (cur.classList.contains('event') && nxt.classList.contains('event')) continue;
-        const role = nxt.dataset.role;
-        const icon = FLOW_ICONS[role] || '·';
-        const label = FLOW_LABELS[role] || '';
-        const arrow = document.createElement('div');
-        arrow.className = `flow-arrow flow-${{role}}`;
-        arrow.innerHTML = `
-            <span class="arrow-line"></span>
-            <span class="arrow-icon" title="next: ${{label}}">${{icon}}</span>
-            <span class="arrow-line"></span>`;
-        cur.insertAdjacentElement('afterend', arrow);
-    }}
-}}
-
-// applyFilter() calls rebuildFlowArrows() itself; the initial pass already
-// happened in applyFilter() above. Run once more here to handle the case
-// where rebuildFlowArrows wasn't yet defined when applyFilter first ran.
+// applyFilter() calls rebuildFlowArrows() at its end; this is now redundant
+// but cheap and a safety net.
 rebuildFlowArrows();
+
+// ── Activity bar: click a dot to jump to that message + flash it ─────────────
+document.querySelectorAll('button.dot[data-target]').forEach(dot => {{
+    dot.addEventListener('click', () => {{
+        const target = document.getElementById(dot.dataset.target);
+        if (!target) return;
+        target.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+        target.classList.remove('flash');
+        // Force reflow so the animation re-runs even when re-clicking the same dot.
+        void target.offsetWidth;
+        target.classList.add('flash');
+        setTimeout(() => target.classList.remove('flash'), 1300);
+    }});
+}});
 
 // ── Long-message overflow → "show more" toggle ───────────────────────────────
 // After markdown is rendered we know the real height. If the rendered content
