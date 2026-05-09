@@ -590,6 +590,221 @@ private func runScanner(quick: Bool = false) -> ScanResult? {
     }
 }
 
+// ─── LiveRowView: per-instance live-updating menu content ───────────────────
+//
+// Replaces the previous chain of per-instance attributedTitle NSMenuItems
+// (row1 + row1.25 + row1.5 + state-detail + last-prompt + metrics +
+// compaction-warn + focus-file + mcp-down) with a single view-based menu
+// item. Because the view renders itself, we can mutate its labels in place
+// while the menu is open — AppKit does not redraw attributedTitle of an
+// open standard menu item.
+//
+// Each instance becomes ONE NSMenuItem.view; the per-instance submenu is
+// still attached to that one item. Hover reveals the submenu indicator and
+// click opens it, same as before — view-based items don't lose those
+// interactions.
+
+final class LiveRowView: NSView {
+    private let stack = NSStackView()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupUI()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
+
+    private func setupUI() {
+        stack.orientation = .vertical
+        stack.spacing = 2
+        stack.alignment = .leading
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+            widthAnchor.constraint(greaterThanOrEqualToConstant: 340),
+        ])
+    }
+
+    /// Replace rendered content with attributed strings derived from the
+    /// current `LiveInstance`. Called both at first render (in menuNeedsUpdate)
+    /// and on every scan tick while the menu is held open.
+    func update(with inst: LiveInstance,
+                leaf: String,
+                fullPath: String?,
+                stateIcon: String,
+                stateStr: String,
+                stateDetail: String,
+                home: String) {
+        // Tear down old labels.
+        for v in stack.arrangedSubviews {
+            stack.removeArrangedSubview(v)
+            v.removeFromSuperview()
+        }
+
+        // Header line: badge + (state icon) + leaf + elapsed + ↳ + ⎇ + *N
+        let m = modelDisplay(inst.model)
+        let elapsed = inst.elapsed?.trimmingCharacters(in: .whitespaces) ?? "?"
+        let header = NSMutableAttributedString()
+        header.append(NSAttributedString(string: "\(m.badge) ", attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .bold),
+            .foregroundColor: m.color,
+        ]))
+        if !stateIcon.isEmpty {
+            let blink = (Int(Date().timeIntervalSince1970) % 2 == 0) ? "\(stateIcon) " : "  "
+            header.append(NSAttributedString(string: blink, attributes: [.font: NSFont.systemFont(ofSize: 12)]))
+        }
+        header.append(NSAttributedString(string: leaf, attributes: [
+            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+            .foregroundColor: NSColor.labelColor,
+        ]))
+        header.append(NSAttributedString(string: "  \(elapsed)", attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+            .foregroundColor: coralAccent,
+        ]))
+        if let subs = inst.subagentCount, subs > 0 {
+            header.append(NSAttributedString(string: "  ↳\(subs)", attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: NSColor.systemPurple,
+            ]))
+        }
+        if let br = inst.gitBranch, !br.isEmpty {
+            header.append(NSAttributedString(string: "  ⎇\(br)", attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: menuTeal,
+            ]))
+            if let mod = inst.gitModified, mod > 0 {
+                let mc: NSColor = mod >= 20 ? .systemRed : .systemOrange
+                header.append(NSAttributedString(string: " *\(mod)", attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                    .foregroundColor: mc,
+                ]))
+            }
+        }
+        addLine(header)
+
+        // Tab title (when distinct from leaf)
+        if let tab = inst.tabTitle, !tab.isEmpty, tab != leaf {
+            addLine(NSAttributedString(string: "    ⌥ \(tab)", attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]))
+        }
+
+        // Full cwd path (wraps; truncation forbidden by spec)
+        if let path = fullPath, path != leaf {
+            addLine(NSAttributedString(string: "    \(path)", attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
+                .foregroundColor: NSColor.tertiaryLabelColor,
+            ]))
+        }
+
+        // State detail (only when not idle)
+        if stateStr != "idle" && !stateDetail.isEmpty {
+            addLine(NSAttributedString(string: "  \(stateIcon) \(stateStr): \(stateDetail)", attributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: menuTeal,
+            ]))
+        }
+
+        // Last user prompt
+        if let lp = inst.lastPrompt, !lp.isEmpty {
+            addLine(NSAttributedString(string: "    ❯ \(lp)", attributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]))
+        }
+
+        // Metrics row — semantic per-field colors
+        let metrics = NSMutableAttributedString()
+        metrics.append(NSAttributedString(string: " ", attributes: [.font: NSFont.systemFont(ofSize: 12)]))
+        if let ctx = inst.statusline?.ctxRemaining, !ctx.isEmpty, ctx != "0" {
+            let n = Int(ctx) ?? 0
+            let c: NSColor = n < 30 ? .systemRed : (n < 60 ? .systemOrange : menuGreen)
+            metrics.append(NSAttributedString(string: "ctx \(ctx)%  ", attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium),
+                .foregroundColor: c,
+            ]))
+        }
+        var parts: [(String, NSColor)] = []
+        if let t = inst.turns, t > 0 { parts.append(("\(t)t", .secondaryLabelColor)) }
+        if let tc = inst.toolCalls, tc > 0 { parts.append(("🔧\(tc)", .systemOrange)) }
+        if let o = inst.outputTokens, o > 0 { parts.append(("↑\(fmtTokens(o))", menuGreen)) }
+        if let c = inst.costUsd, c > 0 {
+            let cc: NSColor = c > 5 ? .systemRed : (c > 1 ? .systemOrange : .secondaryLabelColor)
+            parts.append((fmtCost(c), cc))
+        }
+        if let rss = inst.statusline?.rssMb, rss != "0", !rss.isEmpty {
+            let mb = Int(rss) ?? 0
+            let mc: NSColor = mb >= 500 ? .systemRed : (mb >= 200 ? .systemOrange : .secondaryLabelColor)
+            parts.append(("\(rss)MB", mc))
+        }
+        if let ts = inst.statusline?.tokSpeed, !ts.isEmpty, ts != "0" {
+            let n = Int(ts) ?? 0
+            let sc: NSColor = n > 600 ? menuGreen : (n > 300 ? menuTeal : .secondaryLabelColor)
+            parts.append(("\(ts)t/s", sc))
+        }
+        let metFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        for (i, p) in parts.enumerated() {
+            if i > 0 {
+                metrics.append(NSAttributedString(string: " · ", attributes: [
+                    .font: metFont, .foregroundColor: NSColor.tertiaryLabelColor,
+                ]))
+            }
+            metrics.append(NSAttributedString(string: p.0, attributes: [.font: metFont, .foregroundColor: p.1]))
+        }
+        addLine(metrics)
+
+        // Compaction-soon warning
+        if let ctxStr = inst.statusline?.ctxRemaining,
+           let n = Int(ctxStr), n > 0 && n < 15 {
+            addLine(NSAttributedString(string: "  ⚠ Context low (\(n)%) — compaction imminent", attributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: NSColor.systemRed,
+            ]))
+        }
+
+        // Focus file (wraps, no truncation)
+        if let focus = inst.statusline?.focusFile, !focus.isEmpty {
+            var disp = focus
+            if let cwd = inst.cwd, !cwd.isEmpty { disp = disp.replacingOccurrences(of: cwd, with: ".") }
+            disp = disp.replacingOccurrences(of: home, with: "~")
+            addLine(NSAttributedString(string: " 📄 \(disp)", attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: NSColor.tertiaryLabelColor,
+            ]))
+        }
+
+        // MCP-down warning
+        if let mcp = inst.statusline?.mcpDown, !mcp.isEmpty {
+            addLine(NSAttributedString(string: "  ⚠ MCP down: \(mcp)", attributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: NSColor.systemRed,
+            ]))
+        }
+
+        // Force the view to lay out — without this, NSMenuItem doesn't
+        // adopt the new height when sub-rows appear/disappear.
+        invalidateIntrinsicContentSize()
+        needsLayout = true
+    }
+
+    private func addLine(_ attr: NSAttributedString) {
+        let label = NSTextField(labelWithAttributedString: attr)
+        label.usesSingleLineMode = false
+        label.maximumNumberOfLines = 0
+        label.lineBreakMode = .byCharWrapping
+        label.preferredMaxLayoutWidth = 320
+        label.isBezeled = false
+        label.isEditable = false
+        label.drawsBackground = false
+        label.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(label)
+    }
+}
+
 // ─── Bar Delegate ────────────────────────────────────────────────────────────
 
 final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -631,6 +846,12 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         set { UserDefaults.standard.set(newValue, forKey: refreshIntervalKey + ".paused") }
     }
     private var lastScanAt: Date?
+
+    // Live-updating menu rows. Keyed by pid so refreshData() can find them
+    // and call update() when the menu is open. Cleared on menuDidClose
+    // because the menu rebuilds from scratch on next open.
+    private var runningRows: [Int: (NSMenuItem, LiveRowView)] = [:]
+    private var menuIsOpen = false
 
     // ── App lifecycle ────────────────────────────────────────────────────────
 
@@ -747,6 +968,9 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.updateButton()
                 // Push fresh data to dashboard if open
                 self.dashboardController?.updateData(self.cachedData)
+                // Live-update the open menu's per-instance rows. Only does
+                // work when menuIsOpen=true; cheap no-op otherwise.
+                self.refreshLiveRows()
             }
         }
     }
@@ -814,7 +1038,64 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        runningRows.removeAll()  // start fresh; populateMenuItems re-stores
         populateMenuItems(menu)
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        menuIsOpen = true
+        // First scan tick after open is the next scheduled fire — kick one
+        // off immediately so the user sees freshest possible data without
+        // waiting up to `refreshInterval` seconds.
+        if !refreshPaused { refreshData() }
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        menuIsOpen = false
+        // The view-based items hold strong refs we can release; the menu is
+        // about to be torn down anyway, but eager cleanup keeps things tidy.
+        runningRows.removeAll()
+    }
+
+    /// Iterate the live-row views and re-render each from current cachedData.
+    /// Called by refreshData() when `menuIsOpen` is true so users see metrics
+    /// tick (elapsed, ctx %, tokens, cost, mem) without closing the menu.
+    private func refreshLiveRows() {
+        guard menuIsOpen, let live = cachedData?.live else { return }
+        // Build a quick lookup so we don't re-iterate per row.
+        let byPid = Dictionary(uniqueKeysWithValues: live.map { ($0.pid, $0) })
+        for (pid, pair) in runningRows {
+            guard let inst = byPid[pid] else { continue }
+            let leaf = liveRowLeaf(inst)
+            let fullPath = liveRowFullPath(inst)
+            let stateStr = inst.sessionState?.state ?? "idle"
+            let stateDetail = inst.sessionState?.detail ?? ""
+            let stateIcon = liveRowStateIcons[stateStr] ?? ""
+            pair.1.update(with: inst,
+                          leaf: leaf,
+                          fullPath: fullPath,
+                          stateIcon: stateIcon,
+                          stateStr: stateStr,
+                          stateDetail: stateDetail,
+                          home: home)
+        }
+    }
+
+    // Helpers shared by the live-section builder and refreshLiveRows.
+    private let liveRowStateIcons: [String: String] = [
+        "thinking": "💭", "responding": "✍️", "tool_use": "🔧",
+        "tool_result": "⚙️", "idle": "",
+    ]
+    private func liveRowLeaf(_ inst: LiveInstance) -> String {
+        if let tt = inst.tabTitle, !tt.isEmpty { return tt }
+        if let cwd = inst.cwd, !cwd.isEmpty {
+            return (cwd as NSString).lastPathComponent
+        }
+        return inst.cwdShort ?? "(unknown)"
+    }
+    private func liveRowFullPath(_ inst: LiveInstance) -> String? {
+        guard let cwd = inst.cwd, !cwd.isEmpty else { return nil }
+        return cwd.replacingOccurrences(of: home, with: "~")
     }
 
     // ── Menu construction ────────────────────────────────────────────────────
@@ -1042,221 +1323,39 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         addSectionHeader(menu, headerParts.joined(separator: "  ·  "), icon: "sparkles")
 
         for (idx, inst) in live.enumerated() {
-            let m = modelDisplay(inst.model)
-            let elapsed = inst.elapsed?.trimmingCharacters(in: .whitespaces) ?? "?"
-
-            // Primary label: leaf folder name (tab title overrides)
-            //   Leaf = last component of cwd, e.g. "claude-instances" not
-            //   "...de/widgets/claude-instances". Full path renders separately
-            //   on the next row, wrapping rather than truncating.
-            let leafTitle: String = {
-                if let tt = inst.tabTitle, !tt.isEmpty { return tt }
-                if let cwd = inst.cwd, !cwd.isEmpty {
-                    return (cwd as NSString).lastPathComponent
-                }
-                return inst.cwdShort ?? "(unknown)"
-            }()
-            let displayTitle = leafTitle
-            // Full cwd for the wrapping row below — $HOME → ~ substitution only
-            let fullPathDisplay: String? = {
-                guard let cwd = inst.cwd, !cwd.isEmpty else { return nil }
-                return cwd.replacingOccurrences(of: home, with: "~")
-            }()
-
-            // Session state indicator
+            // Build the live-updating row view. All visual content
+            // (header / tab title / full path / state detail / last prompt /
+            // metrics / compaction warn / focus file / mcp-down) lives inside
+            // ONE NSMenuItem.view so the labels can mutate in place while the
+            // menu is open. AppKit doesn't redraw attributedTitle of an open
+            // standard menu item — the view-based approach is the workaround.
+            let leaf = liveRowLeaf(inst)
+            let fullPath = liveRowFullPath(inst)
             let stateStr = inst.sessionState?.state ?? "idle"
             let stateDetail = inst.sessionState?.detail ?? ""
-            let stateIcons: [String: String] = [
-                "thinking": "💭", "responding": "✍️", "tool_use": "🔧",
-                "tool_result": "⚙️", "idle": "",
-            ]
-            let stateIcon = stateIcons[stateStr] ?? ""
+            let stateIcon = liveRowStateIcons[stateStr] ?? ""
 
-            // Row 1: Model badge + state icon + title + elapsed — CLICKABLE
-            let row1 = NSMenuItem()
-            let row1Attr = NSMutableAttributedString()
-            row1Attr.append(NSAttributedString(string: "  \(m.badge) ", attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .bold),
-                .foregroundColor: m.color,
-            ]))
+            let rowView = LiveRowView(frame: NSRect(x: 0, y: 0, width: 360, height: 80))
+            rowView.update(with: inst,
+                           leaf: leaf,
+                           fullPath: fullPath,
+                           stateIcon: stateIcon,
+                           stateStr: stateStr,
+                           stateDetail: stateDetail,
+                           home: home)
 
-            // State icon (blinking effect via alternating with empty on even/odd seconds)
-            if !stateIcon.isEmpty {
-                let showBlink = Int(Date().timeIntervalSince1970) % 2 == 0
-                let blinkStr = showBlink ? stateIcon + " " : "  "
-                row1Attr.append(NSAttributedString(string: blinkStr, attributes: [
-                    .font: NSFont.systemFont(ofSize: 12),
-                ]))
-            }
+            let row = NSMenuItem()
+            row.view = rowView
+            row.representedObject = inst.cwd
+            row.target = self
+            row.isEnabled = true
+            menu.addItem(row)
 
-            row1Attr.append(NSAttributedString(string: displayTitle, attributes: [
-                .font: NSFont.systemFont(ofSize: 13, weight: .medium),
-                .foregroundColor: NSColor.labelColor,
-            ]))
-            row1Attr.append(NSAttributedString(string: "  \(elapsed)", attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-                .foregroundColor: coralAccent,
-            ]))
+            // Track this view so refreshLiveRows() can find it on the next
+            // scan tick and call update() on it.
+            runningRows[inst.pid] = (row, rowView)
 
-            // Subagent badge
-            if let subs = inst.subagentCount, subs > 0 {
-                row1Attr.append(NSAttributedString(string: "  ↳\(subs)", attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
-                    .foregroundColor: NSColor.systemPurple,
-                ]))
-            }
-
-            // Git branch + modified-files count when present.
-            if let br = inst.gitBranch, !br.isEmpty {
-                row1Attr.append(NSAttributedString(string: "  ⎇\(br)", attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
-                    .foregroundColor: menuTeal,
-                ]))
-                if let mod = inst.gitModified, mod > 0 {
-                    // Color-step: 1+ orange, 20+ red — matches the bar's "burn"
-                    // semantics already used for cost/memory.
-                    let modColor: NSColor = mod >= 20 ? .systemRed : .systemOrange
-                    row1Attr.append(NSAttributedString(string: " *\(mod)", attributes: [
-                        .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
-                        .foregroundColor: modColor,
-                    ]))
-                }
-            }
-
-            row1.attributedTitle = row1Attr
-            row1.representedObject = inst.cwd
-            // No `action` on row1 — clicking opens the submenu (Open in Finder
-            // / Terminal / VSCode + other instance actions). Direct focus is
-            // available as the first submenu item.
-            row1.target = self
-            row1.isEnabled = true
-            menu.addItem(row1)
-
-            // Row 1.25: Terminal tab title (when set + distinct from leaf).
-            // Helps disambiguate sessions in the same project — e.g. "build"
-            // vs "test" vs "scratch" tabs all in the same cwd.
-            if let tab = inst.tabTitle, !tab.isEmpty, tab != leafTitle {
-                addWrappingDim(menu, "      ⌥ \(tab)",
-                              color: NSColor.secondaryLabelColor, size: 11)
-            }
-
-            // Row 1.5: Full cwd path — wraps, never truncates.
-            if let path = fullPathDisplay, path != leafTitle {
-                addWrappingDim(menu, "      \(path)",
-                              color: NSColor.tertiaryLabelColor, size: 10)
-            }
-
-            // State detail line (when actively doing something)
-            if stateStr != "idle" && !stateDetail.isEmpty {
-                addColored(menu, "    \(stateIcon) \(stateStr): \(stateDetail)",
-                          color: menuTeal, size: 11)
-            }
-
-            // Last user prompt (italic-ish dim) — gives the user a one-line
-            // "what did I ask this session" hint without expanding submenu.
-            if let lp = inst.lastPrompt, !lp.isEmpty {
-                addWrappingDim(menu, "      ❯ \(lp)",
-                              color: NSColor.secondaryLabelColor, size: 11)
-            }
-
-            // Row 2: Compact metrics line — semantic per-field colors
-            // (turn count is gray, tools orange, tokens green, cost & memory
-            // step-shaded by burn level, speed step-shaded by throughput).
-            let row2 = NSMenuItem()
-            let row2Attr = NSMutableAttributedString()
-            row2Attr.append(NSAttributedString(string: "   ", attributes: [
-                .font: NSFont.systemFont(ofSize: 12),
-            ]))
-
-            // Context remaining (prominent, color-coded)
-            if let ctx = inst.statusline?.ctxRemaining, !ctx.isEmpty, ctx != "0" {
-                let ctxInt = Int(ctx) ?? 0
-                let ctxNSColor: NSColor = ctxInt < 30 ? .systemRed : (ctxInt < 60 ? .systemOrange : menuGreen)
-                row2Attr.append(NSAttributedString(string: "ctx \(ctx)%", attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium),
-                    .foregroundColor: ctxNSColor,
-                ]))
-                row2Attr.append(NSAttributedString(string: "  ", attributes: [
-                    .font: NSFont.systemFont(ofSize: 12),
-                ]))
-            }
-
-            // (text, color) pairs — built individually so each field can
-            // signal its own state via color rather than reading as a wall
-            // of gray.
-            var metricParts: [(String, NSColor)] = []
-            if let t = inst.turns, t > 0 {
-                metricParts.append(("\(t)t", .secondaryLabelColor))
-            }
-            if let tc = inst.toolCalls, tc > 0 {
-                metricParts.append(("🔧\(tc)", .systemOrange))
-            }
-            if let o = inst.outputTokens, o > 0 {
-                metricParts.append(("↑\(fmtTokens(o))", menuGreen))
-            }
-            if let c = inst.costUsd, c > 0 {
-                let costColor: NSColor = c > 5  ? .systemRed
-                                       : c > 1  ? .systemOrange
-                                                : .secondaryLabelColor
-                metricParts.append((fmtCost(c), costColor))
-            }
-            if let rss = inst.statusline?.rssMb, rss != "0", !rss.isEmpty {
-                let mb = Int(rss) ?? 0
-                let memColor: NSColor = mb >= 500 ? .systemRed
-                                      : mb >= 200 ? .systemOrange
-                                                  : .secondaryLabelColor
-                metricParts.append(("\(rss)MB", memColor))
-            }
-            if let ts = inst.statusline?.tokSpeed, !ts.isEmpty, ts != "0" {
-                let n = Int(ts) ?? 0
-                let speedColor: NSColor = n > 600 ? menuGreen
-                                        : n > 300 ? menuTeal
-                                                  : .secondaryLabelColor
-                metricParts.append(("\(ts)t/s", speedColor))
-            }
-
-            let metricFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-            for (idx, part) in metricParts.enumerated() {
-                if idx > 0 {
-                    row2Attr.append(NSAttributedString(string: " · ", attributes: [
-                        .font: metricFont,
-                        .foregroundColor: NSColor.tertiaryLabelColor,
-                    ]))
-                }
-                row2Attr.append(NSAttributedString(string: part.0, attributes: [
-                    .font: metricFont,
-                    .foregroundColor: part.1,
-                ]))
-            }
-
-            row2.attributedTitle = row2Attr
-            row2.isEnabled = false
-            menu.addItem(row2)
-
-            // Compaction-soon warning when context is critically low.
-            if let ctxStr = inst.statusline?.ctxRemaining,
-               let ctxInt = Int(ctxStr), ctxInt > 0 && ctxInt < 15 {
-                addColored(menu, "    ⚠ Context low (\(ctxInt)%) — compaction imminent",
-                          color: .systemRed, size: 11)
-            }
-
-            // Row 3: Focus file (if present) — wraps instead of truncating.
-            if let focusFile = inst.statusline?.focusFile, !focusFile.isEmpty {
-                var display = focusFile
-                if let cwdFull = inst.cwd, !cwdFull.isEmpty {
-                    display = display.replacingOccurrences(of: cwdFull, with: ".")
-                }
-                display = display.replacingOccurrences(of: home, with: "~")
-                addWrappingDim(menu, "   📄 \(display)",
-                              color: NSColor.tertiaryLabelColor, size: 11)
-            }
-
-            // MCP down warning
-            if let mcpDown = inst.statusline?.mcpDown, !mcpDown.isEmpty {
-                addColored(menu, "    ⚠ MCP down: \(mcpDown)", color: .systemRed, size: 11)
-            }
-
-            // Submenu — opens when row1 is clicked (no row1.action set).
+            // Submenu — attached to the single view-based item.
             // Order matches user mental model: "where do I want to go look at
             // this work?" — Finder, Terminal, VSCode are the primary trio,
             // followed by inspect actions (transcript, copy PID), and the
@@ -1322,7 +1421,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             setIcon(termItem, "xmark.circle")
             submenu.addItem(termItem)
 
-            row1.submenu = submenu
+            row.submenu = submenu
 
             if idx < live.count - 1 {
                 menu.addItem(.separator())
