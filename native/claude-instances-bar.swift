@@ -617,6 +617,7 @@ final class LiveRowView: NSView {
         stack.orientation = .vertical
         stack.spacing = 2
         stack.alignment = .leading
+        stack.distribution = .fill
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
@@ -626,6 +627,16 @@ final class LiveRowView: NSView {
             stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
             widthAnchor.constraint(greaterThanOrEqualToConstant: 340),
         ])
+    }
+
+    /// Critical for view-based menu items: AppKit asks the view for its
+    /// preferred size to lay out the NSMenuItem. Without this override
+    /// the menu uses our init frame (360×80) and clips rows that would
+    /// have rendered below 80px — which is most of them.
+    override var intrinsicContentSize: NSSize {
+        let s = stack.fittingSize
+        return NSSize(width: max(s.width + 24, 340),
+                      height: s.height + 8)
     }
 
     /// Replace rendered content with attributed strings derived from the
@@ -693,12 +704,13 @@ final class LiveRowView: NSView {
             ]))
         }
 
-        // Full cwd path (wraps; truncation forbidden by spec)
+        // Full cwd path (wraps; truncation forbidden by spec). Use char-wrap
+        // since paths have no spaces; word-wrap would let the path overflow.
         if let path = fullPath, path != leaf {
             addLine(NSAttributedString(string: "    \(path)", attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
                 .foregroundColor: NSColor.tertiaryLabelColor,
-            ]))
+            ]), wrapMode: .byCharWrapping)
         }
 
         // State detail (only when not idle)
@@ -766,7 +778,7 @@ final class LiveRowView: NSView {
             ]))
         }
 
-        // Focus file (wraps, no truncation)
+        // Focus file (wraps, no truncation; char-wrap for long paths)
         if let focus = inst.statusline?.focusFile, !focus.isEmpty {
             var disp = focus
             if let cwd = inst.cwd, !cwd.isEmpty { disp = disp.replacingOccurrences(of: cwd, with: ".") }
@@ -774,7 +786,7 @@ final class LiveRowView: NSView {
             addLine(NSAttributedString(string: " 📄 \(disp)", attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
                 .foregroundColor: NSColor.tertiaryLabelColor,
-            ]))
+            ]), wrapMode: .byCharWrapping)
         }
 
         // MCP-down warning
@@ -785,22 +797,33 @@ final class LiveRowView: NSView {
             ]))
         }
 
-        // Force the view to lay out — without this, NSMenuItem doesn't
-        // adopt the new height when sub-rows appear/disappear.
+        // Force layout NOW so the NSMenuItem's first render uses the right
+        // size. Without forcing immediate layout, the first paint happens
+        // with our init frame (360×80) and rows below that height get
+        // clipped — visible as "header is missing" for instances with
+        // many rows of content. Subsequent refresh ticks would fix it
+        // but the user already saw the broken state.
         invalidateIntrinsicContentSize()
         needsLayout = true
+        stack.layoutSubtreeIfNeeded()
+        layoutSubtreeIfNeeded()
     }
 
-    private func addLine(_ attr: NSAttributedString) {
+    private func addLine(_ attr: NSAttributedString,
+                         wrapMode: NSLineBreakMode = .byWordWrapping) {
         let label = NSTextField(labelWithAttributedString: attr)
         label.usesSingleLineMode = false
         label.maximumNumberOfLines = 0
-        label.lineBreakMode = .byCharWrapping
+        label.lineBreakMode = wrapMode
         label.preferredMaxLayoutWidth = 320
         label.isBezeled = false
         label.isEditable = false
         label.drawsBackground = false
         label.translatesAutoresizingMaskIntoConstraints = false
+        // Set vertical content hugging high so empty/short labels don't
+        // expand to swallow vertical space the stack reserves for siblings.
+        label.setContentHuggingPriority(.required, for: .vertical)
+        label.setContentCompressionResistancePriority(.required, for: .vertical)
         stack.addArrangedSubview(label)
     }
 }

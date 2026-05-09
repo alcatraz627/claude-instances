@@ -181,7 +181,14 @@ t_section "detail-server.py"
 t_check "lib/detail-server.py compiles"  python3 -m py_compile lib/detail-server.py
 t_grep "/regen endpoint defined"  lib/detail-server.py '/regen'
 t_grep "exits on Claude PID death" lib/detail-server.py 'claude_alive'
+t_grep "idle timeout (no leak when browser closes)" lib/detail-server.py 'IDLE_SECS'
+t_grep "signal handlers (clean shutdown)" lib/detail-server.py 'SIGTERM'
 t_grep "atomic write in regen"    lib/detail.sh 'os.replace\(tmp_path, output_path\)'
+# LiveRowView (live menu rows): structural markers
+t_grep "LiveRowView class defined" native/claude-instances-bar.swift 'class LiveRowView'
+t_grep "intrinsicContentSize override (sizing fix)" native/claude-instances-bar.swift 'override var intrinsicContentSize'
+t_grep "menuWillOpen tracks open state" native/claude-instances-bar.swift 'func menuWillOpen'
+t_grep "refreshLiveRows wired to data refresh" native/claude-instances-bar.swift 'refreshLiveRows()'
 
 # Cleanup fixture
 rm -f "$PROJ_DIR/${FIXTURE_SID}.jsonl"

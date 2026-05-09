@@ -25,6 +25,7 @@ import urllib.parse
 import subprocess
 import threading
 import time
+import signal
 
 if len(sys.argv) < 4:
     sys.stderr.write("Usage: detail-server.py <port> <script_path> <pid> [<sid>]\n")
@@ -35,8 +36,48 @@ SCRIPT  = sys.argv[2]
 PID     = sys.argv[3]
 SID     = sys.argv[4] if len(sys.argv) > 4 else ""
 SERVE_DIR = "/tmp"
+PID_FILE  = f"/tmp/claude-widget-{PID}.server"
 
-DEADLINE = time.time() + 2 * 60 * 60  # 2-hour hard stop
+# ── Lifetime caps ──────────────────────────────────────────────────────────
+# DEADLINE  — 2-hour hard stop regardless of activity (was the only cap).
+# IDLE_SECS — exit if no HTTP request arrives for this long. Catches the
+#             "user closed the browser tab but Claude PID is still alive"
+#             case, which previously kept the server polling forever.
+DEADLINE  = time.time() + 2 * 60 * 60
+IDLE_SECS = 10 * 60                       # 10 minutes of no traffic
+last_request_at = time.time()             # bumped on every request
+
+# ── Cleanup on any exit path ───────────────────────────────────────────────
+def _remove_pidfile():
+    try:
+        if os.path.isfile(PID_FILE):
+            with open(PID_FILE) as f:
+                content = f.read().strip()
+            # Only remove if file content is still our PID — avoids racing
+            # with a fresh server that may have just spawned for this PID.
+            if content == str(os.getpid()):
+                os.unlink(PID_FILE)
+    except OSError:
+        pass
+
+def _exit(code=0):
+    _remove_pidfile()
+    os._exit(code)
+
+# Handle Ctrl-C and SIGTERM (e.g. when bar.app sends one on shutdown) so we
+# don't leave a stale .server file that confuses the next detail.sh run.
+def _on_signal(signum, frame):
+    _exit(0)
+for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    try: signal.signal(sig, _on_signal)
+    except (OSError, ValueError): pass
+
+# Write our own PID once we've started (overrides whatever bash put there).
+try:
+    with open(PID_FILE, 'w') as f:
+        f.write(str(os.getpid()))
+except OSError:
+    pass
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -54,6 +95,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):
+        global last_request_at
+        last_request_at = time.time()
         parsed = urllib.parse.urlparse(self.path)
 
         if parsed.path == "/regen":
@@ -90,24 +133,35 @@ def claude_alive():
 
 
 def lifetime_watcher():
-    """Exit when Claude PID dies or 2h passes."""
+    """Exit when any of the shutdown conditions are met:
+       - Claude PID dies
+       - 2-hour hard deadline passes
+       - No HTTP request received in IDLE_SECS (browser tab closed)
+    """
     while True:
-        time.sleep(60)
+        time.sleep(30)
         if not claude_alive():
-            os._exit(0)
+            _exit(0)
         if time.time() > DEADLINE:
-            os._exit(0)
+            _exit(0)
+        if time.time() - last_request_at > IDLE_SECS:
+            _exit(0)
 
 
 def scheduled_regen():
     """Background disk regen every 5 minutes. Keeps the file fresh even
     if the user has no transcript page open (matches the previous bash
     daemon's contract — disk-side stays current at a low-overhead
-    cadence for any client that just reads the file)."""
+    cadence for any client that just reads the file).
+
+    Skipped when idle: if no requests in IDLE_SECS, the lifetime_watcher
+    is about to kill us anyway, so don't waste a regen cycle."""
     while True:
         time.sleep(300)
         if not claude_alive() or time.time() > DEADLINE:
-            os._exit(0)
+            _exit(0)
+        if time.time() - last_request_at > IDLE_SECS:
+            continue  # let watcher exit cleanly
         try:
             args = ["bash", SCRIPT, "--regen", PID]
             if SID: args.append(SID)
