@@ -1423,64 +1423,181 @@ window.addEventListener('scroll', () => {{
         scrollTick = null;
     }}, 200);
 }}, {{ passive: true }});
+
+// ── Live polling: fetch self → swap #msgs in place ──────────────────────────
+//
+// Now that the page is served from http://127.0.0.1:<port>/ instead of
+// file://, fetch-from-self works. Every LIVE_POLL_MS the JS:
+//   1. Calls /regen (server runs detail.sh --regen synchronously)
+//   2. Fetches the freshly-regenerated page
+//   3. DOMParser-extracts #msgs and replaces the current one in place
+//   4. Re-runs marked + hljs on the new content (autolink too)
+//   5. Updates the stat row + tools breakdown + activity timeline
+//
+// Theme, search, chip toggles, scroll, expanded <details> all stay because
+// nothing outside the swapped regions is touched.
+
+const LIVE_POLL_MS = 30 * 1000;  // 30s — frequent enough to feel live
+const liveServerOK = window.location.protocol === 'http:';
+let liveTimer = null;
+let lastMsgsHTML = document.getElementById('msgs')?.innerHTML || '';
+
+async function livePoll() {{
+    if (!liveServerOK) return;
+    try {{
+        // Trigger regen on the server, wait for it, then fetch HTML.
+        await fetch('/regen', {{ cache: 'no-store' }});
+        const r = await fetch(window.location.pathname, {{ cache: 'no-store' }});
+        if (!r.ok) return;
+        const text = await r.text();
+        const doc = new DOMParser().parseFromString(text, 'text/html');
+        const newMsgs = doc.getElementById('msgs');
+        if (!newMsgs) return;
+        const newHTML = newMsgs.innerHTML;
+        if (newHTML === lastMsgsHTML) return;  // no change, no DOM thrash
+
+        // Patch the messages region only.
+        const cur = document.getElementById('msgs');
+        cur.innerHTML = newHTML;
+        lastMsgsHTML = newHTML;
+
+        // Re-render markdown + highlight on freshly-injected content.
+        if (window.marked) {{
+            cur.querySelectorAll('.content[data-md]').forEach(el => {{
+                const sc = el.querySelector('script[type="text/markdown"]');
+                if (!sc) return;
+                el.innerHTML = marked.parse(sc.textContent);
+                el.querySelectorAll('pre code').forEach(b => {{
+                    if (!b.classList.contains('hljs')) hljs.highlightElement(b);
+                }});
+                if (typeof autolinkTextNodes === 'function') autolinkTextNodes(el);
+            }});
+        }}
+        cur.querySelectorAll('pre code[class*="language-"]').forEach(b => {{
+            if (!b.classList.contains('hljs')) {{
+                try {{ hljs.highlightElement(b); }} catch(e) {{}}
+            }}
+        }});
+
+        // Patch the smaller summary regions if their content changed.
+        ['stats', 'tools-breakdown', 'timeline'].forEach(cls => {{
+            const newEl = doc.querySelector('.' + cls);
+            const curEl = document.querySelector('.' + cls);
+            if (newEl && curEl && newEl.innerHTML !== curEl.innerHTML) {{
+                curEl.innerHTML = newEl.innerHTML;
+            }}
+        }});
+        // Header refresh-time chip
+        const newRef = doc.querySelector('.dim-pill');
+        const curRef = document.querySelector('.dim-pill');
+        if (newRef && curRef) curRef.textContent = newRef.textContent;
+
+        // After patching messages, recompute flow arrows and re-bind
+        // dot-click handlers (the new dots are fresh DOM nodes).
+        if (typeof rebuildFlowArrows === 'function') rebuildFlowArrows();
+        document.querySelectorAll('button.dot[data-target]').forEach(dot => {{
+            if (dot._wired) return;
+            dot._wired = true;
+            dot.addEventListener('click', () => {{
+                const target = document.getElementById(dot.dataset.target);
+                if (!target) return;
+                target.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                target.classList.remove('flash');
+                void target.offsetWidth;
+                target.classList.add('flash');
+                setTimeout(() => target.classList.remove('flash'), 1300);
+            }});
+        }});
+
+        // Update live-tag label briefly to show a tick happened.
+        const lt = document.querySelector('.live-tag .live-label');
+        if (lt) {{
+            lt.textContent = '✓ live';
+            setTimeout(() => {{ lt.textContent = '5m'; }}, 800);
+        }}
+    }} catch (e) {{
+        // Swallow network blips — next tick will retry.
+    }}
+}}
+
+if (liveServerOK) {{
+    liveTimer = setInterval(livePoll, LIVE_POLL_MS);
+    // First tick happens after the interval; do an immediate one so the
+    // user sees fresh content within a second of opening the page.
+    setTimeout(livePoll, 1500);
+}}
 </script>
 </body>
 </html>'''
 
-with open(output_path, 'w') as f:
+# Atomic write: write to .tmp first, then os.replace() — guarantees the
+# JS poller never reads a half-written file. Critical now that fetch()
+# can race with disk regen.
+tmp_path = output_path + '.tmp'
+with open(tmp_path, 'w') as f:
     f.write(page_html)
+os.replace(tmp_path, output_path)
 
 print(f"Detail page written to: {output_path}")
 PYEOF
 
-# In regen-only mode, we're done — daemon owns this branch.
+# In regen-only mode, we're done — server / daemon own this branch.
 if [[ "$REGEN_ONLY" == "1" ]]; then
     exit 0
 fi
 
-# ── Background regenerator daemon ───────────────────────────────────────────
+# ── Live-update HTTP server ─────────────────────────────────────────────────
 #
-# The HTML file becomes stale the moment we leave: the assistant keeps writing
-# turns to the JSONL but our snapshot doesn't update. We spawn a small
-# background loop that re-runs ourselves with --regen every 5 seconds,
-# overwriting the same output path. The page (no longer using meta-refresh)
-# picks up fresh content via the manual "↻ Refresh" button — F5 / ⌘R also
-# work. The daemon stops on its own when Claude exits or 30 minutes pass.
+# The page now opens via http://127.0.0.1:<port>/... so it can fetch() its
+# own URL (file:// → file:// fetch is CORS-blocked in Chrome since 2018).
+# Server replaces the previous bash regen daemon: it does both the static
+# file serving AND a /regen endpoint the JS poller can call to trigger an
+# on-demand regen between the 5-minute scheduled ticks. See
+# lib/detail-server.py for full lifecycle (claude-pid death + 2h timeout).
 #
-# Dedupe via PID file: kill any prior daemon for this Claude PID before
-# spawning a new one (prevents leaks when the user re-clicks View Transcript).
+# Per-pid port allocation: 5400 + (pid % 500). With 500 unique slots and
+# typical per-user pid count well under that, collisions are vanishingly
+# rare. Port-in-use just means a server is already running for this pid;
+# the preflight check below catches that and reuses it.
 
-if [[ -f "$DAEMON_PID_FILE" ]]; then
-    OLD_DPID=$(cat "$DAEMON_PID_FILE" 2>/dev/null || echo "")
-    if [[ -n "$OLD_DPID" ]] && kill -0 "$OLD_DPID" 2>/dev/null; then
-        kill "$OLD_DPID" 2>/dev/null || true
-    fi
-    # Don't `rm -f` here — the old daemon's exit cleanup will do that,
-    # and racing with it would trample the new daemon's PID write below.
+SERVER_SCRIPT="$(dirname "$SCRIPT_PATH")/detail-server.py"
+PORT=$(( 5400 + (PID % 500) ))
+SERVER_PID_FILE="/tmp/claude-widget-${PID}.server"
+
+is_server_alive_on_port() {
+    # Returns 0 if something is already listening on $PORT.
+    nc -z 127.0.0.1 "$PORT" 2>/dev/null
+}
+
+START_SERVER=1
+if is_server_alive_on_port; then
+    START_SERVER=0
 fi
 
-(
-    DAEMON_SELF_PID=$BASHPID                  # subshell's own PID
-    REGEN_DEADLINE=$(( $(date +%s) + 7200 ))  # 2-hour hard stop
-    while true; do
-        sleep 300   # 5 minutes — low-overhead disk regen cadence.
-        # Stop if Claude PID is gone.
-        if [[ -n "$PID" ]] && ! kill -0 "$PID" 2>/dev/null; then break; fi
-        # Stop after 2 hours regardless.
-        if (( $(date +%s) > REGEN_DEADLINE )); then break; fi
-        bash "$SCRIPT_PATH" --regen "$PID" "$SESSION_ID" >/dev/null 2>&1 || true
-    done
-    # Only clear the PID file if its current content is still us. Prevents
-    # this exit cleanup from clobbering a NEW daemon's PID write that
-    # happened during our shutdown (race fix).
-    if [[ -f "$DAEMON_PID_FILE" ]] \
-       && [[ "$(cat "$DAEMON_PID_FILE" 2>/dev/null)" == "$DAEMON_SELF_PID" ]]; then
-        rm -f "$DAEMON_PID_FILE"
-    fi
-) &
-DAEMON_PID=$!
-echo "$DAEMON_PID" > "$DAEMON_PID_FILE"
-disown 2>/dev/null || true
+if [[ "$START_SERVER" == "1" ]]; then
+    # Spawn the server, fully detached. log to a per-pid file so debugging
+    # is easy without polluting /tmp.
+    SERVER_LOG="/tmp/claude-widget-${PID}.server.log"
+    nohup python3 "$SERVER_SCRIPT" "$PORT" "$SCRIPT_PATH" "$PID" "$SESSION_ID" \
+        >"$SERVER_LOG" 2>&1 &
+    SERVER_PID=$!
+    echo "$SERVER_PID" > "$SERVER_PID_FILE"
+    disown 2>/dev/null || true
 
-# Open in default browser (Chrome preferred).
-open -a "Google Chrome" "$OUTPUT" 2>/dev/null || open "$OUTPUT" 2>/dev/null
+    # Brief wait for the server to bind. ~5 retries × 100ms = 500ms max.
+    for _ in 1 2 3 4 5; do
+        if is_server_alive_on_port; then break; fi
+        sleep 0.1
+    done
+fi
+
+# ── Compatibility: keep the legacy DAEMON_PID_FILE clean ────────────────────
+#
+# Older code paths watch /tmp/claude-widget-<pid>.daemon. The python server
+# subsumes that role; nuke the legacy file so stale watchers don't confuse
+# themselves.
+rm -f "$DAEMON_PID_FILE" 2>/dev/null || true
+
+# Open in default browser via http://127.0.0.1 — fetch-from-self now works.
+URL="http://127.0.0.1:${PORT}/$(basename "$OUTPUT")"
+open -a "Google Chrome" "$URL" 2>/dev/null || open "$URL" 2>/dev/null

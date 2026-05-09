@@ -171,7 +171,17 @@ fi
            "$DETAIL_OUT" 'const FLOW_ICONS'
     t_grep "autolinkTextNodes defined" "$DETAIL_OUT" 'function autolinkTextNodes'
     t_grep "hook-summary event row"    "$DETAIL_OUT" '3 hooks ran'
+    t_grep "live poller present"       "$DETAIL_OUT" 'function livePoll'
+    t_grep "/regen endpoint referenced" "$DETAIL_OUT" "fetch\\('/regen'"
 }
+
+# ── T7 — detail-server.py syntax ─────────────────────────────────────────────
+
+t_section "detail-server.py"
+t_check "lib/detail-server.py compiles"  python3 -m py_compile lib/detail-server.py
+t_grep "/regen endpoint defined"  lib/detail-server.py '/regen'
+t_grep "exits on Claude PID death" lib/detail-server.py 'claude_alive'
+t_grep "atomic write in regen"    lib/detail.sh 'os.replace\(tmp_path, output_path\)'
 
 # Cleanup fixture
 rm -f "$PROJ_DIR/${FIXTURE_SID}.jsonl"
