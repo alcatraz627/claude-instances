@@ -268,6 +268,34 @@ struct LiveInstance: Codable {
     }
 }
 
+extension LiveInstance {
+    /// Return a copy with `gitBranch` / `gitModified` / `lastPrompt` taken
+    /// from `prev` when self's values are empty/zero. Used by the quick-
+    /// scan merge path: --quick mode in scan.sh skips the expensive git
+    /// + JSONL reads, emitting empty values; we preserve the last full-
+    /// scan values so the menu doesn't flicker enrichment fields off
+    /// every tick.
+    func preservingEnrichment(from prev: LiveInstance) -> LiveInstance {
+        let mergedBranch:    String? = (gitBranch?.isEmpty   ?? true) ? prev.gitBranch   : gitBranch
+        let mergedModified:  Int?    = ((gitModified ?? 0) > 0)        ? gitModified     : prev.gitModified
+        let mergedPrompt:    String? = (lastPrompt?.isEmpty  ?? true) ? prev.lastPrompt  : lastPrompt
+        return LiveInstance(
+            pid: pid, model: model, modelFull: modelFull,
+            cwd: cwd, cwdShort: cwdShort, elapsed: elapsed,
+            turns: turns,
+            inputTokens: inputTokens, outputTokens: outputTokens,
+            cacheRead: cacheRead,
+            sessionId: sessionId, resumeId: resumeId,
+            toolCalls: toolCalls, costUsd: costUsd,
+            tabTitle: tabTitle, subagentCount: subagentCount,
+            sessionState: sessionState, statusline: statusline,
+            gitBranch: mergedBranch,
+            gitModified: mergedModified,
+            lastPrompt: mergedPrompt
+        )
+    }
+}
+
 struct StatuslineMetrics: Codable {
     let cpu: String?
     let mem: String?
@@ -979,9 +1007,20 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         // Full scan — replace everything
                         self.cachedData = r
                     } else if let existing = self.cachedData {
-                        // Quick scan — merge live data + fresh limits into existing cached result
+                        // Quick scan — merge live data + fresh limits into existing cached result.
+                        // CRITICAL: also merge per-instance enrichment fields
+                        // (git_branch / git_modified / last_prompt) from the
+                        // previous full scan, since --quick mode emits empty
+                        // values for those. Without this merge, every quick
+                        // tick wipes branch/modified/prompt off the screen.
+                        let prevByPid = Dictionary(uniqueKeysWithValues:
+                            existing.live.map { ($0.pid, $0) })
+                        let mergedLive = r.live.map { (newInst: LiveInstance) -> LiveInstance in
+                            guard let prev = prevByPid[newInst.pid] else { return newInst }
+                            return newInst.preservingEnrichment(from: prev)
+                        }
                         self.cachedData = ScanResult(
-                            live: r.live,
+                            live: mergedLive,
                             history: existing.history,
                             recentEvents: existing.recentEvents,
                             deepEvents: existing.deepEvents,
