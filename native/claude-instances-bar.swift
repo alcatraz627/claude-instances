@@ -797,16 +797,25 @@ final class LiveRowView: NSView {
             ]))
         }
 
-        // Force layout NOW so the NSMenuItem's first render uses the right
-        // size. Without forcing immediate layout, the first paint happens
-        // with our init frame (360×80) and rows below that height get
-        // clipped — visible as "header is missing" for instances with
-        // many rows of content. Subsequent refresh ticks would fix it
-        // but the user already saw the broken state.
-        invalidateIntrinsicContentSize()
-        needsLayout = true
+        // CRITICAL: NSMenuItem.view uses self.frame.size to lay out the
+        // menu row. It IGNORES intrinsicContentSize. So we must explicitly
+        // resize self after the labels are laid out — otherwise the init
+        // frame (360×80) wins, Auto Layout squeezes the inner stack to fit
+        // 80px, and the bottom labels get clipped. With many rows that
+        // looks like "header is missing" because the header is at the top
+        // of the squeezed-into-80px stack, but rendered ABOVE the visible
+        // 80px bound (negative y inside the menu cell).
         stack.layoutSubtreeIfNeeded()
-        layoutSubtreeIfNeeded()
+        let needed = stack.fittingSize
+        let h = max(needed.height + 8, 22)
+        let w = max(needed.width + 24, 340)
+        if frame.size.width != w || frame.size.height != h {
+            setFrameSize(NSSize(width: w, height: h))
+            // Tell the enclosing menu the row needs to be re-measured.
+            // Without this, the menu sometimes keeps using the old (smaller)
+            // size and we re-clip on the next open.
+            invalidateIntrinsicContentSize()
+        }
     }
 
     private func addLine(_ attr: NSAttributedString,
@@ -1358,7 +1367,10 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let stateDetail = inst.sessionState?.detail ?? ""
             let stateIcon = liveRowStateIcons[stateStr] ?? ""
 
-            let rowView = LiveRowView(frame: NSRect(x: 0, y: 0, width: 360, height: 80))
+            // Generous initial height so the first render isn't clipped
+            // even if our setFrameSize() in update() lands a frame too late.
+            // update() resizes to actual content immediately after.
+            let rowView = LiveRowView(frame: NSRect(x: 0, y: 0, width: 360, height: 200))
             rowView.update(with: inst,
                            leaf: leaf,
                            fullPath: fullPath,
