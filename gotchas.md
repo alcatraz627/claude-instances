@@ -116,3 +116,64 @@ subsequent invocations can dedupe. Two pitfalls:
 **Fix:** `DAEMON_SELF_PID=$BASHPID` inside the subshell, and gate the
 self-cleanup `rm -f "$DAEMON_PID_FILE"` on a content match check so a NEW
 daemon's PID write isn't trampled by an OLD daemon's exit cleanup.
+
+---
+
+## 2026-05-09 — `NSMenuItem.attributedTitle` doesn't redraw an open item
+
+Discovered while implementing live-menu updates: AppKit reads
+`menuItem.attributedTitle` once when the menu opens (in
+`menuNeedsUpdate(_:)`), then freezes the rendered text until the menu
+closes. Mutating attributedTitle from a Timer or background callback
+while the menu is visible has no visible effect — the value updates in
+the model, but the user sees stale text.
+
+**Fix:** view-based menu items. `NSMenuItem.view = customNSView` lets you
+control the rendering yourself; the view can mutate its labels in place
+while the menu is open and AppKit redraws normally. Hover/click/submenu
+semantics are preserved — view-based items behave like standard ones for
+those interactions, just with custom rendering.
+
+The trade-off: a view-based item costs more code (lay out an NSStackView
+of NSTextFields, manage Auto Layout, handle add/remove on data changes)
+but it's the only way to get a "live" menu in AppKit. Don't waste time
+trying to make attributedTitle work — it won't.
+
+See `LiveRowView` in `native/claude-instances-bar.swift` for the pattern.
+
+---
+
+## 2026-05-09 — `nohup` + `disown` is the only way to truly detach a bg process
+
+Spawning the detail-server.py needed to outlive its parent `bash detail.sh`
+(which exits after opening the browser). Two layers of detachment needed:
+
+1. `nohup python3 ... &` — ignores SIGHUP so the process survives parent exit
+2. `disown` — removes from the shell's job table so the parent doesn't wait
+   on it during shutdown
+
+Skipping either: `nohup` alone leaves the job in the parent's job table
+which can keep the parent shell alive in some environments. `disown` alone
+sends SIGHUP to the child when the parent exits.
+
+Note also `disown` (no args) targets the most recent backgrounded job —
+the form `disown <pid>` is unreliable because `disown` wants %job not PID,
+and silently fails on PID arguments. Just use bare `disown`.
+
+---
+
+## 2026-05-09 — file:// → file:// fetch is blocked, http://localhost works
+
+(Same root cause as the earlier Chrome `file://` CORS gotcha, recorded
+again because the FIX is now committed and worth pointing to.)
+
+The fix shipped: spawn a tiny `python3 -m http.server`-style backend on
+`127.0.0.1:<per-pid-port>` and open the browser at the http URL instead
+of `file://`. Once both ends share the http://127.0.0.1 origin, fetch
+works normally. Localhost is a "potentially trustworthy" origin so even
+features that require secure context (Service Worker, Clipboard API,
+crypto.subtle) work without HTTPS.
+
+See `lib/detail-server.py` for the minimal implementation: subclasses
+`SimpleHTTPRequestHandler`, adds a `/regen` endpoint, sets no-cache
+headers on every response.

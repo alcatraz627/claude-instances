@@ -100,7 +100,7 @@ The Claude logo appears in your menu bar. Click it to see your running sessions.
   style, with 4-tier color thresholds (green <50% / yellow 50-75% / orange 75-90% / red >90%)
 - **Usage stats** -- Today/Week aggregates: sessions, turns, cost, inline model badges
   (`*11 .5 o2` for Opus/Sonnet/Haiku counts)
-- **Live instances** -- model badge, leaf folder + full path (wrapping), tab title,
+- **Live instances** (auto-refreshing while menu is open via view-based items) -- model badge, leaf folder + full path (wrapping), tab title,
   elapsed, ↳ subagent count (purple), ⎇ git branch (teal) + `*N` modified-files count
   (orange/red by burn level). Last user prompt shown as `❯ <prompt>` below.
   Row 2: context remaining (color-coded green/orange/red), turns, tool calls (orange),
@@ -117,10 +117,13 @@ The Claude logo appears in your menu bar. Click it to see your running sessions.
 
 ### Transcript View (HTML)
 
-Click "View Transcript" on any instance's submenu to open a styled HTML view of
-its conversation in your default browser. Background daemon regenerates the file
-on disk every 5 minutes; click ↻ Refresh in the page toolbar to pick up fresh
-content sooner.
+Click "View Transcript" on any instance's submenu to open a live-updating HTML
+view of its conversation. detail.sh spawns a per-pid localhost http.server
+(port `5400 + (pid % 500)`) and opens the page via `http://127.0.0.1:<port>/...`
+so the JS can `fetch()` itself for live updates (Chrome blocks fetch between
+`file://` URLs). The page polls `/regen` every 30s, swaps the messages region
+in place — no flicker, theme/search/scroll/expanded-blocks all preserved.
+Click ↻ Refresh for an immediate full reload.
 
 - **Header** — AI-generated title, model · PID · session · branch · permission-mode pills
 - **Stats** — input / output / cache-read / turns; CPU / MEM / MCP-up / MCP-down
@@ -199,7 +202,11 @@ A floating `NSPanel` with `NavigationSplitView` sidebar and `.ultraThinMaterial`
 |   +-- .build-info                   # Auto-generated build metadata
 +-- lib/
 |   +-- scan.sh                       # Python scanner --> JSON output (~950 lines)
-|   +-- detail.sh                     # Transcript HTML generator (~1500 lines)
+|   +-- detail.sh                     # Transcript HTML generator (~1600 lines)
+|   +-- detail-server.py              # Localhost http.server backing live updates
++-- tests/
+|   +-- run-tests.sh                  # Smoke-test suite (37 tests)
+|   +-- fixtures/sample-session.jsonl # Synthetic transcript for detail.sh tests
 +-- plugin.sh                         # Legacy SwiftBar plugin (kept)
 +-- render.sh                         # Legacy HTML dashboard renderer
 +-- dashboard.html                    # Legacy HTML dashboard

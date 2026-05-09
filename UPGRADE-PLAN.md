@@ -575,13 +575,21 @@ Start with **A** (SSH-tail). Weekend project, proves whether remote visibility i
 
 ---
 
-## PARKED — Live-update while menu is open
+## ✓ SHIPPED — Live-update while menu is open
 
 <!-- sessions: refr-cade-9d@2026-05-09 -->
 
-> Mentioned in commit `cfd3ec0` ("Note: macOS NSMenu items don't auto-update
-> while the menu is held open"). Still parked because the fix is a real
-> structural change.
+> Shipped in commit `cc41d0a` (2026-05-09). New `LiveRowView: NSView` class
+> collapses the per-instance attributedTitle chain into one view-based menu
+> item; `BarDelegate.runningRows[pid]` tracks them; `refreshLiveRows()` runs
+> on every scan tick when `menuIsOpen`. menuWillOpen also kicks off an
+> immediate refreshData for fresh-on-open data.
+>
+> Original parking-lot brief retained below for archaeology.
+
+---
+
+### (Original) Why it was parked
 
 ### Why it's parked
 
@@ -627,13 +635,22 @@ so it can be A/B'd against the current static behavior.
 
 ---
 
-## PARKED — Live-update while transcript is open
+## ✓ SHIPPED — Live-update while transcript is open
 
-<!-- sessions: tran-rport-7c@2026-05-08 -->
+<!-- sessions: tran-rport-7c@2026-05-08, refr-cade-9d@2026-05-09 -->
 
-> Mentioned in commit `892a1e2` ("Live-mode (background regen + JS DOM patch)
-> is parked for follow-up"). Still parked because Chrome's `file://` CORS
-> behavior forces an HTTP server.
+> Shipped in commit `0eb93bf` (2026-05-09). New `lib/detail-server.py` is a
+> small localhost http.server (port 5400 + pid % 500) that serves /tmp/ as
+> static files AND exposes `/regen` for synchronous on-demand disk regen.
+> Browser opens via `http://127.0.0.1:<port>/...` so fetch-from-self works.
+> JS `livePoll()` runs every 30s — calls /regen, fetches HTML, swaps
+> #msgs in place. State (theme/search/scroll/chips) preserved.
+>
+> Original parking-lot brief retained below for archaeology.
+
+---
+
+### (Original) Why it was parked
 
 ### Why it's parked
 
@@ -687,10 +704,13 @@ Either way is invasive — diff2html (~30KB CDN) would do it cleanly.
 
 ## Outstanding work — short list (priority for next pickup)
 
-1. **Live-update while menu is open** (above) — best UX win
-2. **Live-update while transcript is open** (above) — adjacent technique
+1. ~~Live-update while menu is open~~ ✓ shipped (2026-05-09, commit `cc41d0a`)
+2. ~~Live-update while transcript is open~~ ✓ shipped (2026-05-09, commit `0eb93bf`)
 3. **Remote sessions: SSH-tail mode** (above) — totally optional, weekend project
-4. **True diff for Edit panes** (above) — nice-to-have
+4. **True line-level diff for Edit panes** (above) — nice-to-have. Currently
+   shows red/green pane tints + syntax-highlighted code; full per-line
+   red-strike/green-add would need diff2html (~30KB CDN) or an inline
+   diff-match-patch implementation.
 
 Everything else in the original plan has shipped.
 
