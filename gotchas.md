@@ -119,6 +119,40 @@ daemon's PID write isn't trampled by an OLD daemon's exit cleanup.
 
 ---
 
+## 2026-05-11 — Don't ship "placeholder" settings without wiring
+
+Shipped a Menu Behavior section with three controls (density / default tab
+/ time format) that persisted to UserDefaults but **had no reader on the
+bar side**. The UI implied functionality that didn't exist. User caught
+it immediately: "Wow you added new settings but did not wire them."
+
+**Fix shipped:** every UserDefaults key now has a corresponding accessor
+function (`densitySpacing()`, `userTimeFormatter()`) called by the actual
+render path, plus a `.menuBehaviorDidChange` notification so the bar
+re-renders when the user changes a value.
+
+**Process rule, going forward:** if a Settings UI exposes a control,
+that control's reader sites must exist before the commit lands. Two
+acceptable shapes:
+
+1. **Functional from day one** — the bar reads the value at the relevant
+   call site. This is the only shipping configuration.
+2. **Explicitly marked "experimental / not wired yet"** — a visible
+   "(not yet active)" label on the control AND a commit message that
+   says exactly what's missing. Only do this when the wiring requires
+   significantly more work than the UI.
+
+Implicit "I'll wire it later" is not an option. The user can't tell from
+the UI which controls do anything; their reasonable assumption is that
+all of them do.
+
+**Test added:** `tests/run-tests.sh` now greps for the reader call sites
+(`stack.spacing = densitySpacing()`, `userTimeFormatter`, etc.) so a
+future regression that disconnects the UI from the reader will fail the
+suite.
+
+---
+
 ## 2026-05-09 — `NSMenuItem.attributedTitle` doesn't redraw an open item
 
 Discovered while implementing live-menu updates: AppKit reads

@@ -239,13 +239,19 @@ menu's translucent material adapts to the OS regardless.
 
 ### Settings → Menu Behavior
 
-Three preferences that persist via `@AppStorage`:
-- **Density** (compact / cozy / comfortable) — placeholder; future row-spacing hook
-- **Default tab** — which dashboard tab opens by default
-- **Time format** — toggle 24-hour clock
+Three persisted preferences, each wired to its render path:
 
-Currently captured but not yet wired to reader sites — let me know which ones to
-actually act on.
+- **Density** (compact / cozy / comfortable) — controls the `stack.spacing`
+  of LiveRowView. `densitySpacing()` is read on every `update()`, so the change
+  applies on the next refresh tick. Notification: `.menuBehaviorDidChange` →
+  BarDelegate calls `refreshLiveRows()`.
+- **Default tab** — which dashboard tab opens on next launch.
+  `DashboardRootView.selectedTab` initializes from
+  `UserDefaults.string(forKey: "defaultTab")`, falling back to `.overview`.
+- **Time format** (24h toggle) — `userTimeFormatter(includesDate:)` returns
+  `"MMM d, HH:mm"` when on, `"MMM d, h:mm a"` otherwise. Currently consumed
+  by `AllSessionsTabView`'s history table; other absolute-time displays
+  consult the same helper.
 
 ## Architecture
 

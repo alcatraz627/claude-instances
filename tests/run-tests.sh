@@ -217,6 +217,14 @@ t_grep "AppearancePref enum (system/light/dark)" native/claude-instances-bar.swi
 t_grep "AppearanceSection view defined"        native/claude-instances-bar.swift 'struct AppearanceSection'
 t_grep "MenuBehaviorSection view defined"      native/claude-instances-bar.swift 'struct MenuBehaviorSection'
 t_grep "appearance applied at launch"          native/claude-instances-bar.swift 'applyAppearancePref\(loadAppearancePref'
+# Menu Behavior settings are WIRED, not placeholders
+t_grep "density read in LiveRowView.update"    native/claude-instances-bar.swift 'stack.spacing = densitySpacing\(\)'
+t_grep "densitySpacing accessor"               native/claude-instances-bar.swift 'func densitySpacing'
+t_grep "defaultTab honored in DashboardRootView" native/claude-instances-bar.swift 'UserDefaults.standard.string\(forKey: "defaultTab"\)'
+t_grep "userTimeFormatter helper"              native/claude-instances-bar.swift 'func userTimeFormatter'
+t_grep "AllSessions dateFmt reads user pref"   native/claude-instances-bar.swift 'userTimeFormatter\(includesDate: true\)'
+t_grep "menuBehaviorDidChange notification"    native/claude-instances-bar.swift 'menuBehaviorDidChange'
+t_grep "BarDelegate observes behavior change"  native/claude-instances-bar.swift 'forName: .menuBehaviorDidChange'
 
 # Cleanup fixture
 rm -f "$PROJ_DIR/${FIXTURE_SID}.jsonl"

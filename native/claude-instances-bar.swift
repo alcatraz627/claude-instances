@@ -408,6 +408,38 @@ private let defaultModel = ModelDisplay(badge: "·", label: "?", color: .seconda
 // via AppKit's semantic system. Making them user-tunable would break that
 // adaptation. The palette governs *aesthetic* colors only.
 
+// ─── User preferences read at runtime ──────────────────────────────────────
+//
+// Single notification name so callers don't have to know which key changed —
+// they just call the read function each time. The Settings UI posts this
+// after every @AppStorage write; the bar's BarDelegate observes and re-
+// renders.
+
+extension Notification.Name {
+    static let menuBehaviorDidChange = Notification.Name("MenuBehavior.didChange")
+}
+
+/// Stack-spacing in points for a LiveRowView, derived from the user's
+/// chosen density. Read on every LiveRowView.update() so changes propagate
+/// to the next render without view recreation.
+func densitySpacing() -> CGFloat {
+    switch UserDefaults.standard.string(forKey: "density") ?? "comfortable" {
+    case "compact":     return 0
+    case "cozy":        return 2
+    default:            return 4   // comfortable
+    }
+}
+
+/// Returns the user-preferred absolute-time formatter ("HH:mm" 24h vs
+/// "h:mm a" 12h). Captured once per call; cheap to allocate.
+func userTimeFormatter(includesDate: Bool = false) -> DateFormatter {
+    let f = DateFormatter()
+    let use24h = UserDefaults.standard.bool(forKey: "time.use24h")
+    let time = use24h ? "HH:mm" : "h:mm a"
+    f.dateFormat = includesDate ? "MMM d, \(time)" : time
+    return f
+}
+
 enum PaletteToken: String, CaseIterable {
     case modelOpus      = "model.opus"       // Opus model badge
     case modelSonnet    = "model.sonnet"     // Sonnet model badge
@@ -897,6 +929,11 @@ final class LiveRowView: NSView {
         // re-created from scratch below.
         tokenForLabel.removeAll()
 
+        // Apply user density preference (compact / cozy / comfortable).
+        // Read from UserDefaults on each render so changes propagate the
+        // moment the user picks a different option in Settings.
+        stack.spacing = densitySpacing()
+
         // Header line: badge + (state icon) + leaf + elapsed + ↳ + ⎇ + *N
         let m = modelDisplay(inst.model)
         let elapsed = inst.elapsed?.trimmingCharacters(in: .whitespaces) ?? "?"
@@ -1301,6 +1338,16 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ) { [weak self] _ in
             self?.refreshLiveRows()
             self?.updateButton()
+        }
+
+        // Menu-behavior changes (density / default tab / time format) also
+        // trigger a live refresh — density flows through LiveRowView.update()
+        // which reads densitySpacing() on every render.
+        NotificationCenter.default.addObserver(
+            forName: .menuBehaviorDidChange,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.refreshLiveRows()
         }
     }
 
@@ -2592,7 +2639,15 @@ struct SidebarButton: View {
 
 struct DashboardRootView: View {
     @ObservedObject var dataSource: DashboardData
-    @State private var selectedTab: DashboardTab = .overview
+    @State private var selectedTab: DashboardTab = {
+        // Honor user's "Default tab" preference from Settings → Menu Behavior.
+        // Fall back to .overview when unset or unrecognized.
+        if let raw = UserDefaults.standard.string(forKey: "defaultTab"),
+           let tab = DashboardTab(rawValue: raw) {
+            return tab
+        }
+        return .overview
+    }()
 
     let onFocus: (String) -> Void
     let onTerminate: (Int) -> Void
@@ -4004,11 +4059,9 @@ struct AllSessionsTabView: View {
         }
     }
 
-    private static let dateFmt: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MMM d, HH:mm"
-        return f
-    }()
+    // Derived from user preference (24h vs 12h). Re-read on each access so
+    // changes from Settings → Menu Behavior propagate without view recreation.
+    private var dateFmt: DateFormatter { userTimeFormatter(includesDate: true) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -4085,7 +4138,7 @@ struct AllSessionsTabView: View {
                     LazyVStack(spacing: 1) {
                         ForEach(Array(filteredSessions.enumerated()), id: \.element.sessionId) { idx, sess in
                             SessionRow(session: sess, isEven: idx % 2 == 0,
-                                       dateFmt: Self.dateFmt,
+                                       dateFmt: dateFmt,
                                        onResume: onResume, onOpenFile: onOpenFile)
                         }
                     }
@@ -4538,13 +4591,18 @@ struct AppearanceSection: View {
 }
 
 /// Section for misc. menu-side behavior toggles. Each control persists via
-/// UserDefaults and is read by the bar at the relevant call site. Adding
-/// more here is mechanical: define a key, expose a Toggle/Picker, and have
-/// the bar read it.
+/// UserDefaults AND posts `.menuBehaviorDidChange` so the bar's BarDelegate
+/// can refresh open menus immediately. Adding more here is mechanical:
+/// define a key, expose a control with `.onChange { _ in postChange() }`,
+/// have the bar read it from the appropriate global accessor.
 struct MenuBehaviorSection: View {
     @AppStorage("density") private var density: String = "comfortable"
     @AppStorage("defaultTab") private var defaultTab: String = DashboardTab.overview.rawValue
     @AppStorage("time.use24h") private var use24h: Bool = false
+
+    private func postChange() {
+        NotificationCenter.default.post(name: .menuBehaviorDidChange, object: nil)
+    }
 
     var body: some View {
         OverviewSection(title: "Menu Behavior",
@@ -4562,6 +4620,11 @@ struct MenuBehaviorSection: View {
                     }
                     .pickerStyle(.segmented)
                     .frame(maxWidth: 280)
+                    .onChange(of: density) { _, _ in postChange() }
+                    Text("Vertical gap between rows in the menu's live-instance card.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
                     Spacer()
                 }
 
@@ -4576,7 +4639,8 @@ struct MenuBehaviorSection: View {
                     }
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220)
-                    Text("Which tab opens when the dashboard launches.")
+                    .onChange(of: defaultTab) { _, _ in postChange() }
+                    Text("Which tab opens on the next dashboard launch.")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                     Spacer()
@@ -4588,6 +4652,11 @@ struct MenuBehaviorSection: View {
                         .frame(width: 130, alignment: .leading)
                     Toggle("Use 24-hour clock", isOn: $use24h)
                         .toggleStyle(.checkbox)
+                        .onChange(of: use24h) { _, _ in postChange() }
+                    Text("Applies to absolute timestamps in the dashboard (history, sessions, events).")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
                     Spacer()
                 }
             }
