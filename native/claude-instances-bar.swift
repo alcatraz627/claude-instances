@@ -392,41 +392,191 @@ private struct ModelDisplay {
     let color: NSColor
 }
 
-private let modelConfig: [String: ModelDisplay] = [
-    "opus":   ModelDisplay(badge: "◆", label: "Opus",   color: .systemOrange),  // vibrancy-safe
-    "sonnet": ModelDisplay(badge: "●", label: "Sonnet", color: .systemBlue),
-    "haiku":  ModelDisplay(badge: "○", label: "Haiku",  color: menuTeal),
-]
-
 private let defaultModel = ModelDisplay(badge: "·", label: "?", color: .secondaryLabelColor)
 
 // ─── Menu color palette ──────────────────────────────────────────────────────
-// System colors are vivid but wash out on the translucent NSMenu material.
-// .shadow(withLevel:) blends toward black, keeping the hue while improving contrast.
-// Adjust the shadow level (0.0 = original, 1.0 = black) to taste.
+//
+// The 12 user-tunable color tokens. Each token has a default (the value
+// we ship) and may be overridden via UserDefaults; the Settings tab in the
+// dashboard lets the user pick from a Tailwind swatch grid. PaletteStore
+// is the single source of truth: every per-color constant below is a
+// computed `var` that reads `PaletteStore.shared.color(for:)` so user
+// changes propagate to the next render without any cache to invalidate.
+//
+// System text colors (labelColor / secondary / tertiary / quaternary) are
+// intentionally NOT in the palette — those auto-adapt to dark/light mode
+// via AppKit's semantic system. Making them user-tunable would break that
+// adaptation. The palette governs *aesthetic* colors only.
 
-private let menuGreen:  NSColor = NSColor.systemGreen.shadow(withLevel: 0.35)!
-private let menuYellow: NSColor = NSColor.systemYellow.shadow(withLevel: 0.30)!
-private let menuCyan:   NSColor = NSColor.systemCyan.shadow(withLevel: 0.35)!
-private let menuTeal:   NSColor = NSColor.systemTeal.shadow(withLevel: 0.25)!
-/// Softer red than systemRed. Pure `systemRed` reads as aggressive blood-red
-/// over the menu's translucent material; this is desaturated ~30% so warnings
-/// stay legible without screaming.
-private let menuRed:    NSColor = NSColor(calibratedRed: 0.90, green: 0.42, blue: 0.42, alpha: 1.0)
-/// Distinct colors per metric field so the user can locate a value at a
-/// glance without parsing labels. Replaces the previous value-stepped scheme
-/// where the same field changed color based on burn level.
-private let costColor:    NSColor = NSColor(calibratedRed: 0.95, green: 0.72, blue: 0.30, alpha: 1.0) // amber
-private let tokensColor:  NSColor = menuGreen                                                          // green
-private let memColor:     NSColor = NSColor(calibratedRed: 0.55, green: 0.75, blue: 0.95, alpha: 1.0) // sky
-private let subagentColor: NSColor = NSColor(calibratedRed: 0.55, green: 0.82, blue: 0.88, alpha: 1.0) // mint-cyan, less garish than purple
+enum PaletteToken: String, CaseIterable {
+    case modelOpus      = "model.opus"       // Opus model badge
+    case modelSonnet    = "model.sonnet"     // Sonnet model badge
+    case modelHaiku     = "model.haiku"      // Haiku model badge
+    case metricCost     = "metric.cost"      // $ cost values
+    case metricTokens   = "metric.tokens"    // ↑ token counts
+    case metricMemory   = "metric.memory"    // MB memory values
+    case accentBranch   = "accent.branch"    // ⎇ branch badge
+    case accentSubagent = "accent.subagent"  // ↳N subagent badge
+    case stateActive    = "state.active"     // state-detail row (thinking/responding)
+    case warnHigh       = "warn.high"        // compaction-imminent, MCP-down, ctx <30
+    case warnMid        = "warn.mid"         // modified <20, ctx <60
+    case successHigh    = "success.high"     // ctx ≥60%, ↑tokens
 
-/// Elapsed time uses gray — prominent enough without competing with status colors.
-private let coralAccent: NSColor = .systemGray
+    /// Short human-readable name shown in the Settings table.
+    var displayName: String {
+        switch self {
+        case .modelOpus:      return "Opus"
+        case .modelSonnet:    return "Sonnet"
+        case .modelHaiku:     return "Haiku"
+        case .metricCost:     return "Cost"
+        case .metricTokens:   return "Tokens"
+        case .metricMemory:   return "Memory"
+        case .accentBranch:   return "Branch"
+        case .accentSubagent: return "Subagent"
+        case .stateActive:    return "Active state"
+        case .warnHigh:       return "Warning (high)"
+        case .warnMid:        return "Warning (mid)"
+        case .successHigh:    return "Success"
+        }
+    }
+
+    /// What this token is used for. One sentence; surfaces in the Settings UI.
+    var usage: String {
+        switch self {
+        case .modelOpus:      return "Opus model badge ◆"
+        case .modelSonnet:    return "Sonnet model badge ●"
+        case .modelHaiku:     return "Haiku model badge ○"
+        case .metricCost:     return "Per-session cost values ($N.NN)"
+        case .metricTokens:   return "Output token counts (↑NK)"
+        case .metricMemory:   return "Resident memory (NMB)"
+        case .accentBranch:   return "Git branch badge (⎇branch)"
+        case .accentSubagent: return "Subagent count badge (↳N)"
+        case .stateActive:    return "Active-state row (thinking / responding / tool use)"
+        case .warnHigh:       return "Critical warnings: compaction imminent, MCP down, modified ≥20"
+        case .warnMid:        return "Mid-severity: ctx <60%, modified <20"
+        case .successHigh:    return "Healthy state: ctx ≥60%, fast token rate"
+        }
+    }
+}
+
+final class PaletteStore {
+    static let shared = PaletteStore()
+
+    static let didChangeNotification = Notification.Name("PaletteStore.didChange")
+
+    /// Baked-in defaults. Survive user reset.
+    private let defaults: [PaletteToken: NSColor] = [
+        .modelOpus:      .systemOrange,
+        .modelSonnet:    .systemBlue,
+        .modelHaiku:     NSColor.systemTeal.shadow(withLevel: 0.25)!,
+        .metricCost:     NSColor(calibratedRed: 0.95, green: 0.72, blue: 0.30, alpha: 1.0),
+        .metricTokens:   NSColor.systemGreen.shadow(withLevel: 0.35)!,
+        .metricMemory:   NSColor(calibratedRed: 0.55, green: 0.75, blue: 0.95, alpha: 1.0),
+        .accentBranch:   NSColor.systemTeal.shadow(withLevel: 0.25)!,
+        .accentSubagent: NSColor(calibratedRed: 0.55, green: 0.82, blue: 0.88, alpha: 1.0),
+        .stateActive:    NSColor.systemTeal.shadow(withLevel: 0.25)!,
+        .warnHigh:       NSColor(calibratedRed: 0.90, green: 0.42, blue: 0.42, alpha: 1.0),
+        .warnMid:        NSColor.systemYellow.shadow(withLevel: 0.30)!,
+        .successHigh:    NSColor.systemGreen.shadow(withLevel: 0.35)!,
+    ]
+
+    private let prefix = "palette."
+
+    /// Returns the user-set override if present, else the baked-in default.
+    func color(for token: PaletteToken) -> NSColor {
+        if let hex = UserDefaults.standard.string(forKey: prefix + token.rawValue),
+           let c = NSColor.fromHex(hex) {
+            return c
+        }
+        return defaults[token] ?? .labelColor
+    }
+
+    /// Returns the hex string ("#RRGGBB") of the current value (user or default).
+    func hex(for token: PaletteToken) -> String {
+        return color(for: token).hexString
+    }
+
+    /// True if the user has overridden this token.
+    func isOverridden(_ token: PaletteToken) -> Bool {
+        return UserDefaults.standard.string(forKey: prefix + token.rawValue) != nil
+    }
+
+    func set(_ token: PaletteToken, hex: String) {
+        UserDefaults.standard.set(hex, forKey: prefix + token.rawValue)
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
+    }
+
+    func reset(_ token: PaletteToken) {
+        UserDefaults.standard.removeObject(forKey: prefix + token.rawValue)
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
+    }
+
+    func resetAll() {
+        for t in PaletteToken.allCases {
+            UserDefaults.standard.removeObject(forKey: prefix + t.rawValue)
+        }
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
+    }
+
+    /// Default value (without user override) — used by the Settings UI to
+    /// label the "reset" button's destination.
+    func defaultColor(for token: PaletteToken) -> NSColor {
+        return defaults[token] ?? .labelColor
+    }
+}
+
+// MARK: NSColor ↔ hex
+extension NSColor {
+    /// "#RRGGBB" (drops alpha — palette colors are opaque).
+    var hexString: String {
+        let c = self.usingColorSpace(.sRGB) ?? self
+        let r = Int(round(c.redComponent   * 255))
+        let g = Int(round(c.greenComponent * 255))
+        let b = Int(round(c.blueComponent  * 255))
+        return String(format: "#%02X%02X%02X", r, g, b)
+    }
+
+    /// Parses "#RRGGBB" or "RRGGBB". Returns nil for invalid input.
+    static func fromHex(_ s: String) -> NSColor? {
+        var hex = s.trimmingCharacters(in: .whitespaces)
+        if hex.hasPrefix("#") { hex.removeFirst() }
+        guard hex.count == 6, let val = UInt32(hex, radix: 16) else { return nil }
+        let r = CGFloat((val >> 16) & 0xFF) / 255.0
+        let g = CGFloat((val >>  8) & 0xFF) / 255.0
+        let b = CGFloat( val        & 0xFF) / 255.0
+        return NSColor(srgbRed: r, green: g, blue: b, alpha: 1.0)
+    }
+}
+
+// ─── Per-color accessor constants (read from PaletteStore at call time) ──────
+//
+// Computed vars so each access reads the current PaletteStore value. User
+// changes via the Settings tab propagate to the next render with zero plumbing.
+
+private var menuGreen:     NSColor { PaletteStore.shared.color(for: .successHigh)    }
+private var menuYellow:    NSColor { PaletteStore.shared.color(for: .warnMid)        }
+private var menuCyan:      NSColor { PaletteStore.shared.color(for: .accentSubagent) } // legacy alias
+private var menuTeal:      NSColor { PaletteStore.shared.color(for: .accentBranch)   }
+private var menuRed:       NSColor { PaletteStore.shared.color(for: .warnHigh)       }
+private var costColor:     NSColor { PaletteStore.shared.color(for: .metricCost)     }
+private var tokensColor:   NSColor { PaletteStore.shared.color(for: .metricTokens)   }
+private var memColor:      NSColor { PaletteStore.shared.color(for: .metricMemory)   }
+private var subagentColor: NSColor { PaletteStore.shared.color(for: .accentSubagent) }
+private var coralAccent:   NSColor { .systemGray }   // structural, not in palette
 
 private func modelDisplay(_ name: String?) -> ModelDisplay {
+    // Resolve model color from PaletteStore at call time so user changes via
+    // Settings propagate without needing to rebuild modelConfig.
     guard let n = name else { return defaultModel }
-    return modelConfig[n] ?? defaultModel
+    switch n {
+    case "opus":   return ModelDisplay(badge: "◆", label: "Opus",
+                                       color: PaletteStore.shared.color(for: .modelOpus))
+    case "sonnet": return ModelDisplay(badge: "●", label: "Sonnet",
+                                       color: PaletteStore.shared.color(for: .modelSonnet))
+    case "haiku":  return ModelDisplay(badge: "○", label: "Haiku",
+                                       color: PaletteStore.shared.color(for: .modelHaiku))
+    default:       return defaultModel
+    }
 }
 
 // ─── Ghostty AppleScript bridge ──────────────────────────────────────────────
@@ -898,6 +1048,57 @@ final class LiveRowView: NSView {
     }
 }
 
+// ─── SwiftUI bridge for LiveRowView ──────────────────────────────────────────
+//
+// Wraps the existing `LiveRowView` NSView so SwiftUI views (e.g. the
+// Settings tab's palette-preview pane) can render exactly the same DOM as
+// the live menu. Single renderer, zero drift — the preview IS what the
+// menu shows.
+//
+// Re-renders whenever `inst` or `paletteVersion` changes (the latter lets
+// the parent force a re-paint when palette tokens change via UserDefaults).
+
+struct LiveRowViewRepresentable: NSViewRepresentable {
+    let inst: LiveInstance
+    let home: String
+    var paletteVersion: Int = 0  // bumped to force updateNSView
+
+    func makeNSView(context: Context) -> LiveRowView {
+        let v = LiveRowView(frame: NSRect(x: 0, y: 0, width: 360, height: 200))
+        applyUpdate(to: v)
+        return v
+    }
+
+    func updateNSView(_ v: LiveRowView, context: Context) {
+        applyUpdate(to: v)
+    }
+
+    private func applyUpdate(to v: LiveRowView) {
+        let leaf: String = {
+            if let tt = inst.tabTitle, !tt.isEmpty { return tt }
+            if let cwd = inst.cwd, !cwd.isEmpty { return (cwd as NSString).lastPathComponent }
+            return inst.cwdShort ?? "(unknown)"
+        }()
+        let fullPath: String? = {
+            guard let cwd = inst.cwd, !cwd.isEmpty else { return nil }
+            return cwd.replacingOccurrences(of: home, with: "~")
+        }()
+        let stateStr = inst.sessionState?.state ?? "idle"
+        let stateDetail = inst.sessionState?.detail ?? ""
+        let stateIcons: [String: String] = [
+            "thinking": "💭", "responding": "✍️", "tool_use": "🔧",
+            "tool_result": "⚙️", "idle": "",
+        ]
+        v.update(with: inst,
+                 leaf: leaf,
+                 fullPath: fullPath,
+                 stateIcon: stateIcons[stateStr] ?? "",
+                 stateStr: stateStr,
+                 stateDetail: stateDetail,
+                 home: home)
+    }
+}
+
 // ─── Bar Delegate ────────────────────────────────────────────────────────────
 
 final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -972,6 +1173,16 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Background timer — scan at user-selected cadence (or paused)
         restartScanTimer()
+
+        // When the Settings tab mutates a palette token, immediately refresh
+        // open menu rows + the bar button (in case it cared about a color).
+        NotificationCenter.default.addObserver(
+            forName: PaletteStore.didChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.refreshLiveRows()
+            self?.updateButton()
+        }
     }
 
     /// (Re)start the periodic scan timer using the current `refreshInterval`.
@@ -2188,6 +2399,7 @@ enum DashboardTab: String, CaseIterable, Identifiable {
     case history     = "History"
     case events      = "Events"
     case allSessions = "All Sessions"
+    case settings    = "Settings"
     case about       = "About"
 
     var id: String { rawValue }
@@ -2199,6 +2411,7 @@ enum DashboardTab: String, CaseIterable, Identifiable {
         case .history:     return "clock.arrow.circlepath"
         case .events:      return "list.bullet"
         case .allSessions: return "tray.full.fill"
+        case .settings:    return "slider.horizontal.3"
         case .about:       return "info.circle"
         }
     }
@@ -2208,7 +2421,7 @@ enum DashboardTab: String, CaseIterable, Identifiable {
         case .overview, .live:          return "Dashboard"
         case .history, .events:         return "Details"
         case .allSessions:              return "Details"
-        case .about:                    return "Help"
+        case .settings, .about:         return "Help"
         }
     }
 }
@@ -2252,6 +2465,7 @@ struct SidebarButton: View {
         case .history:     return .purple
         case .events:      return .orange
         case .allSessions: return .indigo
+        case .settings:    return .gray
         case .about:       return .secondary
         }
     }
@@ -2347,6 +2561,8 @@ struct DashboardRootView: View {
                 case .allSessions:
                     AllSessionsTabView(dataSource: dataSource, onResume: onResume,
                                        onOpenFile: onOpenFile)
+                case .settings:
+                    SettingsTabView()
                 case .about:
                     AboutTabView()
                 }
@@ -3840,6 +4056,303 @@ private struct SessionRow: View {
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.12)) { isHovered = hovering }
         }
+    }
+}
+
+// ─── SwiftUI: Settings tab — palette editor + live preview ─────────────────
+//
+// Renders a "Widget Menu" section containing:
+//   1. A live preview of one live-instance menu row (LiveRowViewRepresentable
+//      wrapping the same NSView the actual menu uses).
+//   2. A table of palette tokens — name, usage, current swatch (clickable),
+//      reset button.
+// Click a swatch → popover with Tailwind picker (13 hues × 5 shades).
+//
+// Persistence is through PaletteStore (UserDefaults). The store posts a
+// notification on change; the bar's BarDelegate observes it and refreshes
+// the open menu. The preview re-renders by bumping a local @State counter
+// observed by the NSViewRepresentable.
+
+/// Tailwind v3 palette subset — 13 hues × 5 mid-range shades. Picked to
+/// stay legible on the NSMenu's translucent material in both dark + light
+/// mode. Source: https://tailwindcss.com/docs/colors
+private let tailwindPalette: [(hue: String, shades: [(name: String, hex: String)])] = [
+    ("red",    [("300","#FCA5A5"),("400","#F87171"),("500","#EF4444"),("600","#DC2626"),("700","#B91C1C")]),
+    ("orange", [("300","#FDBA74"),("400","#FB923C"),("500","#F97316"),("600","#EA580C"),("700","#C2410C")]),
+    ("amber",  [("300","#FCD34D"),("400","#FBBF24"),("500","#F59E0B"),("600","#D97706"),("700","#B45309")]),
+    ("yellow", [("300","#FDE047"),("400","#FACC15"),("500","#EAB308"),("600","#CA8A04"),("700","#A16207")]),
+    ("green",  [("300","#86EFAC"),("400","#4ADE80"),("500","#22C55E"),("600","#16A34A"),("700","#15803D")]),
+    ("teal",   [("300","#5EEAD4"),("400","#2DD4BF"),("500","#14B8A6"),("600","#0D9488"),("700","#0F766E")]),
+    ("cyan",   [("300","#67E8F9"),("400","#22D3EE"),("500","#06B6D4"),("600","#0891B2"),("700","#0E7490")]),
+    ("blue",   [("300","#93C5FD"),("400","#60A5FA"),("500","#3B82F6"),("600","#2563EB"),("700","#1D4ED8")]),
+    ("indigo", [("300","#A5B4FC"),("400","#818CF8"),("500","#6366F1"),("600","#4F46E5"),("700","#4338CA")]),
+    ("purple", [("300","#D8B4FE"),("400","#C084FC"),("500","#A855F7"),("600","#9333EA"),("700","#7E22CE")]),
+    ("pink",   [("300","#F9A8D4"),("400","#F472B6"),("500","#EC4899"),("600","#DB2777"),("700","#BE185D")]),
+    ("rose",   [("300","#FDA4AF"),("400","#FB7185"),("500","#F43F5E"),("600","#E11D48"),("700","#BE123C")]),
+    ("gray",   [("300","#D1D5DB"),("400","#9CA3AF"),("500","#6B7280"),("600","#4B5563"),("700","#374151")]),
+]
+
+/// Best-effort reverse lookup: given a hex, return "rose-400" if it matches
+/// a Tailwind swatch exactly, otherwise nil. Used to show context in the
+/// editor row ("Currently: rose-400") when the user picked a Tailwind color.
+private func tailwindName(forHex hex: String) -> String? {
+    let h = hex.uppercased()
+    for (hue, shades) in tailwindPalette {
+        for s in shades where s.hex.uppercased() == h {
+            return "\(hue)-\(s.name)"
+        }
+    }
+    return nil
+}
+
+/// A sample LiveInstance used for the Settings preview. Chosen to exercise
+/// most rendering paths: branch + modified count, subagent badge, focus
+/// file, MCP-down warning, low-ctx warning, all metric fields populated.
+private func samplePreviewInstance() -> LiveInstance {
+    let statusline = StatuslineMetrics(
+        cpu: "12", mem: "1.2", rssMb: "342",
+        focusFile: "/Users/alcatraz627/Code/example/src/components/Nav.tsx",
+        mcpHealthy: "scratchpad,shell-mem",
+        mcpDown: nil,
+        tokSpeed: "420",
+        costVel: nil,
+        walSinceCp: nil,
+        ctxRemaining: "62",
+        scratchpadCount: nil,
+        pm2Online: nil,
+        pm2Errored: nil
+    )
+    let state = SessionState(state: "tool_use", detail: "Reading src/Nav.tsx")
+    return LiveInstance(
+        pid: 12345,
+        model: "opus", modelFull: "claude-opus-4-7",
+        cwd: "/Users/alcatraz627/Code/example",
+        cwdShort: "~/Code/example",
+        elapsed: "00:08:14",
+        turns: 22,
+        inputTokens: 12_000, outputTokens: 38_400, cacheRead: 1_800_000,
+        sessionId: "abcd1234-…",
+        resumeId: nil,
+        toolCalls: 17, costUsd: 1.42,
+        tabTitle: "Nav UI polish",
+        subagentCount: 1,
+        sessionState: state,
+        statusline: statusline,
+        gitBranch: "feature/nav-polish",
+        gitModified: 8,
+        lastPrompt: "Add hover state to the nav links and make sure focus ring is visible"
+    )
+}
+
+/// Helper that observes UserDefaults so SwiftUI views re-render when any
+/// palette token changes. Bumps a published Int counter on each change.
+final class PaletteObservable: ObservableObject {
+    @Published var version: Int = 0
+    private var token: NSObjectProtocol?
+    init() {
+        token = NotificationCenter.default.addObserver(
+            forName: PaletteStore.didChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.version &+= 1
+        }
+    }
+    deinit { if let t = token { NotificationCenter.default.removeObserver(t) } }
+}
+
+struct SettingsTabView: View {
+    @StateObject private var palette = PaletteObservable()
+    private let home = FileManager.default.homeDirectoryForCurrentUser.path
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                Text("Settings")
+                    .font(.system(size: 24, weight: .bold))
+                    .padding(.top, 20)
+                    .padding(.horizontal, 24)
+
+                OverviewSection(title: "Widget Menu",
+                                icon: "menubar.dock.rectangle",
+                                iconColor: .gray) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        // Live preview (the exact NSView the menu uses, wrapped in SwiftUI).
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("PREVIEW")
+                                .font(.system(size: 10, weight: .bold))
+                                .tracking(0.8)
+                                .foregroundColor(.secondary)
+                            LiveRowViewRepresentable(
+                                inst: samplePreviewInstance(),
+                                home: home,
+                                paletteVersion: palette.version
+                            )
+                            .frame(minWidth: 360, minHeight: 180, alignment: .topLeading)
+                            .padding(8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color(NSColor.windowBackgroundColor).opacity(0.6))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.secondary.opacity(0.18))
+                            )
+                            Text("Updates as you pick swatches below. The actual menu refreshes on the next scan tick (≤5s).")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                        }
+
+                        Divider()
+
+                        // Header row
+                        HStack(spacing: 8) {
+                            Text("TOKEN").frame(width: 130, alignment: .leading)
+                            Text("USED FOR").frame(maxWidth: .infinity, alignment: .leading)
+                            Text("COLOR").frame(width: 110, alignment: .leading)
+                            Text("").frame(width: 60, alignment: .trailing)
+                        }
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(0.8)
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 4)
+
+                        ForEach(PaletteToken.allCases, id: \.self) { token in
+                            PaletteEditorRow(token: token,
+                                             paletteVersion: palette.version)
+                            Divider().opacity(0.4)
+                        }
+
+                        // Reset-all
+                        HStack {
+                            Spacer()
+                            Button("Reset all to defaults") {
+                                PaletteStore.shared.resetAll()
+                            }
+                            .controlSize(.small)
+                        }
+                        .padding(.top, 4)
+                    }
+                }
+                .padding(.horizontal, 24)
+
+                Spacer(minLength: 24)
+            }
+        }
+    }
+}
+
+struct PaletteEditorRow: View {
+    let token: PaletteToken
+    let paletteVersion: Int   // included in the view identity so changes re-render
+
+    @State private var showPicker = false
+
+    private var currentHex: String { PaletteStore.shared.hex(for: token) }
+    private var currentColor: Color { Color(PaletteStore.shared.color(for: token)) }
+    private var defaultHex: String { PaletteStore.shared.defaultColor(for: token).hexString }
+    private var isOverridden: Bool { PaletteStore.shared.isOverridden(token) }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // Token name
+            VStack(alignment: .leading, spacing: 1) {
+                Text(token.displayName)
+                    .font(.system(size: 13, weight: .medium))
+                Text(token.rawValue)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+            .frame(width: 130, alignment: .leading)
+
+            // Usage description
+            Text(token.usage)
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Swatch button — opens Tailwind picker
+            Button {
+                showPicker.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(currentColor)
+                        .frame(width: 22, height: 22)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color.secondary.opacity(0.3))
+                        )
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(currentHex)
+                            .font(.system(size: 11, design: .monospaced))
+                        if let tw = tailwindName(forHex: currentHex) {
+                            Text(tw)
+                                .font(.system(size: 9))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .frame(width: 110, alignment: .leading)
+            .popover(isPresented: $showPicker, arrowEdge: .leading) {
+                TailwindPicker(currentHex: currentHex) { hex in
+                    PaletteStore.shared.set(token, hex: hex)
+                    showPicker = false
+                }
+            }
+
+            // Reset button
+            Button("Reset") {
+                PaletteStore.shared.reset(token)
+            }
+            .controlSize(.small)
+            .disabled(!isOverridden)
+            .frame(width: 60, alignment: .trailing)
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 4)
+    }
+}
+
+struct TailwindPicker: View {
+    let currentHex: String
+    let onPick: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Tailwind colors")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.secondary)
+
+            ForEach(tailwindPalette, id: \.hue) { row in
+                HStack(spacing: 6) {
+                    Text(row.hue)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .frame(width: 50, alignment: .trailing)
+                    ForEach(row.shades, id: \.hex) { shade in
+                        Button {
+                            onPick(shade.hex)
+                        } label: {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color(NSColor.fromHex(shade.hex) ?? .gray))
+                                .frame(width: 28, height: 24)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .stroke(currentHex.uppercased() == shade.hex.uppercased()
+                                                ? Color.accentColor : Color.secondary.opacity(0.25),
+                                                lineWidth: currentHex.uppercased() == shade.hex.uppercased() ? 2 : 1)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .help("\(row.hue)-\(shade.name) · \(shade.hex)")
+                    }
+                }
+            }
+        }
+        .padding(14)
     }
 }
 

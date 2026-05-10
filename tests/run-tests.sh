@@ -190,6 +190,24 @@ t_grep "intrinsicContentSize override (sizing fix)" native/claude-instances-bar.
 t_grep "menuWillOpen tracks open state" native/claude-instances-bar.swift 'func menuWillOpen'
 t_grep "refreshLiveRows wired to data refresh" native/claude-instances-bar.swift 'refreshLiveRows()'
 
+# Palette + Settings infrastructure — single source of truth for menu colors
+# plus the Settings tab UI built on it.
+t_section "palette + settings"
+t_grep "PaletteToken enum defined"             native/claude-instances-bar.swift 'enum PaletteToken'
+t_grep "PaletteStore singleton"                native/claude-instances-bar.swift 'final class PaletteStore'
+t_grep "PaletteStore.set persists hex"         native/claude-instances-bar.swift 'func set\(_ token: PaletteToken, hex'
+t_grep "PaletteStore.reset clears override"    native/claude-instances-bar.swift 'func reset\(_ token: PaletteToken\)'
+t_grep "NSColor.fromHex parser"                native/claude-instances-bar.swift 'static func fromHex'
+t_grep "NSColor.hexString writer"              native/claude-instances-bar.swift 'var hexString'
+t_grep "all 12 tokens registered"              native/claude-instances-bar.swift 'metricMemory.*memory'
+t_grep "modelDisplay reads PaletteStore"       native/claude-instances-bar.swift 'PaletteStore.shared.color\(for: .modelOpus\)'
+t_grep "LiveRowViewRepresentable for SwiftUI"  native/claude-instances-bar.swift 'struct LiveRowViewRepresentable: NSViewRepresentable'
+t_grep "SettingsTabView wired in dashboard"    native/claude-instances-bar.swift 'case .settings:'
+t_grep "tailwindPalette table"                 native/claude-instances-bar.swift 'tailwindPalette: \[\(hue: String'
+t_grep "PaletteEditorRow row component"        native/claude-instances-bar.swift 'struct PaletteEditorRow'
+t_grep "TailwindPicker popover"                native/claude-instances-bar.swift 'struct TailwindPicker'
+t_grep "PaletteStore.didChange notification"   native/claude-instances-bar.swift 'PaletteStore.didChangeNotification'
+
 # Cleanup fixture
 rm -f "$PROJ_DIR/${FIXTURE_SID}.jsonl"
 rmdir "$PROJ_DIR" 2>/dev/null || true
