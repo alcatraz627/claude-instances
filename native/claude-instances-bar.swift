@@ -934,7 +934,10 @@ final class LiveRowView: NSView {
         // moment the user picks a different option in Settings.
         stack.spacing = densitySpacing()
 
-        // Header line: badge + (state icon) + leaf + elapsed + ↳ + ⎇ + *N
+        // Header is built as a horizontal stack of per-chunk labels — each
+        // chunk gets its own NSTextField so it can be individually tagged
+        // with a palette token. Hover + reverse-highlight then work for
+        // each: model badge, leaf+elapsed, ↳N subagent, ⎇branch, *N modified.
         let m = modelDisplay(inst.model)
         let elapsed = inst.elapsed?.trimmingCharacters(in: .whitespaces) ?? "?"
         let modelToken: PaletteToken? = {
@@ -945,43 +948,56 @@ final class LiveRowView: NSView {
             default:       return nil
             }
         }()
-        let header = NSMutableAttributedString()
-        header.append(NSAttributedString(string: "\(m.badge) ", attributes: [
+
+        let headerRow = makeInlineRow()
+        // 1. Model badge (the diamond/dot/circle glyph) — taggable per model
+        appendChip(to: headerRow, text: m.badge, token: modelToken, attrs: [
             .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .bold),
             .foregroundColor: m.color,
-        ]))
+        ])
         if !stateIcon.isEmpty {
-            let blink = (Int(Date().timeIntervalSince1970) % 2 == 0) ? "\(stateIcon) " : "  "
-            header.append(NSAttributedString(string: blink, attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+            let blink = (Int(Date().timeIntervalSince1970) % 2 == 0) ? stateIcon : " "
+            appendChip(to: headerRow, text: blink, token: .stateActive, attrs: [
+                .font: NSFont.systemFont(ofSize: 13),
+            ])
         }
-        header.append(NSAttributedString(string: leaf, attributes: [
+        // 2. Leaf + elapsed — visually one cluster, no individual token (
+        //    structural). Bundled into a single label so spacing is tight.
+        let leafElapsed = NSMutableAttributedString()
+        leafElapsed.append(NSAttributedString(string: leaf, attributes: [
             .font: NSFont.systemFont(ofSize: 13, weight: .medium),
             .foregroundColor: NSColor.labelColor,
         ]))
-        header.append(NSAttributedString(string: "  \(elapsed)", attributes: [
+        leafElapsed.append(NSAttributedString(string: "  \(elapsed)", attributes: [
             .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
             .foregroundColor: NSColor.tertiaryLabelColor,
         ]))
+        appendChip(to: headerRow, attr: leafElapsed, token: nil)
+
+        // 3. Subagent badge ↳N
         if let subs = inst.subagentCount, subs > 0 {
-            header.append(NSAttributedString(string: "  ↳\(subs)", attributes: [
+            appendChip(to: headerRow, text: "↳\(subs)", token: .accentSubagent, attrs: [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
                 .foregroundColor: subagentColor,
-            ]))
+            ])
         }
+        // 4. Branch badge ⎇<name>
         if let br = inst.gitBranch, !br.isEmpty {
-            header.append(NSAttributedString(string: "  ⎇\(br)", attributes: [
+            appendChip(to: headerRow, text: "⎇\(br)", token: .accentBranch, attrs: [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
                 .foregroundColor: menuTeal,
-            ]))
+            ])
+            // 5. Modified file count *N — token depends on severity (warnMid <20 / warnHigh ≥20)
             if let mod = inst.gitModified, mod > 0 {
+                let modToken: PaletteToken = mod >= 20 ? .warnHigh : .warnMid
                 let mc: NSColor = mod >= 20 ? menuRed : menuYellow
-                header.append(NSAttributedString(string: " *\(mod)", attributes: [
+                appendChip(to: headerRow, text: "*\(mod)", token: modToken, attrs: [
                     .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
                     .foregroundColor: mc,
-                ]))
+                ])
             }
         }
-        addLine(header, token: modelToken)
+        stack.addArrangedSubview(headerRow)
 
         // Tab title (when distinct from leaf)
         if let tab = inst.tabTitle, !tab.isEmpty, tab != leaf {
@@ -1016,37 +1032,61 @@ final class LiveRowView: NSView {
             ]))
         }
 
-        // Metrics row — per-field colors (not value-stepped, except ctx %).
-        let metrics = NSMutableAttributedString()
+        // Metrics row — per-token labels in a horizontal stack so each
+        // value chunk gets individual hover coverage.
+        let metFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let metricsRow = makeInlineRow()
+
+        // ctx % — value-stepped color; token mirrors the severity bucket so
+        // hovering "warn.high" highlights ctx <30, "warn.mid" → ctx <60,
+        // "success.high" → ctx ≥60.
         if let ctx = inst.statusline?.ctxRemaining, !ctx.isEmpty, ctx != "0" {
             let n = Int(ctx) ?? 0
-            let c: NSColor = n < 30 ? menuRed : (n < 60 ? menuYellow : menuGreen)
-            metrics.append(NSAttributedString(string: "ctx \(ctx)%  ", attributes: [
+            let (c, ctxToken): (NSColor, PaletteToken) =
+                n < 30 ? (menuRed,    .warnHigh)    :
+                n < 60 ? (menuYellow, .warnMid)     :
+                         (menuGreen,  .successHigh)
+            appendChip(to: metricsRow, text: "ctx \(ctx)%", token: ctxToken, attrs: [
                 .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium),
                 .foregroundColor: c,
-            ]))
+            ])
         }
-        var parts: [(String, NSColor)] = []
-        if let t = inst.turns, t > 0 { parts.append(("\(t)t", .tertiaryLabelColor)) }
-        if let tc = inst.toolCalls, tc > 0 { parts.append(("🔧\(tc)", .tertiaryLabelColor)) }
-        if let o = inst.outputTokens, o > 0 { parts.append(("↑\(fmtTokens(o))", tokensColor)) }
-        if let c = inst.costUsd, c > 0 { parts.append((fmtCost(c), costColor)) }
+        // Remaining metrics: each its own chip with its own token.
+        // Order matches the previous attributedString version.
+        struct Chip { let text: String; let color: NSColor; let token: PaletteToken? }
+        var chips: [Chip] = []
+        if let t = inst.turns, t > 0 {
+            chips.append(Chip(text: "\(t)t", color: .tertiaryLabelColor, token: nil))
+        }
+        if let tc = inst.toolCalls, tc > 0 {
+            chips.append(Chip(text: "🔧\(tc)", color: .tertiaryLabelColor, token: nil))
+        }
+        if let o = inst.outputTokens, o > 0 {
+            chips.append(Chip(text: "↑\(fmtTokens(o))", color: tokensColor, token: .metricTokens))
+        }
+        if let c = inst.costUsd, c > 0 {
+            chips.append(Chip(text: fmtCost(c), color: costColor, token: .metricCost))
+        }
         if let rss = inst.statusline?.rssMb, rss != "0", !rss.isEmpty {
-            parts.append(("\(rss)MB", memColor))
+            chips.append(Chip(text: "\(rss)MB", color: memColor, token: .metricMemory))
         }
         if let ts = inst.statusline?.tokSpeed, !ts.isEmpty, ts != "0" {
-            parts.append(("\(ts)t/s", .tertiaryLabelColor))
+            chips.append(Chip(text: "\(ts)t/s", color: .tertiaryLabelColor, token: nil))
         }
-        let metFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        for (i, p) in parts.enumerated() {
-            if i > 0 {
-                metrics.append(NSAttributedString(string: " · ", attributes: [
-                    .font: metFont, .foregroundColor: NSColor.quaternaryLabelColor,
-                ]))
+        for (i, chip) in chips.enumerated() {
+            if i > 0 || metricsRow.arrangedSubviews.count > 0 {
+                // Add a dim "·" separator BETWEEN chips (not before the first).
+                appendChip(to: metricsRow, text: "·", token: nil, attrs: [
+                    .font: metFont,
+                    .foregroundColor: NSColor.quaternaryLabelColor,
+                ])
             }
-            metrics.append(NSAttributedString(string: p.0, attributes: [.font: metFont, .foregroundColor: p.1]))
+            appendChip(to: metricsRow, text: chip.text, token: chip.token, attrs: [
+                .font: metFont,
+                .foregroundColor: chip.color,
+            ])
         }
-        addLine(metrics)
+        stack.addArrangedSubview(metricsRow)
 
         // Compaction-soon warning (soft red)
         if let ctxStr = inst.statusline?.ctxRemaining,
@@ -1110,20 +1150,20 @@ final class LiveRowView: NSView {
 
     private func applyHighlightedToken() {
         let highlight = highlightedToken
-        for (label, tok) in tokenForLabel {
-            let isHit = (tok == highlight)
-            label.drawsBackground = isHit
-            if isHit {
-                // Subtle accent-tinted bg. NSColor.controlAccentColor adapts
-                // to user accent + dark/light mode automatically.
-                label.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.20)
-                // Slight padding effect via the cell's bezel? NSTextField
-                // doesn't expose internal padding cleanly; the bg fill
-                // alone is enough signal.
-            } else {
-                label.backgroundColor = .clear
+        // CGColor route via the label's backing layer so we don't trigger
+        // NSTextField's drawsBackground-toggle-induced intrinsic-size shift.
+        // drawsBackground is set ONCE at label creation; here we only swap
+        // backgroundColor (no size change). NSAnimationContext fades it.
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.18
+            ctx.allowsImplicitAnimation = true
+            for (label, tok) in tokenForLabel {
+                let isHit = (tok == highlight)
+                label.backgroundColor = isHit
+                    ? NSColor.controlAccentColor.withAlphaComponent(0.14)
+                    : .clear
+                label.needsDisplay = true
             }
-            label.needsDisplay = true
         }
     }
 
@@ -1174,6 +1214,49 @@ final class LiveRowView: NSView {
         }
     }
 
+    /// Build a horizontal NSStackView for inline chip composition (header
+    /// row, metrics row). Each "chip" inside is its own NSTextField, tagged
+    /// with its own palette token via `appendChip`.
+    private func makeInlineRow() -> NSStackView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.spacing = 6
+        row.alignment = .firstBaseline
+        row.translatesAutoresizingMaskIntoConstraints = false
+        return row
+    }
+
+    /// Append a single inline chip (an NSTextField) to a horizontal row.
+    /// Same drawsBackground=true-always semantics as addLine() so hover
+    /// highlight doesn't shift intrinsic size.
+    private func appendChip(to row: NSStackView,
+                            text: String? = nil,
+                            attr: NSAttributedString? = nil,
+                            token: PaletteToken? = nil,
+                            attrs: [NSAttributedString.Key: Any]? = nil) {
+        let labelAttr: NSAttributedString
+        if let attr = attr {
+            labelAttr = attr
+        } else if let t = text {
+            labelAttr = NSAttributedString(string: t, attributes: attrs ?? [:])
+        } else {
+            return
+        }
+        let label = NSTextField(labelWithAttributedString: labelAttr)
+        if let t = token { tokenForLabel[label] = t }
+        label.usesSingleLineMode = true
+        label.lineBreakMode = .byClipping
+        label.isBezeled = false
+        label.isEditable = false
+        label.drawsBackground = true
+        label.backgroundColor = .clear
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.setContentHuggingPriority(.required, for: .horizontal)
+        label.setContentHuggingPriority(.required, for: .vertical)
+        label.setContentCompressionResistancePriority(.required, for: .vertical)
+        row.addArrangedSubview(label)
+    }
+
     private func addLine(_ attr: NSAttributedString,
                          wrapMode: NSLineBreakMode = .byWordWrapping,
                          token: PaletteToken? = nil) {
@@ -1181,6 +1264,12 @@ final class LiveRowView: NSView {
         if let t = token { tokenForLabel[label] = t }
         label.usesSingleLineMode = false
         label.maximumNumberOfLines = 0
+        // ALWAYS draw a background — initially .clear. The hover-highlight
+        // path only swaps the color, never toggles drawsBackground, so the
+        // label's intrinsic size never changes when highlight enters/exits.
+        // (Toggling drawsBackground at runtime caused layout shift.)
+        label.drawsBackground = true
+        label.backgroundColor = .clear
         label.lineBreakMode = wrapMode
         label.preferredMaxLayoutWidth = 320
         label.isBezeled = false
@@ -4360,16 +4449,20 @@ struct SettingsTabView: View {
                                     .tracking(0.8)
                                     .foregroundColor(.secondary)
                                 Spacer()
-                                if let h = hoveredToken {
-                                    Text(h.rawValue)
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundColor(.accentColor)
-                                        .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background(
-                                            RoundedRectangle(cornerRadius: 4)
-                                                .fill(Color.accentColor.opacity(0.12))
-                                        )
-                                }
+                                // Token pill — reserved space so its appearance
+                                // doesn't cause layout shift of PREVIEW label.
+                                // Fixed-height frame + opacity transition.
+                                Text(hoveredToken?.rawValue ?? " ")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.accentColor)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .fill(Color.accentColor.opacity(hoveredToken != nil ? 0.12 : 0))
+                                    )
+                                    .opacity(hoveredToken != nil ? 1 : 0)
+                                    .frame(minHeight: 18)
+                                    .animation(.easeInOut(duration: 0.15), value: hoveredToken)
                             }
                             LiveRowViewRepresentable(
                                 inst: samplePreviewInstance(),
@@ -4510,13 +4603,17 @@ struct PaletteEditorRow: View {
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 4)
+        // Background fill is structurally always present (zero opacity when
+        // not hovered) so the layout doesn't shift between states. Only the
+        // opacity animates, not the geometry. Subtle accent tint — 0.08 is
+        // visible but doesn't read as "selected".
         .background(
-            // Light offshade for the bg when this row matches the hovered
-            // preview token. Color.accentColor adapts to user accent +
-            // dark/light mode automatically.
             RoundedRectangle(cornerRadius: 4)
-                .fill(isHovered ? Color.accentColor.opacity(0.12) : Color.clear)
+                .fill(Color.accentColor)
+                .opacity(isHovered ? 0.08 : 0)
+                .animation(.easeInOut(duration: 0.15), value: isHovered)
         )
+        .contentShape(Rectangle())  // ensures hover hit-tests the full row, not just labels
         .onHover { inside in
             // Forward: hovering this row sets the hovered token, which
             // flows into the preview via the @State binding and triggers

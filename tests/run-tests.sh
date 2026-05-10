@@ -225,6 +225,19 @@ t_grep "userTimeFormatter helper"              native/claude-instances-bar.swift
 t_grep "AllSessions dateFmt reads user pref"   native/claude-instances-bar.swift 'userTimeFormatter\(includesDate: true\)'
 t_grep "menuBehaviorDidChange notification"    native/claude-instances-bar.swift 'menuBehaviorDidChange'
 t_grep "BarDelegate observes behavior change"  native/claude-instances-bar.swift 'forName: .menuBehaviorDidChange'
+# Per-chip token tagging — covers EVERY palette token in the preview
+t_grep "appendChip helper defined"             native/claude-instances-bar.swift 'private func appendChip'
+t_grep "header chips: model badge tagged"      native/claude-instances-bar.swift 'token: modelToken'
+t_grep "header chips: subagent tagged"         native/claude-instances-bar.swift 'token: .accentSubagent'
+t_grep "header chips: branch tagged"           native/claude-instances-bar.swift 'token: .accentBranch'
+t_grep "header chips: modified tagged"         native/claude-instances-bar.swift 'token: modToken'
+t_grep "metrics chips: ctx tagged by severity" native/claude-instances-bar.swift 'token: ctxToken'
+t_grep "metrics chips: cost tagged"            native/claude-instances-bar.swift 'token: .metricCost'
+t_grep "metrics chips: tokens tagged"          native/claude-instances-bar.swift 'token: .metricTokens'
+t_grep "metrics chips: memory tagged"          native/claude-instances-bar.swift 'token: .metricMemory'
+# Layout-shift fix: drawsBackground set ONCE in addLine, never toggled
+t_grep "drawsBackground = true in addLine"     native/claude-instances-bar.swift 'label.drawsBackground = true'
+t_grep "applyHighlightedToken animates"        native/claude-instances-bar.swift 'NSAnimationContext.runAnimationGroup'
 
 # Cleanup fixture
 rm -f "$PROJ_DIR/${FIXTURE_SID}.jsonl"
