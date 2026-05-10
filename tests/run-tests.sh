@@ -207,6 +207,16 @@ t_grep "tailwindPalette table"                 native/claude-instances-bar.swift
 t_grep "PaletteEditorRow row component"        native/claude-instances-bar.swift 'struct PaletteEditorRow'
 t_grep "TailwindPicker popover"                native/claude-instances-bar.swift 'struct TailwindPicker'
 t_grep "PaletteStore.didChange notification"   native/claude-instances-bar.swift 'PaletteStore.didChangeNotification'
+# Hover + reverse-highlight wiring (Settings ↔ preview bidirectional)
+t_grep "tokenForLabel mapping in LiveRowView"  native/claude-instances-bar.swift 'tokenForLabel: \[NSTextField: PaletteToken\]'
+t_grep "onHoverToken callback exposed"         native/claude-instances-bar.swift 'onHoverToken: \(\(PaletteToken'
+t_grep "setHighlightedToken reverse-highlight" native/claude-instances-bar.swift 'func setHighlightedToken'
+t_grep "tracking area for hover detection"     native/claude-instances-bar.swift 'NSTrackingArea'
+# Appearance + menu-behavior sections
+t_grep "AppearancePref enum (system/light/dark)" native/claude-instances-bar.swift 'enum AppearancePref'
+t_grep "AppearanceSection view defined"        native/claude-instances-bar.swift 'struct AppearanceSection'
+t_grep "MenuBehaviorSection view defined"      native/claude-instances-bar.swift 'struct MenuBehaviorSection'
+t_grep "appearance applied at launch"          native/claude-instances-bar.swift 'applyAppearancePref\(loadAppearancePref'
 
 # Cleanup fixture
 rm -f "$PROJ_DIR/${FIXTURE_SID}.jsonl"

@@ -796,6 +796,23 @@ private func runScanner(quick: Bool = false) -> ScanResult? {
 final class LiveRowView: NSView {
     private let stack = NSStackView()
 
+    /// Maps each label to the palette token it draws its primary color from.
+    /// Populated as labels are added via addLine(_:token:). Used by:
+    ///   - hover detection: mouseEntered → look up token → fire onHoverToken
+    ///   - reverse highlight: when `highlightedToken` is set, the matching
+    ///     label gets a translucent accent-tinted background.
+    private var tokenForLabel: [NSTextField: PaletteToken] = [:]
+
+    /// Fired when the mouse enters/exits a token-tagged label. Receives the
+    /// token under the cursor, or nil when the cursor leaves all tagged
+    /// regions. Set externally (e.g. by the Settings preview).
+    var onHoverToken: ((PaletteToken?) -> Void)?
+
+    /// When set, the label corresponding to this token paints a translucent
+    /// accent background — used by the Settings UI to telegraph "this row
+    /// → this part of the row". Set via setHighlightedToken below.
+    private var highlightedToken: PaletteToken?
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         setupUI()
@@ -876,9 +893,21 @@ final class LiveRowView: NSView {
         //   warnings    : menuRed (softer than systemRed)
         //   state       : menuTeal
 
+        // Reset token mapping at the start of each update — labels are
+        // re-created from scratch below.
+        tokenForLabel.removeAll()
+
         // Header line: badge + (state icon) + leaf + elapsed + ↳ + ⎇ + *N
         let m = modelDisplay(inst.model)
         let elapsed = inst.elapsed?.trimmingCharacters(in: .whitespaces) ?? "?"
+        let modelToken: PaletteToken? = {
+            switch inst.model {
+            case "opus":   return .modelOpus
+            case "sonnet": return .modelSonnet
+            case "haiku":  return .modelHaiku
+            default:       return nil
+            }
+        }()
         let header = NSMutableAttributedString()
         header.append(NSAttributedString(string: "\(m.badge) ", attributes: [
             .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .bold),
@@ -915,7 +944,7 @@ final class LiveRowView: NSView {
                 ]))
             }
         }
-        addLine(header)
+        addLine(header, token: modelToken)
 
         // Tab title (when distinct from leaf)
         if let tab = inst.tabTitle, !tab.isEmpty, tab != leaf {
@@ -939,7 +968,7 @@ final class LiveRowView: NSView {
             addLine(NSAttributedString(string: "\(stateIcon) \(stateStr): \(stateDetail)", attributes: [
                 .font: NSFont.systemFont(ofSize: 11),
                 .foregroundColor: menuTeal,
-            ]))
+            ]), token: .stateActive)
         }
 
         // Last user prompt
@@ -988,7 +1017,7 @@ final class LiveRowView: NSView {
             addLine(NSAttributedString(string: "⚠ Context low (\(n)%) — compaction imminent", attributes: [
                 .font: NSFont.systemFont(ofSize: 11),
                 .foregroundColor: menuRed,
-            ]))
+            ]), token: .warnHigh)
         }
 
         // Focus file (wraps, no truncation; char-wrap for long paths)
@@ -1007,7 +1036,7 @@ final class LiveRowView: NSView {
             addLine(NSAttributedString(string: "⚠ MCP down: \(mcp)", attributes: [
                 .font: NSFont.systemFont(ofSize: 11),
                 .foregroundColor: menuRed,
-            ]))
+            ]), token: .warnHigh)
         }
 
         // CRITICAL: NSMenuItem.view uses self.frame.size to lay out the
@@ -1027,11 +1056,92 @@ final class LiveRowView: NSView {
             setFrameSize(NSSize(width: w, height: h))
             invalidateIntrinsicContentSize()
         }
+
+        // Re-apply the reverse-highlight (in case update() rebuilt labels
+        // while a row was hovered in the Settings palette table).
+        applyHighlightedToken()
+    }
+
+    /// Called by the Settings UI to highlight the label whose token matches.
+    /// Sets a translucent accent background on the matching label(s). Nil to
+    /// clear. Used to telegraph "this palette row → this part of the row."
+    func setHighlightedToken(_ token: PaletteToken?) {
+        guard highlightedToken != token else { return }
+        highlightedToken = token
+        applyHighlightedToken()
+    }
+
+    private func applyHighlightedToken() {
+        let highlight = highlightedToken
+        for (label, tok) in tokenForLabel {
+            let isHit = (tok == highlight)
+            label.drawsBackground = isHit
+            if isHit {
+                // Subtle accent-tinted bg. NSColor.controlAccentColor adapts
+                // to user accent + dark/light mode automatically.
+                label.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.20)
+                // Slight padding effect via the cell's bezel? NSTextField
+                // doesn't expose internal padding cleanly; the bg fill
+                // alone is enough signal.
+            } else {
+                label.backgroundColor = .clear
+            }
+            label.needsDisplay = true
+        }
+    }
+
+    // ── Hover tracking ───────────────────────────────────────────────────
+    //
+    // One tracking area covering the whole view; on mouseMoved, hit-test
+    // against each tagged label's frame (in our coordinate space) and fire
+    // onHoverToken when the token under the cursor changes. Avoids the
+    // overhead of N tracking areas (one per label) — single area, fast
+    // lookup, debounced by tracking the last reported token.
+
+    private var lastHoverToken: PaletteToken?
+    private var rootTrackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let prev = rootTrackingArea { removeTrackingArea(prev) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.activeAlways, .mouseEnteredAndExited, .mouseMoved, .inVisibleRect],
+            owner: self, userInfo: nil
+        )
+        addTrackingArea(area)
+        rootTrackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { handleHover(event) }
+    override func mouseMoved(with event: NSEvent)   { handleHover(event) }
+    override func mouseExited(with event: NSEvent) {
+        if lastHoverToken != nil {
+            lastHoverToken = nil
+            onHoverToken?(nil)
+        }
+    }
+
+    private func handleHover(_ event: NSEvent) {
+        guard onHoverToken != nil else { return }
+        let pt = convert(event.locationInWindow, from: nil)
+        var hit: PaletteToken?
+        for (label, tok) in tokenForLabel {
+            // Convert label's frame (in stack's coords) to ours.
+            let f = label.convert(label.bounds, to: self)
+            if f.contains(pt) { hit = tok; break }
+        }
+        if hit != lastHoverToken {
+            lastHoverToken = hit
+            onHoverToken?(hit)
+        }
     }
 
     private func addLine(_ attr: NSAttributedString,
-                         wrapMode: NSLineBreakMode = .byWordWrapping) {
+                         wrapMode: NSLineBreakMode = .byWordWrapping,
+                         token: PaletteToken? = nil) {
         let label = NSTextField(labelWithAttributedString: attr)
+        if let t = token { tokenForLabel[label] = t }
         label.usesSingleLineMode = false
         label.maximumNumberOfLines = 0
         label.lineBreakMode = wrapMode
@@ -1062,15 +1172,20 @@ struct LiveRowViewRepresentable: NSViewRepresentable {
     let inst: LiveInstance
     let home: String
     var paletteVersion: Int = 0  // bumped to force updateNSView
+    var highlightedToken: PaletteToken? = nil  // reverse: row hover → preview highlight
+    var onHoverToken: ((PaletteToken?) -> Void)? = nil  // forward: preview hover → row highlight
 
     func makeNSView(context: Context) -> LiveRowView {
         let v = LiveRowView(frame: NSRect(x: 0, y: 0, width: 360, height: 200))
+        v.onHoverToken = onHoverToken
         applyUpdate(to: v)
         return v
     }
 
     func updateNSView(_ v: LiveRowView, context: Context) {
+        v.onHoverToken = onHoverToken
         applyUpdate(to: v)
+        v.setHighlightedToken(highlightedToken)
     }
 
     private func applyUpdate(to v: LiveRowView) {
@@ -1157,6 +1272,10 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Register UserDefaults defaults (doesn't write — just provides fallbacks)
         UserDefaults.standard.register(defaults: [thresholdKey: 80])
+
+        // Apply persisted appearance preference (System / Light / Dark).
+        // Affects the dashboard window's chrome. Menu material adapts via OS.
+        applyAppearancePref(loadAppearancePref())
 
         // Kill any other instances of ourselves (dedupe on launch)
         killOtherInstances(myPID: myPID)
@@ -4162,6 +4281,7 @@ final class PaletteObservable: ObservableObject {
 
 struct SettingsTabView: View {
     @StateObject private var palette = PaletteObservable()
+    @State private var hoveredToken: PaletteToken? = nil   // shared bidirectional hover state
     private let home = FileManager.default.homeDirectoryForCurrentUser.path
 
     var body: some View {
@@ -4172,20 +4292,38 @@ struct SettingsTabView: View {
                     .padding(.top, 20)
                     .padding(.horizontal, 24)
 
+                AppearanceSection()
+                    .padding(.horizontal, 24)
+
                 OverviewSection(title: "Widget Menu",
                                 icon: "menubar.dock.rectangle",
                                 iconColor: .gray) {
                     VStack(alignment: .leading, spacing: 16) {
                         // Live preview (the exact NSView the menu uses, wrapped in SwiftUI).
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("PREVIEW")
-                                .font(.system(size: 10, weight: .bold))
-                                .tracking(0.8)
-                                .foregroundColor(.secondary)
+                            HStack {
+                                Text("PREVIEW")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .tracking(0.8)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                if let h = hoveredToken {
+                                    Text(h.rawValue)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundColor(.accentColor)
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 4)
+                                                .fill(Color.accentColor.opacity(0.12))
+                                        )
+                                }
+                            }
                             LiveRowViewRepresentable(
                                 inst: samplePreviewInstance(),
                                 home: home,
-                                paletteVersion: palette.version
+                                paletteVersion: palette.version,
+                                highlightedToken: hoveredToken,
+                                onHoverToken: { t in hoveredToken = t }
                             )
                             .frame(minWidth: 360, minHeight: 180, alignment: .topLeading)
                             .padding(8)
@@ -4197,7 +4335,7 @@ struct SettingsTabView: View {
                                 RoundedRectangle(cornerRadius: 8)
                                     .stroke(Color.secondary.opacity(0.18))
                             )
-                            Text("Updates as you pick swatches below. The actual menu refreshes on the next scan tick (≤5s).")
+                            Text("Hover any line to highlight its color row · Hover a row to highlight the matching part · Click a swatch to pick a new color. Actual menu refreshes on next scan tick (≤5s).")
                                 .font(.system(size: 11))
                                 .foregroundColor(.secondary)
                         }
@@ -4218,7 +4356,8 @@ struct SettingsTabView: View {
 
                         ForEach(PaletteToken.allCases, id: \.self) { token in
                             PaletteEditorRow(token: token,
-                                             paletteVersion: palette.version)
+                                             paletteVersion: palette.version,
+                                             hoveredToken: $hoveredToken)
                             Divider().opacity(0.4)
                         }
 
@@ -4235,6 +4374,9 @@ struct SettingsTabView: View {
                 }
                 .padding(.horizontal, 24)
 
+                MenuBehaviorSection()
+                    .padding(.horizontal, 24)
+
                 Spacer(minLength: 24)
             }
         }
@@ -4244,6 +4386,7 @@ struct SettingsTabView: View {
 struct PaletteEditorRow: View {
     let token: PaletteToken
     let paletteVersion: Int   // included in the view identity so changes re-render
+    @Binding var hoveredToken: PaletteToken?
 
     @State private var showPicker = false
 
@@ -4251,6 +4394,7 @@ struct PaletteEditorRow: View {
     private var currentColor: Color { Color(PaletteStore.shared.color(for: token)) }
     private var defaultHex: String { PaletteStore.shared.defaultColor(for: token).hexString }
     private var isOverridden: Bool { PaletteStore.shared.isOverridden(token) }
+    private var isHovered: Bool { hoveredToken == token }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -4313,6 +4457,142 @@ struct PaletteEditorRow: View {
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 4)
+        .background(
+            // Light offshade for the bg when this row matches the hovered
+            // preview token. Color.accentColor adapts to user accent +
+            // dark/light mode automatically.
+            RoundedRectangle(cornerRadius: 4)
+                .fill(isHovered ? Color.accentColor.opacity(0.12) : Color.clear)
+        )
+        .onHover { inside in
+            // Forward: hovering this row sets the hovered token, which
+            // flows into the preview via the @State binding and triggers
+            // LiveRowView.setHighlightedToken(...) on the matching label.
+            hoveredToken = inside ? token : (hoveredToken == token ? nil : hoveredToken)
+        }
+    }
+}
+
+/// Appearance preference: System / Light / Dark. Applied by setting
+/// `NSApp.appearance` and re-rendering the dashboard. Persists across launches.
+enum AppearancePref: String, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .system: return "System"
+        case .light:  return "Light"
+        case .dark:   return "Dark"
+        }
+    }
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system: return nil
+        case .light:  return NSAppearance(named: .aqua)
+        case .dark:   return NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
+private let appearancePrefKey = "appearance.mode"
+func loadAppearancePref() -> AppearancePref {
+    if let raw = UserDefaults.standard.string(forKey: appearancePrefKey),
+       let p = AppearancePref(rawValue: raw) { return p }
+    return .system
+}
+func applyAppearancePref(_ pref: AppearancePref) {
+    NSApp.appearance = pref.nsAppearance
+}
+
+struct AppearanceSection: View {
+    @State private var pref: AppearancePref = loadAppearancePref()
+
+    var body: some View {
+        OverviewSection(title: "Appearance",
+                        icon: "paintbrush.fill",
+                        iconColor: .indigo) {
+            HStack(spacing: 12) {
+                Text("Theme")
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: 130, alignment: .leading)
+                Picker("", selection: $pref) {
+                    ForEach(AppearancePref.allCases) { p in
+                        Text(p.displayName).tag(p)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 280)
+                Text("Affects the dashboard window. The menu's translucent material adapts to the OS regardless.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                Spacer()
+            }
+            .padding(.vertical, 4)
+            .onChange(of: pref) { _, newPref in
+                UserDefaults.standard.set(newPref.rawValue, forKey: appearancePrefKey)
+                applyAppearancePref(newPref)
+            }
+        }
+    }
+}
+
+/// Section for misc. menu-side behavior toggles. Each control persists via
+/// UserDefaults and is read by the bar at the relevant call site. Adding
+/// more here is mechanical: define a key, expose a Toggle/Picker, and have
+/// the bar read it.
+struct MenuBehaviorSection: View {
+    @AppStorage("density") private var density: String = "comfortable"
+    @AppStorage("defaultTab") private var defaultTab: String = DashboardTab.overview.rawValue
+    @AppStorage("time.use24h") private var use24h: Bool = false
+
+    var body: some View {
+        OverviewSection(title: "Menu Behavior",
+                        icon: "slider.horizontal.below.rectangle",
+                        iconColor: .teal) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 12) {
+                    Text("Density")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 130, alignment: .leading)
+                    Picker("", selection: $density) {
+                        Text("Compact").tag("compact")
+                        Text("Cozy").tag("cozy")
+                        Text("Comfortable").tag("comfortable")
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 280)
+                    Spacer()
+                }
+
+                HStack(spacing: 12) {
+                    Text("Default tab")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 130, alignment: .leading)
+                    Picker("", selection: $defaultTab) {
+                        ForEach(DashboardTab.allCases) { tab in
+                            Text(tab.rawValue).tag(tab.rawValue)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 220)
+                    Text("Which tab opens when the dashboard launches.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+
+                HStack(spacing: 12) {
+                    Text("Time format")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 130, alignment: .leading)
+                    Toggle("Use 24-hour clock", isOn: $use24h)
+                        .toggleStyle(.checkbox)
+                    Spacer()
+                }
+            }
+            .padding(.vertical, 4)
+        }
     }
 }
 
