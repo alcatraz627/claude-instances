@@ -14,7 +14,8 @@
   <img src="https://img.shields.io/badge/platform-macOS_13+-black" alt="Platform">
   <img src="https://img.shields.io/badge/language-Swift_5.9-F05138" alt="Swift">
   <img src="https://img.shields.io/badge/build-swiftc_(no_Xcode)-blue" alt="Build">
-  <img src="https://img.shields.io/badge/lines-~6500-informational" alt="Lines">
+  <img src="https://img.shields.io/badge/lines-~7600-informational" alt="Lines">
+  <img src="https://img.shields.io/badge/tests-65_passing-success" alt="Tests">
   <img src="https://img.shields.io/github/last-commit/alcatraz627/claude-instances" alt="Last Commit">
 </p>
 
@@ -37,11 +38,12 @@
 ## About
 
 A native macOS menu bar widget that gives you instant visibility into all your running
-Claude Code sessions. See live instance count, token usage, rate limits, and session
-history at a glance. Click any instance to focus its Ghostty terminal tab instantly.
-Resume past sessions with a single click.
+Claude Code sessions. Live-updating instance rows show model, branch, ctx %, tokens, cost,
+memory, last user prompt, and active state — without ever closing the menu. Click any
+instance to open it in Finder / Terminal / VSCode, or view its transcript in a live HTML
+viewer.
 
-Built as a single Swift file compiled with `swiftc` -- no Xcode project, no external
+Built as a single Swift file compiled with `swiftc` — no Xcode project, no external
 dependencies, no package managers. Just `bash native/build.sh --install` and it runs
 forever via LaunchAgent.
 
@@ -51,12 +53,16 @@ The widget uses a two-tier scan strategy for responsiveness without overhead:
 
 | Tier | Interval | Duration | Scope |
 |------|----------|----------|-------|
-| **Quick scan** (`--quick`) | Every 5s | ~90ms | Live instances + rate limits |
-| **Full scan** | Every 30s (6th tick) | ~185ms | + history, events, aggregates |
+| **Quick scan** (`--quick`) | User-selectable (default 5s) | ~90ms | Live instances + rate limits |
+| **Full scan** | Every 6th tick (~30s by default) | ~185ms | + history, events, aggregates, git enrichment, last user prompt |
 
-Quick scan results merge into the cached full scan -- live data and rate limits stay fresh
-while expensive operations (filesystem walks, event parsing, aggregate computation) run
-at a relaxed cadence.
+Quick scans replace the live array but **preserve per-instance enrichment fields**
+(`gitBranch`, `gitModified`, `lastPrompt`) from the previous full scan via
+`LiveInstance.preservingEnrichment(from:)` — so branch info doesn't flicker off every
+5 seconds.
+
+The user can change the refresh cadence from the menu (Refresh submenu: 1/2/5/10/30/60s
+or Pause), and the timer reconstructs itself on change.
 
 ## Tests
 
@@ -64,12 +70,13 @@ at a relaxed cadence.
 bash tests/run-tests.sh
 ```
 
-Runs ~30 smoke tests covering: bash syntax of all scripts, swift compile of
-the bar source, JSON shape of `scan.sh` (full + `--quick`), and
-`detail.sh --regen` against a fixture JSONL with marker checks for the
-runtime bits most likely to silently regress (FLOW_ICONS TDZ ordering,
-hook-event rendering, msg-idx + click-jump dot wiring, CDN library
-references, favicon).
+Runs **65 smoke tests** covering: bash syntax of all scripts, swift compile of the
+bar source, JSON shape of `scan.sh` (full + `--quick`), runtime markers in
+`detail.sh` generated HTML (FLOW_ICONS TDZ ordering, hook-event rendering, live
+poller, /regen endpoint, msg-idx + click-jump dot wiring, CDN library references,
+favicon, atomic write), and structural markers for the live-menu rendering
+(`LiveRowView` class, `intrinsicContentSize` override, hover tracking areas,
+`PaletteStore` + 12 palette tokens, `AppearanceSection`, `MenuBehaviorSection`).
 
 No external test framework — bash + Python 3 stdlib only.
 
@@ -89,56 +96,88 @@ The Claude logo appears in your menu bar. Click it to see your running sessions.
 
 ### Menu Bar Icon
 
-- Static coral Claude logo PNG -- dims to 50% when no instances are running
-- Instance count badge in monospaced font (or `-` when idle)
+- Static coral Claude logo PNG — dims to 50% when no instances are running
+- Instance count badge in monospaced font (or `—` when idle)
 - Count text turns orange at 75% rate limit, red at 90%
-- Shows `! N` when permission requests are pending
+- Shows `⚠ N` when permission requests are pending
 
-### Dropdown Menu (min-width 340pt)
+### Dropdown Menu (min-width 340pt) — live-updating
 
-- **Rate limits** -- `[██████░░░░] 52% . 7d:12%` progress bar matching statusline.sh
-  style, with 4-tier color thresholds (green <50% / yellow 50-75% / orange 75-90% / red >90%)
-- **Usage stats** -- Today/Week aggregates: sessions, turns, cost, inline model badges
-  (`*11 .5 o2` for Opus/Sonnet/Haiku counts)
-- **Live instances** (auto-refreshing while menu is open via view-based items) -- model badge, leaf folder + full path (wrapping), tab title,
-  elapsed, ↳ subagent count (purple), ⎇ git branch (teal) + `*N` modified-files count
-  (orange/red by burn level). Last user prompt shown as `❯ <prompt>` below.
-  Row 2: context remaining (color-coded green/orange/red), turns, tool calls (orange),
-  output tokens (green), cost (stepped gray/orange/red), RAM (stepped), tok/s (stepped).
-  Compaction warning row when ctx < 15%. Focus file path wraps. MCP-down warning in red.
-  Click row to open submenu: Open in Finder / Terminal (Ghostty) / VSCode, View Transcript,
-  Copy PID, Terminate.
-- **Recent events** -- per-type Unicode symbols with semantic color + inline model badge
-- **Session history** -- last 6 sessions, clickable to resume via `claude --resume`
-  in a new Ghostty tab
-- **Actions** -- New Session (Cmd+N), Dashboard (Cmd+D), Refresh submenu (cadence picker:
-  1/2/5/10/30/60s + Pause), Terminate All, Quit. Footer shows "Updated Ns ago · refresh: cadence"
-  with paused state escalating to orange.
+The per-instance rows are **view-based** (`NSMenuItem.view = LiveRowView`) so they
+mutate in place while the menu is held open. AppKit's standard `attributedTitle` items
+can't redraw mid-display; view-based items can, and that's what makes the elapsed
+time, ctx %, tokens, cost, RAM all tick smoothly without close + reopen.
 
-### Transcript View (HTML)
+**What you see per instance:**
 
-Click "View Transcript" on any instance's submenu to open a live-updating HTML
-view of its conversation. detail.sh spawns a per-pid localhost http.server
-(port `5400 + (pid % 500)`) and opens the page via `http://127.0.0.1:<port>/...`
-so the JS can `fetch()` itself for live updates (Chrome blocks fetch between
-`file://` URLs). The page polls `/regen` every 30s, swaps the messages region
-in place — no flicker, theme/search/scroll/expanded-blocks all preserved.
-Click ↻ Refresh for an immediate full reload.
+- **Header**: model badge (◆ opus / ● sonnet / ○ haiku) · leaf folder name · elapsed time
+  · `↳N` subagent count (mint-cyan, when present) · `⎇branch` (teal) · `*N` modified-file
+  count (yellow <20, soft red ≥20)
+- **Tab title** (when distinct from leaf folder): `⌥ <terminal tab topic>`
+- **Full path** (wraps via view-based label, never truncates)
+- **State**: `💭 thinking: <detail>` / `✍️ responding` / `🔧 tool_use: <name>`
+- **Last user prompt**: `❯ <80-char preview>`
+- **Metrics**: `ctx N%` (red <30 / yellow <60 / green ≥60) · `Nt` turns (dim) ·
+  `🔧N` tools (dim) · `↑NK` output tokens (green) · `$N.NN` cost (amber) ·
+  `NMB` memory (sky blue) · `Nt/s` rate (dim)
+- **Compaction warning** (when ctx <15%): soft red row
+- **Focus file**: `📄 <path>` (wraps)
+- **MCP-down warning** (when present): soft red
 
-- **Header** — AI-generated title, model · PID · session · branch · permission-mode pills
-- **Stats** — input / output / cache-read / turns; CPU / MEM / MCP-up / MCP-down
-- **Tools used** — horizontal-bar breakdown by tool name
-- **Activity timeline** — clickable colored buttons; each jumps to its block + flashes
-- **Toolbar** — search, role chips (You / Claude / Tools), ↻ Refresh, live indicator
-- **Conversation** — markdown rendering via `marked.js` + `highlight.js` (CDN). Headings,
-  lists, tables, blockquotes, syntax-highlighted code blocks. Auto-link bare URLs.
-- **Tool calls** — grouped, expandable. Each shows tool name, copyable file paths,
-  full input JSON, and (for `Edit`) red/green-tinted side-by-side OLD/NEW with
-  language-specific highlighting.
-- **Inline events** — `⚙ N hooks ran`, `🔓 permission mode → auto`, `↳ subagent` markers
-- **Block index + datetime** — every card shows `#N` index and HH:MM:SS with full-datetime tooltip
-- **Light/dark theme toggle** — persists across reloads via localStorage
-- **State persistence** — search, chip toggles, scroll position survive reload via sessionStorage
+Click an instance row to open its submenu: **Open in Finder / Terminal (Ghostty) /
+VSCode**, **View Transcript**, **Copy PID**, **Terminate**. Reorderable in code at the
+submenu builder; the Finder/Terminal/VSCode trio sits at top to match user mental
+model.
+
+**Other menu sections:**
+
+- **Rate limits**: 5h + 7d progress bars with countdown until reset
+  (`⏱ 5h 52% · (2h 18m)` / `📅 7d 12% · (5d 3h)`). Warning threshold configurable via
+  slider (default 80%).
+- **Usage stats**: Today / Week aggregates — sessions, turns, cost, inline model
+  badge counts.
+- **Recent events**: per-type Unicode symbols, semantic colors, inline model badges.
+- **Session history**: last 6 sessions, click to resume via `claude --resume` in a
+  new Ghostty tab.
+- **Actions**: New Session (Cmd+N), Dashboard (Cmd+D), **Refresh submenu** (cadence
+  picker: 1/2/5/10/30/60s + Pause; persisted), Terminate All, Quit Widget.
+- **Footer**: "Updated Ns ago · refresh: cadence" — escalates to orange when paused.
+
+### Transcript View — live HTML viewer
+
+Click "View Transcript" on any instance's submenu. `detail.sh` spawns a per-pid localhost
+HTTP server (`lib/detail-server.py`, port `5400 + pid % 500`) and opens the page via
+`http://127.0.0.1:<port>/...` — required because Chrome blocks `fetch()` between two
+`file://` URLs.
+
+**Live update mechanics:**
+- JS poller calls `/regen` every 30s — the server runs `bash detail.sh --regen` synchronously
+  and returns 200
+- Page fetches itself, extracts `#msgs` innerHTML, **swaps in place** — no full reload, no
+  flicker, all state preserved (theme, search, scroll, expanded `<details>`)
+- Server self-exits on: Claude PID death (60s watcher) · 10-min idle (no requests) ·
+  2-hour hard deadline · SIGTERM/SIGINT/SIGHUP. The idle timeout means closing the browser
+  tab eventually cleans up the server even if Claude is still running.
+- Disk writes are atomic (`os.replace(tmp, output)`) so the poller never reads a half-
+  written file.
+
+**What you see on the page:**
+
+| Section | Detail |
+|---|---|
+| **Header** | AI-generated session title · model · PID · session id · `⎇branch` · permission-mode pill · refresh time pill |
+| **Stats row** | Input / Output / Cache Read / Turns counts |
+| **Metrics bar** | CTX% (color-coded) · CPU · MEM · MCP-up list · MCP-down (red) · CWD (copyable chip) |
+| **Tools used** | Horizontal-bar breakdown by tool name with counts |
+| **Activity timeline** | Clickable colored dots (one per turn) · click to jump to that block · flash on arrival |
+| **Toolbar** | Search-as-you-type · role chips (You / Claude / Tools) · ↻ Refresh · live pulse |
+| **Conversation** | Markdown via `marked.js` + `highlight.js` (CDN): headings, lists, tables, blockquotes, syntax-highlighted code. Auto-links bare URLs. |
+| **Tool calls** | Grouped + expandable. Each shows tool name, copyable file paths, full input JSON. `Edit` → red/green-tinted side-by-side OLD/NEW with language-specific highlighting. `Bash` → highlighted command + description. |
+| **Inline events** | `⚙ N hooks ran` · `🔓 permission mode → auto` · `↳ subagent` markers |
+| **Block index + timestamp** | Each card has a `#N` index badge; HH:MM:SS with full-datetime tooltip |
+| **Flow arrows** | Color-tinted connectors between consecutive cards showing the next speaker |
+| **Theme toggle** | Light/dark; persists across reloads via localStorage |
+| **State persistence** | Search, chip toggles, scroll position survive reload via sessionStorage |
 
 ### Native Dashboard (SwiftUI)
 
@@ -151,119 +190,219 @@ A floating `NSPanel` with `NavigationSplitView` sidebar and `.ultraThinMaterial`
 | **History** | Searchable, sortable table with tokens, cost estimates, hover-reveal resume/transcript actions, summary stats footer |
 | **Events** | Timeline with deep history toggle, event type filter picker, model badges, tab title context, tool details for PostToolUse events |
 | **All Sessions** | Deep filesystem scan of ALL past sessions with search, sort, resume, and transcript actions |
+| **Settings** | **Appearance** (System/Light/Dark theme) · **Widget Menu** (palette editor with bidirectional hover preview, Tailwind color picker, per-token reset) · **Menu Behavior** (density / default tab / time format) |
 | **About** | App info, build metadata, keyboard shortcuts, data sources, tab guide, troubleshooting |
+
+### Settings → Widget Menu (palette editor)
+
+The Settings tab includes a centrally-tunable color palette for the menu. **12 palette
+tokens**, each persisting to UserDefaults as a hex string under `palette.<token>`:
+
+| Token | Used for |
+|---|---|
+| `model.opus` / `.sonnet` / `.haiku` | Per-model badge color |
+| `metric.cost` / `.tokens` / `.memory` | $ / ↑K / MB values in the metrics row |
+| `accent.branch` / `.subagent` | `⎇branch` and `↳N` badges |
+| `state.active` | Active state-detail row (thinking/responding/tool_use) |
+| `warn.high` / `.mid` | Compaction-imminent, MCP-down, modified ≥20 (high); ctx <60% (mid) |
+| `success.high` | Healthy state — ctx ≥60%, fast token rate |
+
+**How it works:**
+
+- **`PaletteStore` singleton** holds baked-in defaults + UserDefaults overrides. Posts a
+  notification on change.
+- **Bar's color constants** (`menuRed`, `costColor`, etc.) are computed `var`s that read
+  `PaletteStore.shared.color(for: token)` at call time — user changes propagate to the
+  next render with no cache to invalidate.
+- **Single renderer for both surfaces** — the Settings preview pane wraps the same
+  `LiveRowView` NSView the actual menu uses, via `NSViewRepresentable`. Zero drift
+  between preview and menu.
+- **Bidirectional hover-highlight** — hover a line in the preview → matching palette
+  row gets a translucent accent background + the token name surfaces in a pill chip
+  above the preview. Hover a palette row → matching label inside the preview gets the
+  same translucent background (`controlAccentColor` 20%). Implemented via NSTrackingArea
+  on the preview's NSView; hover state is shared through SwiftUI `@State`.
+- **Tailwind color picker** — 13 hues × 5 shades (300/400/500/600/700) = 65 swatches in
+  a labeled grid. Hover shows `rose-400 · #FB7185`. Current selection ringed in accent.
+- **Per-token Reset** — disabled when the token is at its default; resetting clears
+  the UserDefaults override. **Reset all to defaults** wipes every override.
+
+**System text colors** (`labelColor`, `secondaryLabelColor`, etc.) are intentionally
+NOT in the palette — they auto-adapt to dark/light mode via AppKit semantics and
+shouldn't be tunable.
+
+### Settings → Appearance
+
+System / Light / Dark picker. Applies to the dashboard window's chrome via
+`NSApp.appearance = NSAppearance(named: ...)`. Persisted under `appearance.mode`. The
+menu's translucent material adapts to the OS regardless.
+
+### Settings → Menu Behavior
+
+Three preferences that persist via `@AppStorage`:
+- **Density** (compact / cozy / comfortable) — placeholder; future row-spacing hook
+- **Default tab** — which dashboard tab opens by default
+- **Time format** — toggle 24-hour clock
+
+Currently captured but not yet wired to reader sites — let me know which ones to
+actually act on.
 
 ## Architecture
 
 ```
-+-----------------------------------------------------------------+
-|  DATA SOURCES                                                    |
-|  scan.sh (JSON)    /tmp/claude-statusline-*    ~/.claude/projects |
-|  statusline.sh --> ~/.claude/widgets/.limits.json (rate limits)   |
-+--------+-----------------------+-------------------+-------------+
-         | 5s/30s tiered         | metrics            | on-demand
-         v                       v                    v
-+-----------------------------------------------------------------+
-|  CORE                                                            |
-|  BarDelegate --> ScanResult Cache --> DashboardData (@Published) |
-|    quick scan: merge live + limits into cached full result       |
-|    full scan:  replace everything (history, events, aggregates)  |
-+-----------------------------------------------------------------+
-         | menuNeedsUpdate                       | SwiftUI binding
-         v                                       v
-+---------------------------+   +--------------------------------------+
-|  NSMenu Dropdown          |   |  SwiftUI Dashboard (NSPanel)         |
-|  . Rate limit bar         |   |  . Overview / Live / History         |
-|  . Usage stats            |   |  . Events / All Sessions / About     |
-|  . Live instances         |   |  . NavigationSplitView sidebar       |
-|  . Events + History       |   |  . Hover-reveal action buttons       |
-|  . Actions (Cmd+N/D/R)   |   |                                      |
-+------------+--------------+   +-------------------+------------------+
-             | click/action                         | button action
-             v                                      v
-+-----------------------------------------------------------------+
-|  ACTIONS (AppleScript + Process)                                 |
-|  focusGhosttyTab()  resumeSession()  terminate()  openTranscript()|
-+-----------------------------------------------------------------+
-             |                               |
-             v                               v
-       Ghostty Terminal               Finder / Chrome
++--------------------------------------------------------------------------+
+|  DATA SOURCES                                                            |
+|  scan.sh (JSON)     /tmp/claude-statusline-*     ~/.claude/projects      |
+|  statusline.sh -->  ~/.claude/widgets/.limits.json  (5h + 7d, resets)    |
++-----+----------------------+--------------------+-----------------------+
+      | 5s/30s tiered        | metrics            | on-demand
+      v                      v                    v
++--------------------------------------------------------------------------+
+|  CORE                                                                    |
+|  BarDelegate -->  ScanResult Cache  -->  DashboardData (@Published)      |
+|     quick scan: merge live (preserving enrichment from prev full scan)   |
+|     full scan:  replace everything (history, events, aggregates, git)    |
++-----+----------------------+--------------------+-----------------------+
+      | menuNeedsUpdate      | refreshLiveRows    | SwiftUI binding
+      | + delegate hooks     | (every tick when   |
+      v                      | menu is open)      v
++----------------------------+   +---------------------------------------+
+|  NSMenu Dropdown                |  SwiftUI Dashboard (NSPanel)         |
+|  . Rate limit bars (+ resets)   |  . Overview / Live / History         |
+|  . Usage stats (today / week)   |  . Events / All Sessions             |
+|  . Live instances (view-based,  |  . Settings (palette + appearance    |
+|    live-updating LiveRowView)   |    + behavior)                       |
+|  . Recent events                |  . About                             |
+|  . Session history              |                                      |
+|  . Refresh submenu (cadence)    |  +------------------------------+    |
+|  . Actions (Cmd+N/D)            |  |  Settings preview ↔ palette  |    |
++----------------+----------------+  |  bidirectional hover state   |    |
+                 |                   |  via shared @State binding   |    |
+                 |                   +--------------+---------------+    |
+                 v                                  v
++--------------------------------------------------------------------------+
+|  PaletteStore (singleton)                                                |
+|  . 12 tokens, baked-in defaults + UserDefaults overrides                 |
+|  . postNotification on change → BarDelegate refreshLiveRows + updateButton
++--------------------------------------------------------------------------+
+                 |
+                 v
++----------------+--------------------------------------------------------+
+|  ACTIONS (AppleScript + Process + subprocess)                            |
+|  focusGhosttyTab()  resumeSession()  terminate()  openTranscript()       |
+|  openInFinder() openInVSCode() copyPID()                                 |
++----------------+--------------------------------------------------------+
+                 |
+                 v        +---------------------+
+       Ghostty Terminal   |  detail-server.py   |--> Chrome
+                          |  per-pid http :port |    (live JS poller
+                          |  /regen endpoint    |     calls /regen
+                          |  + scheduled regen  |     swaps #msgs)
+                          +---------------------+
 ```
 
 ### File Structure
 
 ```
 ~/.claude/widgets/claude-instances/
-+-- native/
-|   +-- claude-instances-bar.swift    # Single-file app (~3900 lines)
-|   +-- claude-logo.svg               # Menu-bar icon
-|   +-- color-sampler.swift           # Internal: vibrancy color preview tool
-|   +-- build.sh                      # Compile + install + manage
-|   +-- .build-info                   # Auto-generated build metadata
-+-- lib/
-|   +-- scan.sh                       # Python scanner --> JSON output (~950 lines)
-|   +-- detail.sh                     # Transcript HTML generator (~1600 lines)
-|   +-- detail-server.py              # Localhost http.server backing live updates
-+-- tests/
-|   +-- run-tests.sh                  # Smoke-test suite (37 tests)
-|   +-- fixtures/sample-session.jsonl # Synthetic transcript for detail.sh tests
-+-- plugin.sh                         # Legacy SwiftBar plugin (kept)
-+-- render.sh                         # Legacy HTML dashboard renderer
-+-- dashboard.html                    # Legacy HTML dashboard
-+-- PLAN.md                           # Design document + implementation record
-+-- UPGRADE-PLAN.md                   # Phase 1-5 upgrade plan and progress
-+-- README.md                         # This file
+├── native/
+│   ├── claude-instances-bar.swift   # Single-file app (~4900 lines)
+│   ├── claude-logo.svg              # Menu-bar icon
+│   ├── color-sampler.swift          # Internal: vibrancy color preview tool
+│   ├── build.sh                     # Compile + install + manage
+│   └── .build-info                  # Auto-generated build metadata
+├── lib/
+│   ├── scan.sh                      # Python scanner → JSON output (~950 lines)
+│   ├── detail.sh                    # Transcript HTML generator (~1600 lines)
+│   └── detail-server.py             # Localhost http.server backing live updates
+├── tests/
+│   ├── run-tests.sh                 # Smoke-test suite (65 tests)
+│   └── fixtures/sample-session.jsonl
+├── assets/
+│   ├── banner.svg
+│   └── preview.svg
+├── gotchas.md                       # Developer pitfall log
+├── UPGRADE-PLAN.md                  # Shipped + parked work tracker
+└── README.md                        # This file
 ```
 
 ### Key Components
 
 | Component | Role |
 |-----------|------|
-| `BarDelegate` | `NSApplicationDelegate` + `NSMenuDelegate`. Manages status item, menu, tiered scan timers, action handlers. |
-| `ScanResult` | Codable struct decoded from `scan.sh` JSON. Contains live instances, history, events, rate limits, aggregates. |
+| `BarDelegate` | `NSApplicationDelegate` + `NSMenuDelegate`. Manages status item, menu, tiered scan timers, action handlers. `menuWillOpen` triggers an immediate refresh for fresh-on-open data. |
+| `LiveRowView` | `NSView`. Renders one live instance as a vertical stack of NSTextFields. Mutates in place via `update(with: LiveInstance, ...)` so menu rows tick while open. Tracks per-label palette tokens for hover. |
+| `LiveRowViewRepresentable` | `NSViewRepresentable`. Embeds `LiveRowView` in SwiftUI for the Settings preview — single renderer, zero drift between preview and menu. |
+| `PaletteStore` | Singleton. 12 user-tunable color tokens + defaults + UserDefaults overrides. Posts `didChangeNotification` on every mutation. |
+| `ScanResult` | Codable struct decoded from `scan.sh` JSON. Live instances, history, events, rate limits, aggregates. |
+| `LiveInstance` | Per-instance data. Includes `preservingEnrichment(from:)` so quick scans don't wipe git/prompt fields. |
 | `DashboardController` | Manages the floating `NSPanel`. Creates SwiftUI views via `NSHostingView`. |
 | `DashboardData` | `ObservableObject` bridging cached scan data into SwiftUI. Handles on-demand All Sessions scan. |
-| `OverviewTabView` | Today/Week aggregates, model breakdown badges, stat grid, rate limit bars. |
-| `EventsTabView` | Timeline with deep history toggle, event type filter, model badges, tool details. |
-| `AllSessionsTabView` | Deep filesystem scan of `~/.claude/projects/` -- search, sort, resume, view transcripts. |
-| `AboutTabView` | Help/about page with build info, keyboard shortcuts, data sources, and troubleshooting. |
-| `OverviewSection` | Reusable section container with icon header -- used by Overview and About tabs. |
-| `focusGhosttyTab()` | AppleScript bridge -- finds and focuses the Ghostty tab matching a working directory. |
-| `resumeSession()` | AppleScript -- opens a new Ghostty tab, cd's to the project, runs `claude --resume`. |
+| `SettingsTabView` | Palette editor + Appearance picker + Menu Behavior toggles. Bidirectional preview ↔ palette hover via shared `@State hoveredToken`. |
+| `TailwindPicker` | 13 × 5 swatch popover. Hover shows `<hue>-<shade> · #HEX`. |
+| `focusGhosttyTab()` | AppleScript bridge — finds and focuses the Ghostty tab matching a working directory. |
+| `resumeSession()` | AppleScript — opens a new Ghostty tab, cd's to the project, runs `claude --resume`. |
+| `openInVSCode()` | Spawns `code <path>` via PATH; falls back to NSWorkspace `/Applications/Visual Studio Code.app` open. |
 
 ### Data Models
 
 | Struct | Source | Key Fields |
 |--------|--------|------------|
-| `LiveInstance` | scan.sh | pid, model, modelFull, cwd, elapsed, turns, inputTokens, outputTokens, costUsd, toolCalls, sessionState, subagentCount, statusline |
+| `LiveInstance` | scan.sh | pid, model, modelFull, cwd, elapsed, turns, inputTokens, outputTokens, costUsd, toolCalls, sessionState, subagentCount, statusline, **gitBranch, gitModified, lastPrompt** |
 | `SessionState` | scan.sh | state (thinking/responding/tool_use/idle), detail |
-| `StatuslineMetrics` | `/tmp/claude-statusline-<pid>` | cpu, mem, rssMb, focusFile, tokSpeed, costVel, ctxRemaining, walSinceCp, mcpDown |
+| `StatuslineMetrics` | `/tmp/claude-statusline-<pid>` | cpu, mem, rssMb, focusFile, tokSpeed, costVel, ctxRemaining, walSinceCp, mcpDown, mcpHealthy |
 | `SessionHistory` | scan.sh | sessionId, project, model, turns, sizeKb, modified, tokensIn, tokensOut, costUsd |
 | `FullSession` | All Sessions scan | sessionId, project, projectDirName, model, turns, sizeKb, modified, tokensIn, tokensOut, jsonlPath |
 | `Event` | scan.sh | event, ts, project, sessionId, model, tabTitle, tool |
-| `RateLimits` | scan.sh (via .limits.json) | fiveH (pct/used/cap), week (pct/used/cap) |
+| `RateLimits` | scan.sh (via .limits.json) | fiveH (pct/used/cap), week (pct/used/cap), **resetsAt, resetsAtWeekly** |
 | `Aggregates` | scan.sh | today/week (sessions, turns, tokensIn, tokensOut, costUsd), modelBreakdown |
+| `PaletteToken` | hard-coded enum | 12 cases: modelOpus/Sonnet/Haiku, metricCost/Tokens/Memory, accentBranch/Subagent, stateActive, warnHigh/Mid, successHigh |
 
 ### Data Flow: Rate Limits
 
 Rate limit percentages flow through a cross-process cache:
 
-1. **Claude Code** pipes session status JSON (including `rate_limits.five_hour.used_percentage`)
+1. **Claude Code** pipes session status JSON (including `rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}`)
    to `statusline.sh` on every tool use/notification
-2. **statusline.sh** parses the percentages and writes them as a side-effect to
-   `~/.claude/widgets/.limits.json`
-3. **scan.sh** reads the cache file (in both quick and full scans) and includes it in the
-   JSON output as `limits`
-4. **Swift widget** decodes `RateLimits` and renders the progress bar in both NSMenu and
-   SwiftUI dashboard
+2. **statusline.sh** parses the percentages + reset timestamps and writes them as a
+   side-effect to `~/.claude/widgets/.limits.json` (keys: `5h`, `week`, `resets_at`,
+   `resets_at_weekly`)
+3. **scan.sh** reads the cache file (in both quick and full scans) and includes it in
+   the JSON output as `limits`
+4. **Swift widget** decodes `RateLimits` and renders the progress bars in both NSMenu
+   and SwiftUI dashboard, with countdown until each window resets
 
-### Model Colors
+### Data Flow: Palette → Render
 
-| Model | Badge | Color | RGB |
-|-------|-------|-------|-----|
-| Opus | `*` | Warm amber/gold | `(0.95, 0.65, 0.20)` |
-| Sonnet | `.` | Vibrant blue | `(0.38, 0.58, 1.0)` |
-| Haiku | `o` | Teal/mint | `(0.30, 0.82, 0.72)` |
+1. **User** picks a Tailwind swatch in Settings → `PaletteStore.shared.set(token, hex:)`
+2. **PaletteStore** writes UserDefaults key `palette.<token>` and posts
+   `PaletteStore.didChangeNotification`
+3. Two listeners fire simultaneously:
+   - **PaletteObservable** (`@StateObject` in SettingsTabView) bumps its `version` →
+     SwiftUI re-renders preview + palette rows
+   - **BarDelegate** (registered in `applicationDidFinishLaunching`) calls
+     `refreshLiveRows()` → every visible live menu row's `update(with:)` re-runs
+4. **LiveRowView.update()** reads `PaletteStore.shared.color(for: token)` for each label
+   — picks up the new value
+5. **Both surfaces reflect the change** — preview within ~1 frame, actual menu within
+   the scan tick (default 5s)
+
+### Default Palette
+
+| Token | Default | Tailwind equivalent |
+|-------|---------|---------------------|
+| `model.opus` | `#FF9500` | systemOrange |
+| `model.sonnet` | `#0A84FF` | systemBlue |
+| `model.haiku` | `#5AC8B4` | teal-400-ish |
+| `metric.cost` | `#F2B84D` | amber-400 |
+| `metric.tokens` | `#4FBB6F` | green-500 shadowed |
+| `metric.memory` | `#8CBFF2` | sky |
+| `accent.branch` | `#5AC8B4` | teal-400-ish |
+| `accent.subagent` | `#8CD0E0` | mint-cyan |
+| `state.active` | `#5AC8B4` | teal-400-ish |
+| `warn.high` | `#E66B6B` | desaturated red |
+| `warn.mid` | `#D9BD2A` | systemYellow shadowed |
+| `success.high` | `#4FBB6F` | green-500 shadowed |
 
 ## Build Management
 
@@ -295,11 +434,16 @@ is active.
 
 ## Dependencies
 
-- **macOS 13+** (Ventura) -- for `NavigationSplitView`, `.ultraThinMaterial`
-- **Swift 5.9+** -- ships with Xcode 15+
-- **Ghostty** -- for tab focus via AppleScript (falls back to generic activation)
-- **Python 3** -- used by `scan.sh` and `detail.sh` for JSON generation
-- No external packages. No Xcode project. Single-file `swiftc` compilation.
+- **macOS 13+** (Ventura) — for `NavigationSplitView`, `.ultraThinMaterial`
+- **Swift 5.9+** — ships with Xcode 15+
+- **Ghostty** — for tab focus via AppleScript (falls back to generic activation)
+- **Python 3** — used by `scan.sh`, `detail.sh`, and `detail-server.py`
+- No external Swift packages. No Xcode project. Single-file `swiftc` compilation.
+
+For the live transcript viewer:
+- **Google Chrome** preferred (the page opens via `open -a "Google Chrome"`; falls back
+  to default browser)
+- **marked.js + highlight.js** loaded from jsDelivr CDN (cached after first load)
 
 ## Troubleshooting
 
@@ -308,6 +452,10 @@ is active.
 | Two icons in menu bar | Hover over the stale one (macOS clears ghost icons on hover). Or: `bash build.sh --uninstall && bash build.sh --install` |
 | Icon not appearing | Check `bash build.sh --status`. If not running, `tail ~/Library/Logs/ClaudeInstances/bar.log` |
 | Menu shows "Scanning..." | `scan.sh` may be failing. Test with `bash lib/scan.sh` directly |
+| Branch / last-prompt missing | Full scan hasn't run yet (happens every 6 quick ticks ≈ 30s). Try clicking ↻ Refresh Now in the menu |
+| Live menu rows don't update | Make sure the binary is current: `bash build.sh --status` and look for "binary matches source" |
+| Palette change didn't apply | Notification fires but a stale `LiveRowView` may not have rebuilt. Close + reopen the menu once |
+| Transcript page won't load | `lsof -i :<port>` for `5400 + (pid % 500)`. Server may have hit idle/death timeout; click View Transcript again |
 | No rate limit bar | Requires an active Claude session for statusline.sh to write `.limits.json`. Check: `cat ~/.claude/widgets/.limits.json` |
 | Dashboard won't open | Requires macOS 13+. Check logs for SwiftUI errors |
 | "Focus" doesn't switch tabs | Ghostty must have Accessibility permission in System Settings |
