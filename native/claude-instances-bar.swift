@@ -409,6 +409,17 @@ private let menuGreen:  NSColor = NSColor.systemGreen.shadow(withLevel: 0.35)!
 private let menuYellow: NSColor = NSColor.systemYellow.shadow(withLevel: 0.30)!
 private let menuCyan:   NSColor = NSColor.systemCyan.shadow(withLevel: 0.35)!
 private let menuTeal:   NSColor = NSColor.systemTeal.shadow(withLevel: 0.25)!
+/// Softer red than systemRed. Pure `systemRed` reads as aggressive blood-red
+/// over the menu's translucent material; this is desaturated ~30% so warnings
+/// stay legible without screaming.
+private let menuRed:    NSColor = NSColor(calibratedRed: 0.90, green: 0.42, blue: 0.42, alpha: 1.0)
+/// Distinct colors per metric field so the user can locate a value at a
+/// glance without parsing labels. Replaces the previous value-stepped scheme
+/// where the same field changed color based on burn level.
+private let costColor:    NSColor = NSColor(calibratedRed: 0.95, green: 0.72, blue: 0.30, alpha: 1.0) // amber
+private let tokensColor:  NSColor = menuGreen                                                          // green
+private let memColor:     NSColor = NSColor(calibratedRed: 0.55, green: 0.75, blue: 0.95, alpha: 1.0) // sky
+private let subagentColor: NSColor = NSColor(calibratedRed: 0.55, green: 0.82, blue: 0.88, alpha: 1.0) // mint-cyan, less garish than purple
 
 /// Elapsed time uses gray — prominent enough without competing with status colors.
 private let coralAccent: NSColor = .systemGray
@@ -649,8 +660,12 @@ final class LiveRowView: NSView {
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            // 20pt leading: matches the leading inset AppKit uses for
+            // standard NSMenuItems (which start their title ~20pt in from
+            // the cell edge, after the icon/checkmark column). Pre-pad
+            // here so per-label whitespace prefixes aren't needed.
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -22),
             stack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
             widthAnchor.constraint(greaterThanOrEqualToConstant: 340),
@@ -663,7 +678,7 @@ final class LiveRowView: NSView {
     /// have rendered below 80px — which is most of them.
     override var intrinsicContentSize: NSSize {
         let s = stack.fittingSize
-        return NSSize(width: max(s.width + 24, 340),
+        return NSSize(width: max(s.width + 42, 340),
                       height: s.height + 8)
     }
 
@@ -683,6 +698,34 @@ final class LiveRowView: NSView {
             v.removeFromSuperview()
         }
 
+        // Indent is now controlled entirely by the stack's leading-edge
+        // constraint (configured once in setupUI). Per-label whitespace
+        // prefixes have been removed — they caused the "different left
+        // padding on each line" inconsistency you saw.
+        //
+        // Font size scheme (3 sizes, was 4):
+        //   13pt — header (model + leaf + elapsed)
+        //   12pt — metrics row (data values)
+        //   11pt — everything else (path, prompt, warnings)
+        // Bold only on the model badge. All other rows use regular weight.
+        //
+        // Color scheme:
+        //   badge color : per-model (orange/blue/teal)
+        //   leaf        : labelColor (white in dark mode)
+        //   elapsed     : tertiaryLabelColor (dim, was loud coral)
+        //   ↳ subagent  : subagentColor (mint-cyan — replaces garish purple)
+        //   ⎇ branch    : menuTeal (subtle, distinguishes from subagent)
+        //   * modified  : menuRed if ≥20 else menuYellow (was pure red)
+        //   ctx %       : menuRed <30 / yellow <60 / green ≥60
+        //   turns       : tertiaryLabel (ambient count, gray)
+        //   🔧 tools    : tertiaryLabel (was orange — too loud)
+        //   ↑ tokens    : tokensColor (green, always)
+        //   $ cost      : costColor (amber, always — was value-stepped)
+        //   MB memory   : memColor (sky blue, always — was value-stepped)
+        //   t/s speed   : tertiaryLabel
+        //   warnings    : menuRed (softer than systemRed)
+        //   state       : menuTeal
+
         // Header line: badge + (state icon) + leaf + elapsed + ↳ + ⎇ + *N
         let m = modelDisplay(inst.model)
         let elapsed = inst.elapsed?.trimmingCharacters(in: .whitespaces) ?? "?"
@@ -693,20 +736,20 @@ final class LiveRowView: NSView {
         ]))
         if !stateIcon.isEmpty {
             let blink = (Int(Date().timeIntervalSince1970) % 2 == 0) ? "\(stateIcon) " : "  "
-            header.append(NSAttributedString(string: blink, attributes: [.font: NSFont.systemFont(ofSize: 12)]))
+            header.append(NSAttributedString(string: blink, attributes: [.font: NSFont.systemFont(ofSize: 13)]))
         }
         header.append(NSAttributedString(string: leaf, attributes: [
             .font: NSFont.systemFont(ofSize: 13, weight: .medium),
             .foregroundColor: NSColor.labelColor,
         ]))
         header.append(NSAttributedString(string: "  \(elapsed)", attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-            .foregroundColor: coralAccent,
+            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: NSColor.tertiaryLabelColor,
         ]))
         if let subs = inst.subagentCount, subs > 0 {
             header.append(NSAttributedString(string: "  ↳\(subs)", attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
-                .foregroundColor: NSColor.systemPurple,
+                .foregroundColor: subagentColor,
             ]))
         }
         if let br = inst.gitBranch, !br.isEmpty {
@@ -715,7 +758,7 @@ final class LiveRowView: NSView {
                 .foregroundColor: menuTeal,
             ]))
             if let mod = inst.gitModified, mod > 0 {
-                let mc: NSColor = mod >= 20 ? .systemRed : .systemOrange
+                let mc: NSColor = mod >= 20 ? menuRed : menuYellow
                 header.append(NSAttributedString(string: " *\(mod)", attributes: [
                     .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
                     .foregroundColor: mc,
@@ -726,24 +769,24 @@ final class LiveRowView: NSView {
 
         // Tab title (when distinct from leaf)
         if let tab = inst.tabTitle, !tab.isEmpty, tab != leaf {
-            addLine(NSAttributedString(string: "    ⌥ \(tab)", attributes: [
+            addLine(NSAttributedString(string: "⌥ \(tab)", attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
                 .foregroundColor: NSColor.secondaryLabelColor,
             ]))
         }
 
-        // Full cwd path (wraps; truncation forbidden by spec). Use char-wrap
-        // since paths have no spaces; word-wrap would let the path overflow.
+        // Full cwd path (wraps; truncation forbidden by spec). Char-wrap
+        // since paths have no spaces — word-wrap lets them overflow.
         if let path = fullPath, path != leaf {
-            addLine(NSAttributedString(string: "    \(path)", attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
+            addLine(NSAttributedString(string: path, attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
                 .foregroundColor: NSColor.tertiaryLabelColor,
             ]), wrapMode: .byCharWrapping)
         }
 
         // State detail (only when not idle)
         if stateStr != "idle" && !stateDetail.isEmpty {
-            addLine(NSAttributedString(string: "  \(stateIcon) \(stateStr): \(stateDetail)", attributes: [
+            addLine(NSAttributedString(string: "\(stateIcon) \(stateStr): \(stateDetail)", attributes: [
                 .font: NSFont.systemFont(ofSize: 11),
                 .foregroundColor: menuTeal,
             ]))
@@ -751,58 +794,50 @@ final class LiveRowView: NSView {
 
         // Last user prompt
         if let lp = inst.lastPrompt, !lp.isEmpty {
-            addLine(NSAttributedString(string: "    ❯ \(lp)", attributes: [
+            addLine(NSAttributedString(string: "❯ \(lp)", attributes: [
                 .font: NSFont.systemFont(ofSize: 11),
                 .foregroundColor: NSColor.secondaryLabelColor,
             ]))
         }
 
-        // Metrics row — semantic per-field colors
+        // Metrics row — per-field colors (not value-stepped, except ctx %).
         let metrics = NSMutableAttributedString()
-        metrics.append(NSAttributedString(string: " ", attributes: [.font: NSFont.systemFont(ofSize: 12)]))
         if let ctx = inst.statusline?.ctxRemaining, !ctx.isEmpty, ctx != "0" {
             let n = Int(ctx) ?? 0
-            let c: NSColor = n < 30 ? .systemRed : (n < 60 ? .systemOrange : menuGreen)
+            let c: NSColor = n < 30 ? menuRed : (n < 60 ? menuYellow : menuGreen)
             metrics.append(NSAttributedString(string: "ctx \(ctx)%  ", attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium),
                 .foregroundColor: c,
             ]))
         }
         var parts: [(String, NSColor)] = []
-        if let t = inst.turns, t > 0 { parts.append(("\(t)t", .secondaryLabelColor)) }
-        if let tc = inst.toolCalls, tc > 0 { parts.append(("🔧\(tc)", .systemOrange)) }
-        if let o = inst.outputTokens, o > 0 { parts.append(("↑\(fmtTokens(o))", menuGreen)) }
-        if let c = inst.costUsd, c > 0 {
-            let cc: NSColor = c > 5 ? .systemRed : (c > 1 ? .systemOrange : .secondaryLabelColor)
-            parts.append((fmtCost(c), cc))
-        }
+        if let t = inst.turns, t > 0 { parts.append(("\(t)t", .tertiaryLabelColor)) }
+        if let tc = inst.toolCalls, tc > 0 { parts.append(("🔧\(tc)", .tertiaryLabelColor)) }
+        if let o = inst.outputTokens, o > 0 { parts.append(("↑\(fmtTokens(o))", tokensColor)) }
+        if let c = inst.costUsd, c > 0 { parts.append((fmtCost(c), costColor)) }
         if let rss = inst.statusline?.rssMb, rss != "0", !rss.isEmpty {
-            let mb = Int(rss) ?? 0
-            let mc: NSColor = mb >= 500 ? .systemRed : (mb >= 200 ? .systemOrange : .secondaryLabelColor)
-            parts.append(("\(rss)MB", mc))
+            parts.append(("\(rss)MB", memColor))
         }
         if let ts = inst.statusline?.tokSpeed, !ts.isEmpty, ts != "0" {
-            let n = Int(ts) ?? 0
-            let sc: NSColor = n > 600 ? menuGreen : (n > 300 ? menuTeal : .secondaryLabelColor)
-            parts.append(("\(ts)t/s", sc))
+            parts.append(("\(ts)t/s", .tertiaryLabelColor))
         }
         let metFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         for (i, p) in parts.enumerated() {
             if i > 0 {
                 metrics.append(NSAttributedString(string: " · ", attributes: [
-                    .font: metFont, .foregroundColor: NSColor.tertiaryLabelColor,
+                    .font: metFont, .foregroundColor: NSColor.quaternaryLabelColor,
                 ]))
             }
             metrics.append(NSAttributedString(string: p.0, attributes: [.font: metFont, .foregroundColor: p.1]))
         }
         addLine(metrics)
 
-        // Compaction-soon warning
+        // Compaction-soon warning (soft red)
         if let ctxStr = inst.statusline?.ctxRemaining,
            let n = Int(ctxStr), n > 0 && n < 15 {
-            addLine(NSAttributedString(string: "  ⚠ Context low (\(n)%) — compaction imminent", attributes: [
+            addLine(NSAttributedString(string: "⚠ Context low (\(n)%) — compaction imminent", attributes: [
                 .font: NSFont.systemFont(ofSize: 11),
-                .foregroundColor: NSColor.systemRed,
+                .foregroundColor: menuRed,
             ]))
         }
 
@@ -811,17 +846,17 @@ final class LiveRowView: NSView {
             var disp = focus
             if let cwd = inst.cwd, !cwd.isEmpty { disp = disp.replacingOccurrences(of: cwd, with: ".") }
             disp = disp.replacingOccurrences(of: home, with: "~")
-            addLine(NSAttributedString(string: " 📄 \(disp)", attributes: [
+            addLine(NSAttributedString(string: "📄 \(disp)", attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
                 .foregroundColor: NSColor.tertiaryLabelColor,
             ]), wrapMode: .byCharWrapping)
         }
 
-        // MCP-down warning
+        // MCP-down warning (soft red)
         if let mcp = inst.statusline?.mcpDown, !mcp.isEmpty {
-            addLine(NSAttributedString(string: "  ⚠ MCP down: \(mcp)", attributes: [
+            addLine(NSAttributedString(string: "⚠ MCP down: \(mcp)", attributes: [
                 .font: NSFont.systemFont(ofSize: 11),
-                .foregroundColor: NSColor.systemRed,
+                .foregroundColor: menuRed,
             ]))
         }
 
@@ -835,13 +870,11 @@ final class LiveRowView: NSView {
         // 80px bound (negative y inside the menu cell).
         stack.layoutSubtreeIfNeeded()
         let needed = stack.fittingSize
-        let h = max(needed.height + 8, 22)
-        let w = max(needed.width + 24, 340)
+        // Padding totals = 20 leading + 22 trailing + 4 top + 4 bottom.
+        let h = max(needed.height + 8,  22)
+        let w = max(needed.width + 42, 340)
         if frame.size.width != w || frame.size.height != h {
             setFrameSize(NSSize(width: w, height: h))
-            // Tell the enclosing menu the row needs to be re-measured.
-            // Without this, the menu sometimes keeps using the old (smaller)
-            // size and we re-clip on the next open.
             invalidateIntrinsicContentSize()
         }
     }
