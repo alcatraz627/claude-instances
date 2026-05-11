@@ -1184,21 +1184,24 @@ final class LiveRowView: NSView {
         }
         stack.addArrangedSubview(headerRow)
 
-        // Tab title (when distinct from leaf)
+        // Tab title (when distinct from leaf). Tagged with modelToken so it
+        // counts as part of the "identity" cluster for hover purposes.
         if let tab = inst.tabTitle, !tab.isEmpty, tab != leaf {
             addLine(NSAttributedString(string: "⌥ \(tab)", attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
                 .foregroundColor: NSColor.secondaryLabelColor,
-            ]))
+            ]), token: modelToken)
         }
 
         // Full cwd path (wraps; truncation forbidden by spec). Char-wrap
         // since paths have no spaces — word-wrap lets them overflow.
+        // Tagged with accentBranch since path + branch are the "location"
+        // cluster — hovering accent.branch palette row will glow both.
         if let path = fullPath, path != leaf {
             addLine(NSAttributedString(string: path, attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
                 .foregroundColor: NSColor.tertiaryLabelColor,
-            ]), wrapMode: .byCharWrapping)
+            ]), wrapMode: .byCharWrapping, token: .accentBranch)
         }
 
         // State detail (only when not idle)
@@ -1209,12 +1212,12 @@ final class LiveRowView: NSView {
             ]), token: .stateActive)
         }
 
-        // Last user prompt
+        // Last user prompt — tagged with stateActive (it's a recency signal)
         if let lp = inst.lastPrompt, !lp.isEmpty {
             addLine(NSAttributedString(string: "❯ \(lp)", attributes: [
                 .font: NSFont.systemFont(ofSize: 11),
                 .foregroundColor: NSColor.secondaryLabelColor,
-            ]))
+            ]), token: .stateActive)
         }
 
         // Last tool ran — context for idle sessions ("where did I leave
@@ -1238,10 +1241,11 @@ final class LiveRowView: NSView {
                 let line = targetStr.isEmpty
                     ? "last: \(lt.name) · \(agoStr) ago"
                     : "last: \(lt.name) \(targetStr) · \(agoStr) ago"
+                // Tagged with stateActive (recency hint, like last prompt).
                 addLine(NSAttributedString(string: line, attributes: [
                     .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
                     .foregroundColor: NSColor.tertiaryLabelColor,
-                ]))
+                ]), token: .stateActive)
             }
         }
 
@@ -1310,7 +1314,9 @@ final class LiveRowView: NSView {
             ]), token: .warnHigh)
         }
 
-        // Focus file (wraps, no truncation; char-wrap for long paths)
+        // Focus file (wraps, no truncation; char-wrap for long paths).
+        // Tagged with stateActive — focus file is "what is being worked on
+        // right now" so it groups with the same recency-cluster.
         if let focus = inst.statusline?.focusFile, !focus.isEmpty {
             var disp = focus
             if let cwd = inst.cwd, !cwd.isEmpty { disp = disp.replacingOccurrences(of: cwd, with: ".") }
@@ -1318,7 +1324,7 @@ final class LiveRowView: NSView {
             addLine(NSAttributedString(string: "📄 \(disp)", attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
                 .foregroundColor: NSColor.tertiaryLabelColor,
-            ]), wrapMode: .byCharWrapping)
+            ]), wrapMode: .byCharWrapping, token: .stateActive)
         }
 
         // MCP-down warning (soft red)
@@ -2812,10 +2818,75 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 // ─── Observable data source (bridges cached scan data → SwiftUI) ─────────────
 
+/// One active transcript HTTP server. Discovered by scanning
+/// `/tmp/claude-widget-*.server` for files whose PID is still alive.
+struct TranscriptServer: Identifiable, Equatable {
+    let pid: Int            // Claude PID
+    let port: Int           // localhost port
+    let serverPid: Int      // python process PID
+    let logPath: String
+
+    var id: Int { pid }
+}
+
 final class DashboardData: ObservableObject {
     @Published var data: ScanResult?
     @Published var allSessions: [FullSession]?
     @Published var isLoadingAllSessions = false
+    @Published var transcriptServers: [TranscriptServer] = []
+
+    /// Re-scan /tmp for transcript-server PID files and verify each.
+    /// Called every dashboard tick + on demand after the user clicks Kill.
+    func refreshTranscriptServers() {
+        let tmp = "/tmp"
+        let fm = FileManager.default
+        guard let contents = try? fm.contentsOfDirectory(atPath: tmp) else {
+            DispatchQueue.main.async { self.transcriptServers = [] }
+            return
+        }
+        let pattern = try? NSRegularExpression(pattern: #"^claude-widget-(\d+)\.server$"#)
+        var found: [TranscriptServer] = []
+        for name in contents {
+            guard let re = pattern,
+                  let m = re.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)),
+                  let pidRange = Range(m.range(at: 1), in: name),
+                  let claudePid = Int(name[pidRange])
+            else { continue }
+            let pidFile = "\(tmp)/\(name)"
+            guard let raw = try? String(contentsOfFile: pidFile, encoding: .utf8),
+                  let srvPid = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  kill(Int32(srvPid), 0) == 0
+            else {
+                // Stale file — remove.
+                try? fm.removeItem(atPath: pidFile)
+                continue
+            }
+            let port = 5400 + (claudePid % 500)
+            found.append(TranscriptServer(
+                pid: claudePid, port: port, serverPid: srvPid,
+                logPath: "/tmp/claude-widget-\(claudePid).server.log"
+            ))
+        }
+        DispatchQueue.main.async {
+            if self.transcriptServers != found {
+                self.transcriptServers = found
+            }
+        }
+    }
+
+    /// Send SIGTERM to the named transcript server's python process. The
+    /// python's signal handler removes the PID file on exit, but we also
+    /// proactively remove it here for fast UI feedback.
+    func killTranscriptServer(_ srv: TranscriptServer) {
+        kill(Int32(srv.serverPid), SIGTERM)
+        let pidFile = "/tmp/claude-widget-\(srv.pid).server"
+        try? FileManager.default.removeItem(atPath: pidFile)
+        refreshTranscriptServers()
+    }
+
+    func killAllTranscriptServers() {
+        for srv in transcriptServers { killTranscriptServer(srv) }
+    }
 
     /// Cheap signature comparison so we don't trigger a SwiftUI tree
     /// re-render every 5s when no field actually changed. ScanResult itself
@@ -2900,6 +2971,7 @@ final class DashboardController {
     func showOrFront(data: ScanResult?, barDelegate: BarDelegate) {
         self.barDelegate = barDelegate
         dataSource.update(data)
+        dataSource.refreshTranscriptServers()
 
         if let p = panel, p.isVisible {
             p.makeKeyAndOrderFront(nil)
@@ -2919,6 +2991,7 @@ final class DashboardController {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             guard let self = self, let bd = self.barDelegate else { return }
             self.dataSource.update(bd.cachedData)
+            self.dataSource.refreshTranscriptServers()
         }
     }
 
@@ -3122,6 +3195,34 @@ struct DashboardRootView: View {
                 }
 
                 Spacer()
+
+                // Transcript-server status — visible iff any are running.
+                // Click the × button to kill them all. Sits directly above
+                // the live-count row so the two "ambient runtime signals"
+                // cluster together.
+                if !dataSource.transcriptServers.isEmpty {
+                    let n = dataSource.transcriptServers.count
+                    HStack(spacing: 6) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.teal)
+                        Text("\(n) transcript\(n == 1 ? "" : "s")")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Button {
+                            dataSource.killAllTranscriptServers()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Kill all transcript HTTP servers")
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 4)
+                }
 
                 // Live count badge at bottom
                 if let d = dataSource.data, d.liveCount > 0 {
@@ -3453,18 +3554,23 @@ struct OverviewSection<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
                 Image(systemName: icon)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(iconColor)
+                    .frame(width: 28, height: 28)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(iconColor.opacity(0.12))
+                    )
                 Text(title)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 17, weight: .semibold))
             }
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
+        .padding(16)
         .background(
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color(nsColor: .controlBackgroundColor))
@@ -4768,6 +4874,14 @@ struct SettingsTabView: View {
     @State private var hoveredToken: PaletteToken? = nil   // shared bidirectional hover state
     private let home = FileManager.default.homeDirectoryForCurrentUser.path
 
+    /// Clicking anywhere on the settings background resigns first responder
+    /// — gives users a way to "dismiss" the keybind textfield without
+    /// having to find a specific other control to click. Triggered via
+    /// the .onTapGesture on the ScrollView's background.
+    private func resignFirstResponder() {
+        NSApp.keyWindow?.makeFirstResponder(nil)
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
@@ -4813,14 +4927,16 @@ struct SettingsTabView: View {
                                 highlightedToken: hoveredToken,
                                 onHoverToken: { t in hoveredToken = t }
                             )
-                            .frame(minWidth: 360, minHeight: 180, alignment: .topLeading)
-                            .padding(8)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(minWidth: 360, alignment: .topLeading)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 2)
                             .background(
-                                RoundedRectangle(cornerRadius: 8)
+                                RoundedRectangle(cornerRadius: 6)
                                     .fill(Color(NSColor.windowBackgroundColor).opacity(0.6))
                             )
                             .overlay(
-                                RoundedRectangle(cornerRadius: 8)
+                                RoundedRectangle(cornerRadius: 6)
                                     .stroke(Color.secondary.opacity(0.18))
                             )
                             Text("Hover any line to highlight its color row · Hover a row to highlight the matching part · Click a swatch to pick a new color. Actual menu refreshes on next scan tick (≤5s).")
@@ -4870,6 +4986,12 @@ struct SettingsTabView: View {
 
                 Spacer(minLength: 24)
             }
+            // Tap anywhere on the scroll background → resign focus from any
+            // text field. Restricted to clicks on the empty area (the
+            // contentShape of VStack doesn't extend to children's hit-tests,
+            // so buttons / textfields still receive their own clicks).
+            .contentShape(Rectangle())
+            .onTapGesture { resignFirstResponder() }
         }
     }
 }
@@ -4946,23 +5068,16 @@ struct PaletteEditorRow: View {
             .disabled(!isOverridden)
             .frame(width: 60, alignment: .trailing)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
         .padding(.horizontal, 4)
-        // Background fill is structurally always present (zero opacity when
-        // not hovered) so the layout doesn't shift between states. Only the
-        // opacity animates, not the geometry. Subtle accent tint — 0.08 is
-        // visible but doesn't read as "selected".
         .background(
             RoundedRectangle(cornerRadius: 4)
                 .fill(Color.accentColor)
                 .opacity(isHovered ? 0.08 : 0)
                 .animation(.easeInOut(duration: 0.15), value: isHovered)
         )
-        .contentShape(Rectangle())  // ensures hover hit-tests the full row, not just labels
+        .contentShape(Rectangle())
         .onHover { inside in
-            // Forward: hovering this row sets the hovered token, which
-            // flows into the preview via the @State binding and triggers
-            // LiveRowView.setHighlightedToken(...) on the matching label.
             hoveredToken = inside ? token : (hoveredToken == token ? nil : hoveredToken)
         }
     }
@@ -5170,6 +5285,7 @@ struct KeybindRow: View {
     let onChange: () -> Void
 
     @State private var draft: String
+    @FocusState private var isFocused: Bool
 
     init(action: SubmenuAction, refreshTick: Int, onChange: @escaping () -> Void) {
         self.action = action
@@ -5191,23 +5307,37 @@ struct KeybindRow: View {
             }
             .frame(width: 200, alignment: .leading)
 
-            // Single-character TextField — clamps to 1 char on commit,
-            // treats backspace-to-empty as "disable this keybind."
+            // Single-character TextField with .plain style so we draw our
+            // own border. .roundedBorder has the slow animated blue focus
+            // ring that's overkill for a 1-char field AND doesn't dismiss
+            // on outside click. The custom border path gives us both.
             TextField("", text: $draft)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
                 .font(.system(size: 13, design: .monospaced))
-                .frame(width: 64)
+                .frame(width: 56, height: 22)
                 .multilineTextAlignment(.center)
+                .padding(.horizontal, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color(NSColor.controlBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(isFocused ? Color.accentColor : Color.secondary.opacity(0.25),
+                                lineWidth: isFocused ? 1.5 : 1)
+                )
+                .focused($isFocused)
                 .onChange(of: draft) { _, newVal in
                     let clamped = String(newVal.prefix(1)).lowercased()
                     if clamped != newVal { draft = clamped; return }
                     if clamped.isEmpty {
-                        setKeybind(action, "")     // explicit disable
+                        setKeybind(action, "")
                     } else {
                         setKeybind(action, clamped)
                     }
                     onChange()
                 }
+                .onSubmit { isFocused = false }
 
             Text(usageDescription(action))
                 .font(.system(size: 11))
@@ -5340,11 +5470,12 @@ struct AboutTabView: View {
                 // Data sources
                 OverviewSection(title: "Data Sources", icon: "cylinder.split.1x2", iconColor: .purple) {
                     VStack(alignment: .leading, spacing: 4) {
-                        AboutRow(label: "Scanner", value: "lib/scan.sh (Python → JSON)")
-                        AboutRow(label: "Statusline", value: "/tmp/claude-statusline-<pid>")
-                        AboutRow(label: "Sessions", value: "~/.claude/projects/")
-                        AboutRow(label: "Rate Limits", value: "~/.claude/widgets/.limits.json")
-                        AboutRow(label: "Refresh", value: "5s quick / 30s full")
+                        AboutRow(label: "Scanner", value: "lib/scan.sh — Python → JSON, ~950 lines")
+                        AboutRow(label: "Statusline cache", value: "/tmp/claude-statusline-<pid>")
+                        AboutRow(label: "Sessions JSONL", value: "~/.claude/projects/")
+                        AboutRow(label: "Rate Limits cache", value: "~/.claude/widgets/.limits.json")
+                        AboutRow(label: "Refresh cadence", value: "user-selectable (default 5s) · full scan every 6 ticks")
+                        AboutRow(label: "Transcript HTTP server", value: "lib/detail-server.py — per-pid, idle-exit at 10min")
                     }
                 }
 
@@ -5352,15 +5483,54 @@ struct AboutTabView: View {
                 OverviewSection(title: "Dashboard Tabs", icon: "sidebar.squares.left", iconColor: .indigo) {
                     VStack(alignment: .leading, spacing: 6) {
                         TabHelp(icon: "square.grid.2x2.fill", color: .blue, name: "Overview",
-                                desc: "Stat cards, rate limits, active totals, recent events")
+                                desc: "Stat cards, rate limits, today/week aggregates, model breakdown")
                         TabHelp(icon: "sparkles", color: .green, name: "Live",
                                 desc: "Running instances with metrics, hover actions, transcript viewer")
                         TabHelp(icon: "clock.arrow.circlepath", color: .purple, name: "History",
                                 desc: "Recent sessions — search, sort, resume, tokens, cost")
                         TabHelp(icon: "list.bullet", color: .orange, name: "Events",
-                                desc: "Timeline of start/stop/compact/permission events")
+                                desc: "Timeline of start/stop/compact/permission/hook events")
                         TabHelp(icon: "tray.full.fill", color: .indigo, name: "All Sessions",
-                                desc: "Deep scan of ALL past sessions with search and resume")
+                                desc: "Deep scan of all past sessions with search and resume")
+                        TabHelp(icon: "slider.horizontal.3", color: .gray, name: "Settings",
+                                desc: "Appearance · Widget Menu palette (17 tokens) · Menu Behavior · Keybinds")
+                    }
+                }
+
+                // The view-based menu row + live-update mechanism
+                OverviewSection(title: "Live Menu Row", icon: "rectangle.stack", iconColor: .green) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Each running session is rendered as a view-based NSMenuItem (LiveRowView) that mutates in place while the menu is held open — AppKit doesn't redraw attributedTitle of an open menu item, so the row owns a vertical NSStackView of chips and updates each on every scan tick.")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                            .padding(.bottom, 4)
+                        AboutRow(label: "Per-chip hover", value: "Header + metrics chips tagged with palette tokens")
+                        AboutRow(label: "Sizing", value: "setFrameSize(stack.fittingSize) after each update()")
+                        AboutRow(label: "Reverse highlight", value: "Settings preview hover → row chip tints in place")
+                    }
+                }
+
+                // Palette + Settings
+                OverviewSection(title: "Palette System", icon: "paintpalette", iconColor: .pink) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        AboutRow(label: "Tokens", value: "17 user-tunable colors (model/metric/accent/warn/success/permission)")
+                        AboutRow(label: "Storage", value: "UserDefaults: palette.<token> = #RRGGBB hex")
+                        AboutRow(label: "Picker", value: "Tailwind v3 subset: 13 hues × 5 shades = 65 swatches")
+                        AboutRow(label: "Live propagation", value: "PaletteStore.didChangeNotification → BarDelegate refreshLiveRows + updateButton")
+                    }
+                }
+
+                // Transcript viewer
+                OverviewSection(title: "Live Transcript Viewer", icon: "doc.text.magnifyingglass", iconColor: .teal) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Clicking \"View Transcript\" on an instance opens a live HTML view of its conversation. detail.sh spawns a per-pid localhost http.server (port 5400 + pid % 500) and Chrome opens via http:// so the JS can fetch() itself for live updates (file:// → file:// fetch is CORS-blocked).")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                            .padding(.bottom, 4)
+                        AboutRow(label: "Server", value: "lib/detail-server.py — http.server + /regen endpoint")
+                        AboutRow(label: "Poll cadence", value: "30s — JS calls /regen, fetches HTML, swaps #msgs in place")
+                        AboutRow(label: "Shutdown", value: "Claude PID death (60s) · 10-min idle · 2h hard deadline · SIGTERM")
+                        AboutRow(label: "Rendering", value: "marked.js + highlight.js (CDN), Edit diffs side-by-side")
                     }
                 }
 
@@ -5380,8 +5550,10 @@ struct AboutTabView: View {
                         .buttonStyle(.plain)
                         .foregroundColor(.accentColor)
 
-                        AboutRow(label: "Logs", value: "/tmp/claude-instances-bar.log")
+                        AboutRow(label: "Bar log", value: "~/Library/Logs/ClaudeInstances/bar.log (rotated at 1MB)")
+                        AboutRow(label: "Server logs", value: "/tmp/claude-widget-<pid>.server.log")
                         AboutRow(label: "LaunchAgent", value: "dev.claude-instances.menubar")
+                        AboutRow(label: "Dashboard kit docs", value: "docs/dashboard-kit.md")
                     }
                 }
 
@@ -5389,11 +5561,19 @@ struct AboutTabView: View {
                 OverviewSection(title: "Troubleshooting", icon: "wrench.and.screwdriver", iconColor: .yellow) {
                     VStack(alignment: .leading, spacing: 6) {
                         TroubleshootRow(problem: "Two icons in menu bar",
-                                       fix: "Hover stale icon to clear, or reinstall")
+                                       fix: "Hover stale icon to clear, or `bash native/build.sh --install`")
                         TroubleshootRow(problem: "Focus doesn't switch tabs",
                                        fix: "Grant Accessibility permission in System Settings")
                         TroubleshootRow(problem: "Menu shows 'Scanning...'",
-                                       fix: "Test scan.sh directly: bash lib/scan.sh")
+                                       fix: "Test scan.sh directly: `bash lib/scan.sh | head`")
+                        TroubleshootRow(problem: "Transcript URL opens but server is dead",
+                                       fix: "Server exits after 10min idle. Click View Transcript again to respawn — detail.sh is idempotent.")
+                        TroubleshootRow(problem: "Branch / last-prompt missing in row",
+                                       fix: "Quick scans skip git ops; wait for next full scan (~30s) or click Refresh Now")
+                        TroubleshootRow(problem: "Palette change didn't apply",
+                                       fix: "Close + reopen the menu — bar refreshes open rows but stale ones need a rebuild")
+                        TroubleshootRow(problem: "Dashboard hitches",
+                                       fix: "Check tests/run-tests.sh for known perf regressions; DateFormatter caching ships in the current build")
                     }
                 }
             }

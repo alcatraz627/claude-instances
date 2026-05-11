@@ -1565,18 +1565,22 @@ PORT=$(( 5400 + (PID % 500) ))
 SERVER_PID_FILE="/tmp/claude-widget-${PID}.server"
 
 is_server_alive_on_port() {
-    # Returns 0 if something is already listening on $PORT.
     nc -z 127.0.0.1 "$PORT" 2>/dev/null
 }
 
-START_SERVER=1
-if is_server_alive_on_port; then
-    START_SERVER=0
+# Stale PID file from a previous server that hit idle/death timeout:
+# clear it BEFORE the port check so we don't get fooled into thinking
+# a server is running when only the file remains.
+if [[ -f "$SERVER_PID_FILE" ]]; then
+    OLD_SRV_PID=$(cat "$SERVER_PID_FILE" 2>/dev/null || echo "")
+    if [[ -n "$OLD_SRV_PID" ]] && ! kill -0 "$OLD_SRV_PID" 2>/dev/null; then
+        # Old server is dead — file is stale, remove.
+        rm -f "$SERVER_PID_FILE"
+    fi
 fi
 
-if [[ "$START_SERVER" == "1" ]]; then
-    # Spawn the server, fully detached. log to a per-pid file so debugging
-    # is easy without polluting /tmp.
+# Spawn iff port isn't already bound by a healthy server.
+if ! is_server_alive_on_port; then
     SERVER_LOG="/tmp/claude-widget-${PID}.server.log"
     nohup python3 "$SERVER_SCRIPT" "$PORT" "$SCRIPT_PATH" "$PID" "$SESSION_ID" \
         >"$SERVER_LOG" 2>&1 &
@@ -1584,11 +1588,21 @@ if [[ "$START_SERVER" == "1" ]]; then
     echo "$SERVER_PID" > "$SERVER_PID_FILE"
     disown 2>/dev/null || true
 
-    # Brief wait for the server to bind. ~5 retries × 100ms = 500ms max.
-    for _ in 1 2 3 4 5; do
+    # Wait for the server to bind. 15 retries × 100ms = 1.5s max — gives
+    # Python's http.server startup enough room on slower machines without
+    # making the user wait if it's quick.
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
         if is_server_alive_on_port; then break; fi
         sleep 0.1
     done
+
+    # If still not bound, surface the failure in the log + bail with a
+    # clear error so the bar's openDetail log shows what happened.
+    if ! is_server_alive_on_port; then
+        echo "ERROR: detail-server.py did not bind to port $PORT after 1.5s" >&2
+        echo "  Check $SERVER_LOG for the Python error." >&2
+        exit 1
+    fi
 fi
 
 # ── Compatibility: keep the legacy DAEMON_PID_FILE clean ────────────────────

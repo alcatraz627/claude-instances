@@ -266,6 +266,14 @@ t_grep "last_tool emitted in scan.sh"          lib/scan.sh "'last_tool'"
 t_grep "parse_jsonl_state in scan.sh"          lib/scan.sh 'def parse_jsonl_state'
 t_grep "formatAgo helper"                      native/claude-instances-bar.swift 'func formatAgo'
 t_grep "last-tool line rendered when fresh"    native/claude-instances-bar.swift 'suppressBecauseStale'
+# Transcript server lifecycle controls in the dashboard
+t_grep "TranscriptServer struct"               native/claude-instances-bar.swift 'struct TranscriptServer'
+t_grep "refreshTranscriptServers method"       native/claude-instances-bar.swift 'func refreshTranscriptServers'
+t_grep "killAllTranscriptServers"              native/claude-instances-bar.swift 'func killAllTranscriptServers'
+t_grep "sidebar shows transcript count"        native/claude-instances-bar.swift 'transcriptServers.isEmpty'
+# detail.sh stale-server-pid cleanup + bind verification
+t_grep "detail.sh cleans stale .server file"  lib/detail.sh 'Old server is dead'
+t_grep "detail.sh waits for bind + errors"    lib/detail.sh 'did not bind to port'
 t_grep "inline row uses centerY alignment"     native/claude-instances-bar.swift 'row.alignment = .centerY'
 t_grep "state-icon uses SF Symbol now"         native/claude-instances-bar.swift 'symbolAttributedString'
 
