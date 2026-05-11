@@ -238,6 +238,15 @@ t_grep "metrics chips: memory tagged"          native/claude-instances-bar.swift
 # Layout-shift fix: drawsBackground set ONCE in addLine, never toggled
 t_grep "drawsBackground = true in addLine"     native/claude-instances-bar.swift 'label.drawsBackground = true'
 t_grep "applyHighlightedToken animates"        native/claude-instances-bar.swift 'NSAnimationContext.runAnimationGroup'
+# Three new palette tokens for the previously-untagged metric chips
+t_grep "metric.turns token"                    native/claude-instances-bar.swift 'case metricTurns'
+t_grep "metric.tools token"                    native/claude-instances-bar.swift 'case metricTools'
+t_grep "metric.speed token"                    native/claude-instances-bar.swift 'case metricSpeed'
+t_grep "turns chip tagged"                     native/claude-instances-bar.swift 'token: .metricTurns'
+t_grep "tools chip tagged"                     native/claude-instances-bar.swift 'token: .metricTools'
+t_grep "speed chip tagged"                     native/claude-instances-bar.swift 'token: .metricSpeed'
+t_grep "inline row uses centerY alignment"     native/claude-instances-bar.swift 'row.alignment = .centerY'
+t_grep "state-icon blink removed"              native/claude-instances-bar.swift 'once-per-second blink'
 
 # Cleanup fixture
 rm -f "$PROJ_DIR/${FIXTURE_SID}.jsonl"

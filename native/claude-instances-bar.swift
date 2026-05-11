@@ -444,9 +444,12 @@ enum PaletteToken: String, CaseIterable {
     case modelOpus      = "model.opus"       // Opus model badge
     case modelSonnet    = "model.sonnet"     // Sonnet model badge
     case modelHaiku     = "model.haiku"      // Haiku model badge
+    case metricTurns    = "metric.turns"     // Nt turn counts (ambient)
+    case metricTools    = "metric.tools"     // 🔧N tool counts (ambient)
+    case metricTokens   = "metric.tokens"    // ↑NK output tokens
     case metricCost     = "metric.cost"      // $ cost values
-    case metricTokens   = "metric.tokens"    // ↑ token counts
     case metricMemory   = "metric.memory"    // MB memory values
+    case metricSpeed    = "metric.speed"     // Nt/s rate (ambient)
     case accentBranch   = "accent.branch"    // ⎇ branch badge
     case accentSubagent = "accent.subagent"  // ↳N subagent badge
     case stateActive    = "state.active"     // state-detail row (thinking/responding)
@@ -460,9 +463,12 @@ enum PaletteToken: String, CaseIterable {
         case .modelOpus:      return "Opus"
         case .modelSonnet:    return "Sonnet"
         case .modelHaiku:     return "Haiku"
-        case .metricCost:     return "Cost"
+        case .metricTurns:    return "Turns"
+        case .metricTools:    return "Tool calls"
         case .metricTokens:   return "Tokens"
+        case .metricCost:     return "Cost"
         case .metricMemory:   return "Memory"
+        case .metricSpeed:    return "Speed"
         case .accentBranch:   return "Branch"
         case .accentSubagent: return "Subagent"
         case .stateActive:    return "Active state"
@@ -478,9 +484,12 @@ enum PaletteToken: String, CaseIterable {
         case .modelOpus:      return "Opus model badge ◆"
         case .modelSonnet:    return "Sonnet model badge ●"
         case .modelHaiku:     return "Haiku model badge ○"
-        case .metricCost:     return "Per-session cost values ($N.NN)"
+        case .metricTurns:    return "Turn counts (Nt)"
+        case .metricTools:    return "Tool-call count (🔧N)"
         case .metricTokens:   return "Output token counts (↑NK)"
+        case .metricCost:     return "Per-session cost values ($N.NN)"
         case .metricMemory:   return "Resident memory (NMB)"
+        case .metricSpeed:    return "Token throughput (Nt/s)"
         case .accentBranch:   return "Git branch badge (⎇branch)"
         case .accentSubagent: return "Subagent count badge (↳N)"
         case .stateActive:    return "Active-state row (thinking / responding / tool use)"
@@ -501,9 +510,12 @@ final class PaletteStore {
         .modelOpus:      .systemOrange,
         .modelSonnet:    .systemBlue,
         .modelHaiku:     NSColor.systemTeal.shadow(withLevel: 0.25)!,
-        .metricCost:     NSColor(calibratedRed: 0.95, green: 0.72, blue: 0.30, alpha: 1.0),
+        .metricTurns:    NSColor.tertiaryLabelColor,
+        .metricTools:    NSColor.tertiaryLabelColor,
         .metricTokens:   NSColor.systemGreen.shadow(withLevel: 0.35)!,
+        .metricCost:     NSColor(calibratedRed: 0.95, green: 0.72, blue: 0.30, alpha: 1.0),
         .metricMemory:   NSColor(calibratedRed: 0.55, green: 0.75, blue: 0.95, alpha: 1.0),
+        .metricSpeed:    NSColor.tertiaryLabelColor,
         .accentBranch:   NSColor.systemTeal.shadow(withLevel: 0.25)!,
         .accentSubagent: NSColor(calibratedRed: 0.55, green: 0.82, blue: 0.88, alpha: 1.0),
         .stateActive:    NSColor.systemTeal.shadow(withLevel: 0.25)!,
@@ -593,6 +605,9 @@ private var menuRed:       NSColor { PaletteStore.shared.color(for: .warnHigh)  
 private var costColor:     NSColor { PaletteStore.shared.color(for: .metricCost)     }
 private var tokensColor:   NSColor { PaletteStore.shared.color(for: .metricTokens)   }
 private var memColor:      NSColor { PaletteStore.shared.color(for: .metricMemory)   }
+private var turnsColor:    NSColor { PaletteStore.shared.color(for: .metricTurns)    }
+private var toolsColor:    NSColor { PaletteStore.shared.color(for: .metricTools)    }
+private var speedColor:    NSColor { PaletteStore.shared.color(for: .metricSpeed)    }
 private var subagentColor: NSColor { PaletteStore.shared.color(for: .accentSubagent) }
 private var coralAccent:   NSColor { .systemGray }   // structural, not in palette
 
@@ -955,9 +970,12 @@ final class LiveRowView: NSView {
             .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .bold),
             .foregroundColor: m.color,
         ])
+        // State icon — shown alongside the badge when not idle. Removed
+        // the once-per-second blink that swapped icon ↔ space: it created
+        // visible row jitter on every scan tick. The dedicated state-detail
+        // row below ("🔧 tool_use: …") already conveys "this session is busy."
         if !stateIcon.isEmpty {
-            let blink = (Int(Date().timeIntervalSince1970) % 2 == 0) ? stateIcon : " "
-            appendChip(to: headerRow, text: blink, token: .stateActive, attrs: [
+            appendChip(to: headerRow, text: stateIcon, token: .stateActive, attrs: [
                 .font: NSFont.systemFont(ofSize: 13),
             ])
         }
@@ -1056,10 +1074,10 @@ final class LiveRowView: NSView {
         struct Chip { let text: String; let color: NSColor; let token: PaletteToken? }
         var chips: [Chip] = []
         if let t = inst.turns, t > 0 {
-            chips.append(Chip(text: "\(t)t", color: .tertiaryLabelColor, token: nil))
+            chips.append(Chip(text: "\(t)t", color: turnsColor, token: .metricTurns))
         }
         if let tc = inst.toolCalls, tc > 0 {
-            chips.append(Chip(text: "🔧\(tc)", color: .tertiaryLabelColor, token: nil))
+            chips.append(Chip(text: "🔧\(tc)", color: toolsColor, token: .metricTools))
         }
         if let o = inst.outputTokens, o > 0 {
             chips.append(Chip(text: "↑\(fmtTokens(o))", color: tokensColor, token: .metricTokens))
@@ -1071,7 +1089,7 @@ final class LiveRowView: NSView {
             chips.append(Chip(text: "\(rss)MB", color: memColor, token: .metricMemory))
         }
         if let ts = inst.statusline?.tokSpeed, !ts.isEmpty, ts != "0" {
-            chips.append(Chip(text: "\(ts)t/s", color: .tertiaryLabelColor, token: nil))
+            chips.append(Chip(text: "\(ts)t/s", color: speedColor, token: .metricSpeed))
         }
         for (i, chip) in chips.enumerated() {
             if i > 0 || metricsRow.arrangedSubviews.count > 0 {
@@ -1217,12 +1235,18 @@ final class LiveRowView: NSView {
     /// Build a horizontal NSStackView for inline chip composition (header
     /// row, metrics row). Each "chip" inside is its own NSTextField, tagged
     /// with its own palette token via `appendChip`.
+    /// `.centerY` alignment + required vertical hugging keeps the row's
+    /// intrinsic height at exactly the tallest chip — no baseline-padding
+    /// gap that .firstBaseline introduces.
     private func makeInlineRow() -> NSStackView {
         let row = NSStackView()
         row.orientation = .horizontal
         row.spacing = 6
-        row.alignment = .firstBaseline
+        row.alignment = .centerY
+        row.distribution = .gravityAreas
         row.translatesAutoresizingMaskIntoConstraints = false
+        row.setContentHuggingPriority(.required, for: .vertical)
+        row.setContentCompressionResistancePriority(.required, for: .vertical)
         return row
     }
 
