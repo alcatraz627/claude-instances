@@ -274,6 +274,16 @@ t_grep "sidebar shows transcript count"        native/claude-instances-bar.swift
 # detail.sh stale-server-pid cleanup + bind verification
 t_grep "detail.sh cleans stale .server file"  lib/detail.sh 'Old server is dead'
 t_grep "detail.sh waits for bind + errors"    lib/detail.sh 'did not bind to port'
+# Refresh + warnings + row visibility — Settings UI plus reader sites
+t_grep "RefreshAndWarningsSection view"        native/claude-instances-bar.swift 'struct RefreshAndWarningsSection'
+t_grep "RowElement enum"                       native/claude-instances-bar.swift 'enum RowElement'
+t_grep "rowShows accessor"                     native/claude-instances-bar.swift 'func rowShows'
+t_grep "tab title gated by rowShows"           native/claude-instances-bar.swift 'rowShows\(.tabTitle\)'
+t_grep "compaction-warn gated by rowShows"     native/claude-instances-bar.swift 'rowShows\(.compactionWarn\)'
+t_grep "mcp-down gated by rowShows"            native/claude-instances-bar.swift 'rowShows\(.mcpDown\)'
+t_grep "RowVisibilitySection view"             native/claude-instances-bar.swift 'struct RowVisibilitySection'
+t_grep "RowToggleRow row component"            native/claude-instances-bar.swift 'struct RowToggleRow'
+t_grep "menuBehavior notification restarts timer" native/claude-instances-bar.swift 'restartScanTimer\(\)'
 t_grep "inline row uses centerY alignment"     native/claude-instances-bar.swift 'row.alignment = .centerY'
 t_grep "state-icon uses SF Symbol now"         native/claude-instances-bar.swift 'symbolAttributedString'
 

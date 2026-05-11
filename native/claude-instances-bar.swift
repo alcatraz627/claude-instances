@@ -464,6 +464,78 @@ func densitySpacing() -> CGFloat {
     }
 }
 
+// ─── Row visibility ────────────────────────────────────────────────────────
+//
+// Each non-critical line in the live menu row can be toggled off via
+// Settings → Row Visibility. The user's call about how dense the row
+// should be — except for the two critical lines (header + metrics) which
+// are always shown because hiding either makes the row useless.
+//
+// Persisted under "row.<key>" in UserDefaults. Default: ALL visible.
+// LiveRowView.update() consults `rowShows(_:)` at every relevant
+// addLine() call site.
+
+enum RowElement: String, CaseIterable, Identifiable {
+    case tabTitle       = "tabTitle"
+    case fullPath       = "fullPath"
+    case stateDetail    = "stateDetail"
+    case lastPrompt     = "lastPrompt"
+    case lastTool       = "lastTool"
+    case compactionWarn = "compactionWarn"
+    case focusFile      = "focusFile"
+    case mcpDown        = "mcpDown"
+
+    var id: String { rawValue }
+
+    /// Critical lines (header + metrics) aren't in this enum — they're
+    /// never toggleable. Anything in this enum is user-hideable.
+    var displayName: String {
+        switch self {
+        case .tabTitle:       return "Tab title"
+        case .fullPath:       return "Full cwd path"
+        case .stateDetail:    return "Active state detail"
+        case .lastPrompt:     return "Last user prompt"
+        case .lastTool:       return "Last tool ran"
+        case .compactionWarn: return "Compaction warning"
+        case .focusFile:      return "Focus file"
+        case .mcpDown:        return "MCP down warning"
+        }
+    }
+
+    var hint: String {
+        switch self {
+        case .tabTitle:       return "Shown when terminal tab title differs from leaf folder"
+        case .fullPath:       return "Full ~/path/to/project line under the leaf folder"
+        case .stateDetail:    return "‘🔧 tool_use: Reading foo.tsx’-style row when not idle"
+        case .lastPrompt:     return "‘❯ <first 80 chars of last user message>’"
+        case .lastTool:       return "‘last: Edit src/foo.tsx · 4s ago’ context line"
+        case .compactionWarn: return "‘⚠ Context low (N%) — compaction imminent’ ‹safety›"
+        case .focusFile:      return "‘📄 <file>’ that the session is currently editing"
+        case .mcpDown:        return "‘⚠ MCP down: <name>’ when any MCP server is unreachable ‹safety›"
+        }
+    }
+
+    var isSafetyRelevant: Bool {
+        switch self {
+        case .compactionWarn, .mcpDown: return true
+        default:                        return false
+        }
+    }
+}
+
+/// True iff the user has chosen to show this row element. Default: true.
+/// Critical lines (header + metrics) bypass this check entirely.
+func rowShows(_ el: RowElement) -> Bool {
+    let key = "row.\(el.rawValue)"
+    if UserDefaults.standard.object(forKey: key) == nil { return true }
+    return UserDefaults.standard.bool(forKey: key)
+}
+
+func setRowShows(_ el: RowElement, _ shown: Bool) {
+    UserDefaults.standard.set(shown, forKey: "row.\(el.rawValue)")
+    NotificationCenter.default.post(name: .menuBehaviorDidChange, object: nil)
+}
+
 // ─── Submenu keybinds ──────────────────────────────────────────────────────
 //
 // Each per-instance submenu action ("Open in Finder" etc.) is bound to a
@@ -1186,7 +1258,7 @@ final class LiveRowView: NSView {
 
         // Tab title (when distinct from leaf). Tagged with modelToken so it
         // counts as part of the "identity" cluster for hover purposes.
-        if let tab = inst.tabTitle, !tab.isEmpty, tab != leaf {
+        if rowShows(.tabTitle), let tab = inst.tabTitle, !tab.isEmpty, tab != leaf {
             addLine(NSAttributedString(string: "⌥ \(tab)", attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
                 .foregroundColor: NSColor.secondaryLabelColor,
@@ -1197,7 +1269,7 @@ final class LiveRowView: NSView {
         // since paths have no spaces — word-wrap lets them overflow.
         // Tagged with accentBranch since path + branch are the "location"
         // cluster — hovering accent.branch palette row will glow both.
-        if let path = fullPath, path != leaf {
+        if rowShows(.fullPath), let path = fullPath, path != leaf {
             addLine(NSAttributedString(string: path, attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
                 .foregroundColor: NSColor.tertiaryLabelColor,
@@ -1205,7 +1277,7 @@ final class LiveRowView: NSView {
         }
 
         // State detail (only when not idle)
-        if stateStr != "idle" && !stateDetail.isEmpty {
+        if rowShows(.stateDetail), stateStr != "idle", !stateDetail.isEmpty {
             addLine(NSAttributedString(string: "\(stateIcon) \(stateStr): \(stateDetail)", attributes: [
                 .font: NSFont.systemFont(ofSize: 11),
                 .foregroundColor: menuTeal,
@@ -1213,7 +1285,7 @@ final class LiveRowView: NSView {
         }
 
         // Last user prompt — tagged with stateActive (it's a recency signal)
-        if let lp = inst.lastPrompt, !lp.isEmpty {
+        if rowShows(.lastPrompt), let lp = inst.lastPrompt, !lp.isEmpty {
             addLine(NSAttributedString(string: "❯ \(lp)", attributes: [
                 .font: NSFont.systemFont(ofSize: 11),
                 .foregroundColor: NSColor.secondaryLabelColor,
@@ -1223,7 +1295,7 @@ final class LiveRowView: NSView {
         // Last tool ran — context for idle sessions ("where did I leave
         // off?"). Suppressed if the session has been idle >5min so it
         // doesn't linger as stale debt indefinitely.
-        if let lt = inst.lastTool, lt.name.count > 0 {
+        if rowShows(.lastTool), let lt = inst.lastTool, lt.name.count > 0 {
             let ago = lt.agoSeconds ?? 0
             // Only suppress when idle AND older than 5 min — active sessions
             // benefit from seeing the tool even at age 0 (just ran).
@@ -1306,7 +1378,8 @@ final class LiveRowView: NSView {
         stack.addArrangedSubview(metricsRow)
 
         // Compaction-soon warning (soft red)
-        if let ctxStr = inst.statusline?.ctxRemaining,
+        if rowShows(.compactionWarn),
+           let ctxStr = inst.statusline?.ctxRemaining,
            let n = Int(ctxStr), n > 0 && n < 15 {
             addLine(NSAttributedString(string: "⚠ Context low (\(n)%) — compaction imminent", attributes: [
                 .font: NSFont.systemFont(ofSize: 11),
@@ -1317,7 +1390,7 @@ final class LiveRowView: NSView {
         // Focus file (wraps, no truncation; char-wrap for long paths).
         // Tagged with stateActive — focus file is "what is being worked on
         // right now" so it groups with the same recency-cluster.
-        if let focus = inst.statusline?.focusFile, !focus.isEmpty {
+        if rowShows(.focusFile), let focus = inst.statusline?.focusFile, !focus.isEmpty {
             var disp = focus
             if let cwd = inst.cwd, !cwd.isEmpty { disp = disp.replacingOccurrences(of: cwd, with: ".") }
             disp = disp.replacingOccurrences(of: home, with: "~")
@@ -1328,7 +1401,7 @@ final class LiveRowView: NSView {
         }
 
         // MCP-down warning (soft red)
-        if let mcp = inst.statusline?.mcpDown, !mcp.isEmpty {
+        if rowShows(.mcpDown), let mcp = inst.statusline?.mcpDown, !mcp.isEmpty {
             addLine(NSAttributedString(string: "⚠ MCP down: \(mcp)", attributes: [
                 .font: NSFont.systemFont(ofSize: 11),
                 .foregroundColor: menuRed,
@@ -1687,17 +1760,21 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.updateButton()
         }
 
-        // Menu-behavior changes (density / default tab / time format) also
-        // trigger a live refresh — density flows through LiveRowView.update()
-        // which reads densitySpacing() on every render. Time format also
-        // invalidates the cached formatters so the next read picks up the
-        // new pattern.
+        // Menu-behavior changes — density / default tab / time format /
+        // refresh cadence / warn threshold / row visibility — all funnel
+        // through this notification. Side effects:
+        //   - invalidate the DateFormatter cache (time-format may have flipped)
+        //   - rebuild the scan timer (cadence may have changed)
+        //   - refresh the visible menu rows (any of: density, row toggles,
+        //     warning threshold, etc.)
         NotificationCenter.default.addObserver(
             forName: .menuBehaviorDidChange,
             object: nil, queue: .main
         ) { [weak self] _ in
             invalidateTimeFormatterCache()
+            self?.restartScanTimer()
             self?.refreshLiveRows()
+            self?.updateButton()
         }
     }
 
@@ -4985,6 +5062,12 @@ struct SettingsTabView: View {
                 MenuBehaviorSection()
                     .padding(.horizontal, 24)
 
+                RefreshAndWarningsSection()
+                    .padding(.horizontal, 24)
+
+                RowVisibilitySection()
+                    .padding(.horizontal, 24)
+
                 KeybindsSection()
                     .padding(.horizontal, 24)
 
@@ -5223,6 +5306,174 @@ struct MenuBehaviorSection: View {
             }
             .padding(.vertical, 4)
         }
+    }
+}
+
+/// Settings → Refresh & Warnings. Centralizes the two preferences that
+/// also live in the menu (Refresh submenu + warning-threshold slider).
+/// Reads/writes the SAME UserDefaults keys the menu uses, so changes
+/// flow both ways: edit here → menu updates on next open; edit in menu
+/// → these controls update on next dashboard render. Posts
+/// .menuBehaviorDidChange so the bar restarts its scan timer.
+struct RefreshAndWarningsSection: View {
+    @State private var cadence: Double
+    @State private var paused: Bool
+    @State private var threshold: Double
+
+    init() {
+        let raw = UserDefaults.standard.double(forKey: "scanRefreshInterval")
+        _cadence   = State(initialValue: raw > 0 ? raw : 5.0)
+        _paused    = State(initialValue: UserDefaults.standard.bool(forKey: "scanRefreshInterval.paused"))
+        let thr    = UserDefaults.standard.integer(forKey: "rateLimitWarningThreshold")
+        _threshold = State(initialValue: thr > 0 ? Double(thr) : 80.0)
+    }
+
+    private let presets: [Double] = [1, 2, 5, 10, 30, 60]
+
+    var body: some View {
+        OverviewSection(title: "Refresh & Warnings",
+                        icon: "timer",
+                        iconColor: .green) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 12) {
+                    Text("Scan cadence")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 130, alignment: .leading)
+                    Picker("", selection: $cadence) {
+                        ForEach(presets, id: \.self) { p in
+                            Text(p < 1 ? String(format: "%.1fs", p) : "\(Int(p))s").tag(p)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 360)
+                    .disabled(paused)
+                    .onChange(of: cadence) { _, newVal in
+                        UserDefaults.standard.set(newVal, forKey: "scanRefreshInterval")
+                        NotificationCenter.default.post(name: .menuBehaviorDidChange, object: nil)
+                    }
+                    Spacer()
+                }
+                HStack(spacing: 12) {
+                    Text("Paused")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 130, alignment: .leading)
+                    Toggle("Stop auto-refresh entirely", isOn: $paused)
+                        .toggleStyle(.checkbox)
+                        .onChange(of: paused) { _, newVal in
+                            UserDefaults.standard.set(newVal, forKey: "scanRefreshInterval.paused")
+                            NotificationCenter.default.post(name: .menuBehaviorDidChange, object: nil)
+                        }
+                    Spacer()
+                }
+                Divider().opacity(0.4)
+                HStack(spacing: 12) {
+                    Text("Warn at")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 130, alignment: .leading)
+                    Slider(value: $threshold, in: 50...100, step: 5) {
+                        Text("Rate-limit warn threshold")
+                    } minimumValueLabel: {
+                        Text("50%").font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
+                    } maximumValueLabel: {
+                        Text("100%").font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: 320)
+                    .onChange(of: threshold) { _, newVal in
+                        UserDefaults.standard.set(Int(newVal), forKey: "rateLimitWarningThreshold")
+                        NotificationCenter.default.post(name: .menuBehaviorDidChange, object: nil)
+                    }
+                    Text("\(Int(threshold))%")
+                        .font(.system(size: 13, design: .monospaced))
+                        .frame(width: 40, alignment: .leading)
+                    Spacer()
+                }
+                Text("The menu-bar count badge turns orange at this threshold and red at 90% of the 5h or 7d rate-limit window.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .padding(.leading, 130 + 12)
+            }
+            .padding(.vertical, 4)
+        }
+    }
+}
+
+/// Settings → Row Visibility. Toggle per non-critical line in the live
+/// menu's instance card. Header + metrics are always shown (hiding either
+/// makes the row useless). Lines flagged isSafetyRelevant get an extra
+/// "safety" hint so users disabling them know what they're losing.
+struct RowVisibilitySection: View {
+    @State private var refreshTick = 0
+
+    var body: some View {
+        OverviewSection(title: "Row Visibility",
+                        icon: "list.bullet.below.rectangle",
+                        iconColor: .purple) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Toggle which lines appear in the live menu's instance card. The model badge + metrics row are always shown.")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                    .padding(.bottom, 4)
+
+                ForEach(RowElement.allCases) { el in
+                    RowToggleRow(element: el, refreshTick: refreshTick) {
+                        refreshTick &+= 1
+                    }
+                    Divider().opacity(0.4)
+                }
+            }
+        }
+    }
+}
+
+struct RowToggleRow: View {
+    let element: RowElement
+    let refreshTick: Int
+    let onChange: () -> Void
+
+    @State private var on: Bool
+
+    init(element: RowElement, refreshTick: Int, onChange: @escaping () -> Void) {
+        self.element = element
+        self.refreshTick = refreshTick
+        self.onChange = onChange
+        _on = State(initialValue: rowShows(element))
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Toggle("", isOn: $on)
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
+                .onChange(of: on) { _, newVal in
+                    setRowShows(element, newVal)
+                    onChange()
+                }
+
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(element.displayName)
+                        .font(.system(size: 13, weight: .medium))
+                    if element.isSafetyRelevant {
+                        Text("safety")
+                            .font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(Color.red.opacity(0.18))
+                            )
+                            .foregroundColor(.red)
+                    }
+                }
+                Text(element.hint)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 4)
+        .id(refreshTick)
     }
 }
 
