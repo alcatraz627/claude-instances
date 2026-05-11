@@ -2801,6 +2801,35 @@ final class DashboardData: ObservableObject {
     }
 }
 
+// MARK: - ▼▼▼ DashboardKit — reusable scaffolding ▼▼▼ ────────────────────────
+//
+// The block between this banner and the matching ▲▲▲ banner is intentionally
+// generic. It's the "shell" of the dashboard window — controller, sidebar,
+// section containers, stat cards — designed so another macOS app can copy it
+// out and adapt to its own data.
+//
+// See docs/dashboard-kit.md for: what's in the kit, what's app-specific,
+// the contract another app needs to satisfy, and a minimal "Hello World"
+// example.
+//
+// What's reusable:
+//   - DashboardController       — NSPanel + NSHostingView lifecycle
+//   - DashboardTab              — enum of tabs (replace cases for your app)
+//   - SidebarButton             — sidebar nav item
+//   - DashboardRootView         — NavigationSplitView shell with sidebar
+//   - OverviewSection<Content>  — generic section container with icon header
+//   - StatCard                  — labeled stat box
+//   - AggregateMetric           — bigger stat tile
+//   - MetadataItem              — key/value pair
+//   - Color helpers + palette glue (PaletteStore is project-specific but the
+//     pattern transfers)
+//
+// What's NOT reusable (project-specific concerns):
+//   - The contents of each tab (OverviewTabView, LiveTabView, etc.) — they
+//     reference Claude-specific data structures
+//   - DashboardData (the @Published wrapper) — Claude session shape
+//   - Action callbacks (onFocus, onResume, etc.) — Claude/Ghostty-specific
+//
 // ─── Dashboard Controller (manages the floating NSPanel) ─────────────────────
 
 final class DashboardController {
@@ -3464,6 +3493,16 @@ struct RateLimitRow: View {
     }
 }
 
+// MARK: - ▲▲▲ End DashboardKit. Below: project-specific tab content ▲▲▲ ─────
+//
+// Everything from here on consumes the kit. The Tab views reference
+// Claude-specific data shapes (LiveInstance, ScanResult, etc.) and would
+// be replaced wholesale when copying the kit into another app.
+//
+// One helper struct (MetadataItem) is defined inside this section but is
+// generic enough to live in the kit — see docs/dashboard-kit.md for the
+// extraction instructions.
+//
 // ─── SwiftUI: Live Instances Tab ────────────────────────────────────────────
 
 struct LiveTabView: View {
