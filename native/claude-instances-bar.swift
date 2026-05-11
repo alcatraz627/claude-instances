@@ -100,19 +100,31 @@ private func fmtSize(_ kb: Double) -> String {
     return kb > 1024 ? String(format: "%.1fM", kb / 1024) : "\(Int(kb))K"
 }
 
+// Cached ISO8601 formatters. Allocating a new one each call was a real
+// perf hit: relativeTime() runs once per history row and once per
+// All-Sessions row on every dashboard render (5s tick). 50+ rows × 2
+// formatters per call × ~1-3ms per allocation was tens of milliseconds
+// of main-thread work per refresh — visible as dashboard "hitch."
+// DateFormatter is thread-safe for parsing on macOS 10.10+, so a single
+// shared instance is fine.
+private let iso8601WithFractionalFormatter: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+private let iso8601BasicFormatter: ISO8601DateFormatter = {
+    return ISO8601DateFormatter()
+}()
+
 private func relativeTime(_ isoString: String?) -> String {
     guard let s = isoString else { return "?" }
-    let fmt = ISO8601DateFormatter()
-    fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    var date = fmt.date(from: s)
+    var date = iso8601WithFractionalFormatter.date(from: s)
+    if date == nil { date = iso8601BasicFormatter.date(from: s) }
     if date == nil {
-        let fmt2 = ISO8601DateFormatter()
-        date = fmt2.date(from: s)
-    }
-    if date == nil {
-        // Try replacing Z with +00:00 for fractional seconds
+        // Last-chance: replace `Z` with `+00:00` for sources that emit
+        // fractional seconds without the timezone designator.
         let cleaned = s.replacingOccurrences(of: "Z", with: "+00:00")
-        date = fmt.date(from: cleaned)
+        date = iso8601WithFractionalFormatter.date(from: cleaned)
     }
     guard let d = date else { return "?" }
     let secs = Date().timeIntervalSince(d)
@@ -531,14 +543,32 @@ func formatAgo(seconds n: Int) -> String {
     return "\(s / 86_400)d"
 }
 
-/// Returns the user-preferred absolute-time formatter ("HH:mm" 24h vs
-/// "h:mm a" 12h). Captured once per call; cheap to allocate.
+// Cached DateFormatters for the user's 24h-vs-12h preference. Previously
+// userTimeFormatter() allocated a fresh DateFormatter per call — and was
+// being called once per AllSessions row × every dashboard refresh, which
+// was milliseconds of avoidable work on the main thread per tick.
+//
+// We hold four formatters (2 dimensions × 2 values). When the user
+// toggles time.use24h, we wipe the cache via .menuBehaviorDidChange.
+
+private var _timeFormatterCache: [String: DateFormatter] = [:]
+private let _timeFormatterQueue = DispatchQueue(label: "claude.tf.cache")
+
 func userTimeFormatter(includesDate: Bool = false) -> DateFormatter {
-    let f = DateFormatter()
     let use24h = UserDefaults.standard.bool(forKey: "time.use24h")
-    let time = use24h ? "HH:mm" : "h:mm a"
-    f.dateFormat = includesDate ? "MMM d, \(time)" : time
-    return f
+    let key = "\(use24h ? "24" : "12")-\(includesDate ? "d" : "t")"
+    return _timeFormatterQueue.sync {
+        if let cached = _timeFormatterCache[key] { return cached }
+        let f = DateFormatter()
+        let time = use24h ? "HH:mm" : "h:mm a"
+        f.dateFormat = includesDate ? "MMM d, \(time)" : time
+        _timeFormatterCache[key] = f
+        return f
+    }
+}
+
+func invalidateTimeFormatterCache() {
+    _timeFormatterQueue.sync { _timeFormatterCache.removeAll() }
 }
 
 enum PaletteToken: String, CaseIterable {
@@ -1653,11 +1683,14 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Menu-behavior changes (density / default tab / time format) also
         // trigger a live refresh — density flows through LiveRowView.update()
-        // which reads densitySpacing() on every render.
+        // which reads densitySpacing() on every render. Time format also
+        // invalidates the cached formatters so the next read picks up the
+        // new pattern.
         NotificationCenter.default.addObserver(
             forName: .menuBehaviorDidChange,
             object: nil, queue: .main
         ) { [weak self] _ in
+            invalidateTimeFormatterCache()
             self?.refreshLiveRows()
         }
     }
@@ -2784,8 +2817,32 @@ final class DashboardData: ObservableObject {
     @Published var allSessions: [FullSession]?
     @Published var isLoadingAllSessions = false
 
+    /// Cheap signature comparison so we don't trigger a SwiftUI tree
+    /// re-render every 5s when no field actually changed. ScanResult itself
+    /// isn't Equatable (a lot of nested types) but a tuple of "the bits the
+    /// UI cares about" is good enough — false positives just mean an extra
+    /// render, never a missed update.
+    private var lastSignature: String = ""
+    private static func signature(_ r: ScanResult?) -> String {
+        guard let r = r else { return "" }
+        let liveSig = r.live.map { inst -> String in
+            "\(inst.pid):\(inst.turns ?? 0):\(inst.outputTokens ?? 0):\(inst.costUsd ?? 0):\(inst.sessionState?.state ?? "")"
+        }.joined(separator: "|")
+        let limSig  = r.limits.map { "\($0.fiveH?.pct ?? 0):\($0.week?.pct ?? 0)" } ?? ""
+        return "\(liveSig)#\(limSig)#\(r.history.count)"
+    }
+
     func update(_ newData: ScanResult?) {
-        DispatchQueue.main.async { self.data = newData }
+        let sig = Self.signature(newData)
+        DispatchQueue.main.async {
+            // Skip publishing when nothing the UI cares about changed —
+            // SwiftUI's diffing is cheap but not free for ~7 tabs of views,
+            // and the 5s refreshTimer was triggering a full tree re-render
+            // every tick even when data was static.
+            if sig == self.lastSignature { return }
+            self.lastSignature = sig
+            self.data = newData
+        }
     }
 
     func loadAllSessions() {
