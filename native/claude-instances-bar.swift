@@ -3919,7 +3919,12 @@ struct InstanceCard: View {
                 )
             }
 
-            // Action buttons — fade in on hover
+            // Action buttons — always fully visible. The previous pattern
+            // fade-in-on-hover-only had two bugs: (1) at 40% opacity the
+            // Transcript button was easy to overlook ("where did it go?"),
+            // (2) the buttons exist precisely so the user CAN take action
+            // without needing to hover — hiding them behind hover defeats
+            // their purpose.
             HStack(spacing: 8) {
                 Button(action: { onFocus(inst.cwd ?? "") }) {
                     Label("Focus", systemImage: "terminal")
@@ -3932,7 +3937,8 @@ struct InstanceCard: View {
                         Label("Transcript", systemImage: "doc.text.magnifyingglass")
                             .font(.system(size: 12, weight: .medium))
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderedProminent)
+                    .tint(.teal)
                 }
 
                 Button(action: { onCopyPID(inst.pid) }) {
@@ -3950,8 +3956,6 @@ struct InstanceCard: View {
                 }
                 .buttonStyle(.bordered)
             }
-            .opacity(isHovered ? 1.0 : 0.4)
-            .animation(.easeInOut(duration: 0.15), value: isHovered)
         }
         .padding(16)
         .background(
