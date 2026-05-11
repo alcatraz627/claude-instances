@@ -245,8 +245,29 @@ t_grep "metric.speed token"                    native/claude-instances-bar.swift
 t_grep "turns chip tagged"                     native/claude-instances-bar.swift 'token: .metricTurns'
 t_grep "tools chip tagged"                     native/claude-instances-bar.swift 'token: .metricTools'
 t_grep "speed chip tagged"                     native/claude-instances-bar.swift 'token: .metricSpeed'
+# B1 — submenu keystrokes wired from a configurable store
+t_grep "SubmenuAction enum"                    native/claude-instances-bar.swift 'enum SubmenuAction'
+t_grep "keybindFor accessor"                   native/claude-instances-bar.swift 'func keybindFor'
+t_grep "finder item reads keybind"             native/claude-instances-bar.swift 'keybindFor\(.openInFinder\)'
+t_grep "transcript item reads keybind"         native/claude-instances-bar.swift 'keybindFor\(.viewTranscript\)'
+t_grep "KeybindsSection UI present"            native/claude-instances-bar.swift 'struct KeybindsSection'
+t_grep "KeybindRow editor"                     native/claude-instances-bar.swift 'struct KeybindRow'
+# A3 — SF Symbol state icon
+t_grep "stateSymbolName helper"                native/claude-instances-bar.swift 'func stateSymbolName'
+t_grep "symbolAttributedString helper"         native/claude-instances-bar.swift 'func symbolAttributedString'
+# C1 — permission mode
+t_grep "permissionMode field on LiveInstance"  native/claude-instances-bar.swift 'permissionMode = "permission_mode"'
+t_grep "permission_mode emitted in scan.sh"    lib/scan.sh "'permission_mode'"
+t_grep "permissionPlan token defined"          native/claude-instances-bar.swift 'case permissionPlan'
+t_grep "permission badge rendered"             native/claude-instances-bar.swift 'permLetter = "P"'
+# C2 — last tool when idle
+t_grep "LastTool struct"                       native/claude-instances-bar.swift 'struct LastTool'
+t_grep "last_tool emitted in scan.sh"          lib/scan.sh "'last_tool'"
+t_grep "parse_jsonl_state in scan.sh"          lib/scan.sh 'def parse_jsonl_state'
+t_grep "formatAgo helper"                      native/claude-instances-bar.swift 'func formatAgo'
+t_grep "last-tool line rendered when fresh"    native/claude-instances-bar.swift 'suppressBecauseStale'
 t_grep "inline row uses centerY alignment"     native/claude-instances-bar.swift 'row.alignment = .centerY'
-t_grep "state-icon blink removed"              native/claude-instances-bar.swift 'once-per-second blink'
+t_grep "state-icon uses SF Symbol now"         native/claude-instances-bar.swift 'symbolAttributedString'
 
 # Cleanup fixture
 rm -f "$PROJ_DIR/${FIXTURE_SID}.jsonl"

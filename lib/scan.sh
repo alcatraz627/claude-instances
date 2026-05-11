@@ -154,6 +154,87 @@ def git_modified_count(cwd):
 # Skips Task-tool sidechain user messages (those are agent prompts, not
 # the human's typed prompt).
 
+# ─── Permission mode + last tool from JSONL ──────────────────
+#
+# Two pieces of information surfaced from the transcript:
+#   - permission_mode: latest "type":"permission-mode" event's value
+#     (auto / plan / default / etc.). Useful for safety scanning.
+#   - last_tool: the most recent tool_use block plus its primary target
+#     (file_path / command preview) plus seconds since it ran. Drives
+#     the "last: Edit src/foo.tsx · 4s ago" hint line on idle rows.
+#
+# Both walk the same JSONL once; bundled into a single function for
+# efficiency (one open(), one parse pass).
+
+def parse_jsonl_state(filepath):
+    """Returns (permission_mode, last_tool_dict) extracted from the
+    transcript JSONL. last_tool_dict shape:
+        {'name': str, 'target': str, 'ago_seconds': int}
+    Either field may be None if the JSONL doesn't yield it.
+    """
+    if not filepath or not os.path.isfile(filepath):
+        return (None, None)
+    perm = None
+    last_tool = None
+    last_tool_ts = None
+    try:
+        with open(filepath, 'r', errors='replace') as f:
+            data = f.read()
+        for line in data.splitlines():
+            try:
+                obj = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            t = obj.get('type', '')
+            if t == 'permission-mode':
+                pm = obj.get('permissionMode', '')
+                if pm: perm = pm
+                continue
+            if t == 'assistant' and not obj.get('isSidechain'):
+                msg = obj.get('message', {})
+                if not isinstance(msg, dict): continue
+                for block in msg.get('content', []):
+                    if not isinstance(block, dict): continue
+                    if block.get('type') != 'tool_use': continue
+                    name = block.get('name', '?')
+                    inp  = block.get('input', {}) if isinstance(block.get('input'), dict) else {}
+                    # Primary target per tool — same logic as detail.sh
+                    if name == 'Bash':
+                        target = (inp.get('command') or '').replace('\n', ' ')[:60]
+                    elif name in ('Read', 'Write', 'Edit'):
+                        target = inp.get('file_path') or ''
+                    elif name == 'Grep':
+                        target = inp.get('pattern') or ''
+                    elif name == 'Glob':
+                        target = inp.get('pattern') or ''
+                    elif name == 'WebFetch':
+                        target = inp.get('url') or ''
+                    elif name in ('Task', 'Agent'):
+                        target = (inp.get('description') or inp.get('prompt') or '')[:60]
+                    elif name == 'TodoWrite':
+                        target = f"{len(inp.get('todos', []))} item(s)"
+                    else:
+                        # Fallback: first non-empty string field
+                        target = ''
+                        for v in inp.values():
+                            if isinstance(v, str) and v: target = v[:60]; break
+                    ts = obj.get('timestamp', '')
+                    last_tool = {'name': name, 'target': target[:80]}
+                    last_tool_ts = ts
+        # Compute ago_seconds from the last-tool timestamp.
+        if last_tool and last_tool_ts:
+            try:
+                # ISO8601 → epoch
+                from datetime import datetime, timezone
+                dt = datetime.fromisoformat(last_tool_ts.replace('Z', '+00:00'))
+                ago = int((datetime.now(timezone.utc) - dt).total_seconds())
+                last_tool['ago_seconds'] = max(0, ago)
+            except Exception:
+                last_tool['ago_seconds'] = 0
+        return (perm, last_tool)
+    except OSError:
+        return (None, None)
+
 def last_user_prompt(filepath):
     if not filepath or not os.path.isfile(filepath):
         return ''
@@ -499,14 +580,17 @@ def get_live_instances():
             # Count subagents
             subagent_count = count_subagents(pid)
 
-            # Git enrichment + last user prompt — full-scan only (skipped on
-            # --quick to keep the 5s tick fast).
+            # Git enrichment + last user prompt + permission mode + last tool
+            # — full-scan only (skipped on --quick to keep the 5s tick fast).
             if not quick_mode:
+                jsonl_path     = session_data.get('jsonl_path', '')
                 branch         = git_branch(cwd)
                 modified_files = git_modified_count(cwd)
-                last_prompt    = last_user_prompt(session_data.get('jsonl_path', ''))
+                last_prompt    = last_user_prompt(jsonl_path)
+                perm_mode, last_tool_info = parse_jsonl_state(jsonl_path)
             else:
                 branch, modified_files, last_prompt = '', 0, ''
+                perm_mode, last_tool_info = '', None
 
             # Infer session state
             session_state = infer_session_state(session_data['jsonl_path'], pid)
@@ -549,6 +633,8 @@ def get_live_instances():
                 'git_branch': branch,
                 'git_modified': modified_files,
                 'last_prompt': last_prompt,
+                'permission_mode': perm_mode or '',
+                'last_tool': last_tool_info,
                 'statusline': {
                     'cpu': statusline.get('proc_cpu', ''),
                     'mem': statusline.get('proc_mem', ''),

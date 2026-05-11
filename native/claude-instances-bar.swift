@@ -247,6 +247,8 @@ struct LiveInstance: Codable {
     let gitBranch: String?
     let gitModified: Int?
     let lastPrompt: String?
+    let permissionMode: String?
+    let lastTool: LastTool?
 
     enum CodingKeys: String, CodingKey {
         case pid, model, cwd, elapsed, turns, statusline
@@ -265,6 +267,22 @@ struct LiveInstance: Codable {
         case gitBranch = "git_branch"
         case gitModified = "git_modified"
         case lastPrompt = "last_prompt"
+        case permissionMode = "permission_mode"
+        case lastTool = "last_tool"
+    }
+}
+
+/// The most recent tool_use block in a session, emitted by scan.sh.
+/// Used by LiveRowView to render a "where did I leave off" hint even
+/// when the session is currently idle.
+struct LastTool: Codable {
+    let name: String
+    let target: String?
+    let agoSeconds: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case name, target
+        case agoSeconds = "ago_seconds"
     }
 }
 
@@ -279,6 +297,8 @@ extension LiveInstance {
         let mergedBranch:    String? = (gitBranch?.isEmpty   ?? true) ? prev.gitBranch   : gitBranch
         let mergedModified:  Int?    = ((gitModified ?? 0) > 0)        ? gitModified     : prev.gitModified
         let mergedPrompt:    String? = (lastPrompt?.isEmpty  ?? true) ? prev.lastPrompt  : lastPrompt
+        let mergedPerm:      String? = (permissionMode?.isEmpty ?? true) ? prev.permissionMode : permissionMode
+        let mergedLastTool:  LastTool? = lastTool ?? prev.lastTool
         return LiveInstance(
             pid: pid, model: model, modelFull: modelFull,
             cwd: cwd, cwdShort: cwdShort, elapsed: elapsed,
@@ -291,7 +311,9 @@ extension LiveInstance {
             sessionState: sessionState, statusline: statusline,
             gitBranch: mergedBranch,
             gitModified: mergedModified,
-            lastPrompt: mergedPrompt
+            lastPrompt: mergedPrompt,
+            permissionMode: mergedPerm,
+            lastTool: mergedLastTool
         )
     }
 }
@@ -430,6 +452,85 @@ func densitySpacing() -> CGFloat {
     }
 }
 
+// ─── Submenu keybinds ──────────────────────────────────────────────────────
+//
+// Each per-instance submenu action ("Open in Finder" etc.) is bound to a
+// single-character keyEquivalent that fires while the submenu is the
+// focused menu. Defaults are picked to be mnemonic (`f` for Finder, etc.)
+// and user-overridable via Settings → Keybinds. Persisted under
+// "keybind.<action>" in UserDefaults; reads at submenu-construction time.
+
+/// A submenu action that can be triggered by a keyboard shortcut.
+enum SubmenuAction: String, CaseIterable, Identifiable {
+    case openInFinder    = "openInFinder"
+    case openInTerminal  = "openInTerminal"
+    case openInVSCode    = "openInVSCode"
+    case viewTranscript  = "viewTranscript"
+    case copyPID         = "copyPID"
+    case terminate       = "terminate"
+
+    var id: String { rawValue }
+
+    /// Human-readable name shown in the Settings table.
+    var displayName: String {
+        switch self {
+        case .openInFinder:   return "Open in Finder"
+        case .openInTerminal: return "Open in Terminal"
+        case .openInVSCode:   return "Open in VSCode"
+        case .viewTranscript: return "View Transcript"
+        case .copyPID:        return "Copy PID"
+        case .terminate:      return "Terminate"
+        }
+    }
+
+    /// Default single-character keybind.
+    var defaultKey: String {
+        switch self {
+        case .openInFinder:   return "f"
+        case .openInTerminal: return "t"
+        case .openInVSCode:   return "c"   // "c" for code; doesn't conflict with copy because copy lives in same submenu
+        case .viewTranscript: return "v"
+        case .copyPID:        return "p"
+        case .terminate:      return "x"   // "x" for kill (avoids accidental ⌘⌫)
+        }
+    }
+}
+
+/// Resolves the active keybind for a submenu action — user override if
+/// present, else the bundled default. Empty string disables the binding
+/// (user can explicitly clear via Settings).
+func keybindFor(_ action: SubmenuAction) -> String {
+    if let custom = UserDefaults.standard.string(forKey: "keybind.\(action.rawValue)") {
+        return custom
+    }
+    return action.defaultKey
+}
+
+func setKeybind(_ action: SubmenuAction, _ key: String) {
+    UserDefaults.standard.set(key, forKey: "keybind.\(action.rawValue)")
+    NotificationCenter.default.post(name: .menuBehaviorDidChange, object: nil)
+}
+
+func resetKeybind(_ action: SubmenuAction) {
+    UserDefaults.standard.removeObject(forKey: "keybind.\(action.rawValue)")
+    NotificationCenter.default.post(name: .menuBehaviorDidChange, object: nil)
+}
+
+func keybindIsOverridden(_ action: SubmenuAction) -> Bool {
+    return UserDefaults.standard.object(forKey: "keybind.\(action.rawValue)") != nil
+}
+
+/// Short human-readable elapsed string for a count of seconds. Used by
+/// the "last tool ran" hint line: `4s`, `2m`, `28m`, `1h`, etc. Returns
+/// "0s" for negative or invalid input.
+func formatAgo(seconds n: Int) -> String {
+    let s = max(0, n)
+    if s < 60     { return "\(s)s" }
+    if s < 3600   { return "\(s / 60)m" }
+    if s < 86_400 { return "\(s / 3600)h" }
+    return "\(s / 86_400)d"
+}
+
 /// Returns the user-preferred absolute-time formatter ("HH:mm" 24h vs
 /// "h:mm a" 12h). Captured once per call; cheap to allocate.
 func userTimeFormatter(includesDate: Bool = false) -> DateFormatter {
@@ -456,6 +557,8 @@ enum PaletteToken: String, CaseIterable {
     case warnHigh       = "warn.high"        // compaction-imminent, MCP-down, ctx <30
     case warnMid        = "warn.mid"         // modified <20, ctx <60
     case successHigh    = "success.high"     // ctx ≥60%, ↑tokens
+    case permissionPlan = "permission.plan"  // Plan-mode badge (P)
+    case permissionAuto = "permission.auto"  // Auto-accept-edits badge (A — safety-relevant)
 
     /// Short human-readable name shown in the Settings table.
     var displayName: String {
@@ -475,6 +578,8 @@ enum PaletteToken: String, CaseIterable {
         case .warnHigh:       return "Warning (high)"
         case .warnMid:        return "Warning (mid)"
         case .successHigh:    return "Success"
+        case .permissionPlan: return "Permission: plan"
+        case .permissionAuto: return "Permission: auto"
         }
     }
 
@@ -496,6 +601,8 @@ enum PaletteToken: String, CaseIterable {
         case .warnHigh:       return "Critical warnings: compaction imminent, MCP down, modified ≥20"
         case .warnMid:        return "Mid-severity: ctx <60%, modified <20"
         case .successHigh:    return "Healthy state: ctx ≥60%, fast token rate"
+        case .permissionPlan: return "Plan-mode badge (P) — session is in plan mode"
+        case .permissionAuto: return "Auto-accept-edits badge (A) — safety-relevant"
         }
     }
 }
@@ -522,6 +629,8 @@ final class PaletteStore {
         .warnHigh:       NSColor(calibratedRed: 0.90, green: 0.42, blue: 0.42, alpha: 1.0),
         .warnMid:        NSColor.systemYellow.shadow(withLevel: 0.30)!,
         .successHigh:    NSColor.systemGreen.shadow(withLevel: 0.35)!,
+        .permissionPlan: NSColor.systemYellow.shadow(withLevel: 0.30)!,
+        .permissionAuto: NSColor(calibratedRed: 0.90, green: 0.42, blue: 0.42, alpha: 1.0),
     ]
 
     private let prefix = "palette."
@@ -970,14 +1079,19 @@ final class LiveRowView: NSView {
             .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .bold),
             .foregroundColor: m.color,
         ])
-        // State icon — shown alongside the badge when not idle. Removed
-        // the once-per-second blink that swapped icon ↔ space: it created
-        // visible row jitter on every scan tick. The dedicated state-detail
-        // row below ("🔧 tool_use: …") already conveys "this session is busy."
-        if !stateIcon.isEmpty {
-            appendChip(to: headerRow, text: stateIcon, token: .stateActive, attrs: [
-                .font: NSFont.systemFont(ofSize: 13),
-            ])
+        // State icon — shown alongside the badge when not idle. Now renders
+        // as a tinted SF Symbol (NSTextAttachment) instead of an emoji,
+        // so the `state.active` palette token actually colors the glyph
+        // and baselines align cleanly with the system font.
+        // (Previous emoji rendering forced .firstBaseline → .centerY
+        // workarounds; the symbol path doesn't have that problem.)
+        if !stateIcon.isEmpty,
+           let symbolName = stateSymbolName(for: stateStr),
+           let symbolAttr = symbolAttributedString(
+               name: symbolName,
+               pointSize: 11,
+               tint: PaletteStore.shared.color(for: .stateActive)) {
+            appendChip(to: headerRow, attr: symbolAttr, token: .stateActive)
         }
         // 2. Leaf + elapsed — visually one cluster, no individual token (
         //    structural). Bundled into a single label so spacing is tight.
@@ -999,6 +1113,29 @@ final class LiveRowView: NSView {
                 .foregroundColor: subagentColor,
             ])
         }
+        // Permission-mode badge — single-letter chip in plan or auto modes.
+        // Default mode emits no badge (the absence-of-chip IS the indicator).
+        // Tokens: permissionPlan (amber) vs permissionAuto (soft red — auto
+        // bypasses edit confirmation, which is the safety-relevant signal).
+        if let pm = inst.permissionMode, !pm.isEmpty {
+            let permLetter: String?
+            let permTok: PaletteToken?
+            switch pm {
+            case "plan":
+                permLetter = "P"; permTok = .permissionPlan
+            case "auto", "acceptEdits", "auto-accept", "auto-accept-edits":
+                permLetter = "A"; permTok = .permissionAuto
+            default:
+                permLetter = nil; permTok = nil
+            }
+            if let l = permLetter, let t = permTok {
+                appendChip(to: headerRow, text: l, token: t, attrs: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .bold),
+                    .foregroundColor: PaletteStore.shared.color(for: t),
+                ])
+            }
+        }
+
         // 4. Branch badge ⎇<name>
         if let br = inst.gitBranch, !br.isEmpty {
             appendChip(to: headerRow, text: "⎇\(br)", token: .accentBranch, attrs: [
@@ -1048,6 +1185,34 @@ final class LiveRowView: NSView {
                 .font: NSFont.systemFont(ofSize: 11),
                 .foregroundColor: NSColor.secondaryLabelColor,
             ]))
+        }
+
+        // Last tool ran — context for idle sessions ("where did I leave
+        // off?"). Suppressed if the session has been idle >5min so it
+        // doesn't linger as stale debt indefinitely.
+        if let lt = inst.lastTool, lt.name.count > 0 {
+            let ago = lt.agoSeconds ?? 0
+            // Only suppress when idle AND older than 5 min — active sessions
+            // benefit from seeing the tool even at age 0 (just ran).
+            let suppressBecauseStale = (stateStr == "idle") && (ago > 300)
+            if !suppressBecauseStale {
+                let agoStr = formatAgo(seconds: ago)
+                let targetStr: String = {
+                    guard let t = lt.target, !t.isEmpty else { return "" }
+                    var s = t
+                    if let cwd = inst.cwd, !cwd.isEmpty { s = s.replacingOccurrences(of: cwd, with: ".") }
+                    s = s.replacingOccurrences(of: home, with: "~")
+                    if s.count > 50 { s = "…" + s.suffix(49) }
+                    return s
+                }()
+                let line = targetStr.isEmpty
+                    ? "last: \(lt.name) · \(agoStr) ago"
+                    : "last: \(lt.name) \(targetStr) · \(agoStr) ago"
+                addLine(NSAttributedString(string: line, attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                    .foregroundColor: NSColor.tertiaryLabelColor,
+                ]))
+            }
         }
 
         // Metrics row — per-token labels in a horizontal stack so each
@@ -1230,6 +1395,39 @@ final class LiveRowView: NSView {
             lastHoverToken = hit
             onHoverToken?(hit)
         }
+    }
+
+    /// Maps a session state to the SF Symbol used in the header chip.
+    /// Returns nil for idle or unknown states.
+    private func stateSymbolName(for state: String) -> String? {
+        switch state {
+        case "thinking":    return "brain"
+        case "responding":  return "pencil.tip"
+        case "tool_use":    return "wrench.adjustable"
+        case "tool_result": return "checkmark.circle"
+        default:            return nil
+        }
+    }
+
+    /// Build an attributed string containing a single tinted SF Symbol.
+    /// Used for the state-icon chip in the header — embedding the symbol as
+    /// an NSTextAttachment lets it flow inline with adjacent text chips
+    /// while picking up the tint color (which an emoji glyph cannot).
+    /// Returns nil if the symbol name doesn't exist on this macOS version.
+    private func symbolAttributedString(name: String,
+                                        pointSize: CGFloat,
+                                        tint: NSColor) -> NSAttributedString? {
+        guard let img = NSImage(systemSymbolName: name, accessibilityDescription: nil) else {
+            return nil
+        }
+        let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .medium)
+            .applying(.init(paletteColors: [tint]))
+        let tinted = img.withSymbolConfiguration(config) ?? img
+        let attachment = NSTextAttachment()
+        attachment.image = tinted
+        // Nudge the image's baseline so it center-aligns with adjacent text.
+        attachment.bounds = NSRect(x: 0, y: -2, width: pointSize + 4, height: pointSize + 2)
+        return NSAttributedString(attachment: attachment)
     }
 
     /// Build a horizontal NSStackView for inline chip composition (header
@@ -1676,9 +1874,25 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // Helpers shared by the live-section builder and refreshLiveRows.
+    // SF Symbol names per session state. Empty for idle. Used by LiveRowView
+    // to render tintable images instead of emoji — gives the palette real
+    // coverage of the state glyphs and keeps baselines aligned to the
+    // system font.
+    private let liveRowStateSymbols: [String: String] = [
+        "thinking":    "brain",
+        "responding":  "pencil.tip",
+        "tool_use":    "wrench.adjustable",
+        "tool_result": "checkmark.circle",
+        "idle":        "",
+    ]
+    /// Legacy emoji map — kept for `state-detail` line which uses the icon
+    /// inline with attributedString text. The header chip uses the SF Symbol.
     private let liveRowStateIcons: [String: String] = [
-        "thinking": "💭", "responding": "✍️", "tool_use": "🔧",
-        "tool_result": "⚙️", "idle": "",
+        "thinking":    "💭",
+        "responding":  "✍️",
+        "tool_use":    "🔧",
+        "tool_result": "⚙️",
+        "idle":        "",
     ]
     private func liveRowLeaf(_ inst: LiveInstance) -> String {
         if let tt = inst.tabTitle, !tt.isEmpty { return tt }
@@ -1961,7 +2175,8 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             // 1. Open in Finder
             if let cwdPath = inst.cwd, !cwdPath.isEmpty {
-                let finderItem = NSMenuItem(title: "Open in Finder", action: #selector(openInFinder(_:)), keyEquivalent: "")
+                let finderItem = NSMenuItem(title: "Open in Finder", action: #selector(openInFinder(_:)), keyEquivalent: keybindFor(.openInFinder))
+                finderItem.keyEquivalentModifierMask = []
                 finderItem.target = self
                 finderItem.representedObject = cwdPath
                 setIcon(finderItem, "folder")
@@ -1973,7 +2188,8 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             //    "Focus Terminal" entry; renamed to match the verb pattern.)
             let terminalItem = NSMenuItem(title: "Open in Terminal (Ghostty)",
                                           action: #selector(focusInstance(_:)),
-                                          keyEquivalent: "")
+                                          keyEquivalent: keybindFor(.openInTerminal))
+            terminalItem.keyEquivalentModifierMask = []
             terminalItem.target = self
             terminalItem.representedObject = inst.cwd
             setIcon(terminalItem, "terminal")
@@ -1983,7 +2199,8 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let cwdPath = inst.cwd, !cwdPath.isEmpty {
                 let vscodeItem = NSMenuItem(title: "Open in VSCode",
                                             action: #selector(openInVSCode(_:)),
-                                            keyEquivalent: "")
+                                            keyEquivalent: keybindFor(.openInVSCode))
+                vscodeItem.keyEquivalentModifierMask = []
                 vscodeItem.target = self
                 vscodeItem.representedObject = cwdPath
                 setIcon(vscodeItem, "chevron.left.forwardslash.chevron.right")
@@ -1993,14 +2210,16 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             submenu.addItem(.separator())
 
             if let sid = inst.sessionId, !sid.isEmpty {
-                let detailItem = NSMenuItem(title: "View Transcript", action: #selector(openDetail(_:)), keyEquivalent: "")
+                let detailItem = NSMenuItem(title: "View Transcript", action: #selector(openDetail(_:)), keyEquivalent: keybindFor(.viewTranscript))
+                detailItem.keyEquivalentModifierMask = []
                 detailItem.target = self
                 detailItem.representedObject = ["pid": inst.pid, "sessionId": sid] as [String: Any]
                 setIcon(detailItem, "doc.text.magnifyingglass")
                 submenu.addItem(detailItem)
             }
 
-            let copyItem = NSMenuItem(title: "Copy PID (\(inst.pid))", action: #selector(copyPID(_:)), keyEquivalent: "")
+            let copyItem = NSMenuItem(title: "Copy PID (\(inst.pid))", action: #selector(copyPID(_:)), keyEquivalent: keybindFor(.copyPID))
+            copyItem.keyEquivalentModifierMask = []
             copyItem.target = self
             copyItem.representedObject = inst.pid
             setIcon(copyItem, "doc.on.clipboard")
@@ -2008,7 +2227,8 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             submenu.addItem(.separator())
 
-            let termItem = NSMenuItem(title: "Terminate", action: #selector(terminateInstance(_:)), keyEquivalent: "")
+            let termItem = NSMenuItem(title: "Terminate", action: #selector(terminateInstance(_:)), keyEquivalent: keybindFor(.terminate))
+            termItem.keyEquivalentModifierMask = []
             termItem.target = self
             termItem.representedObject = inst.pid
             termItem.attributedTitle = NSAttributedString(string: "Terminate", attributes: [
@@ -4425,7 +4645,9 @@ private func samplePreviewInstance() -> LiveInstance {
         statusline: statusline,
         gitBranch: "feature/nav-polish",
         gitModified: 8,
-        lastPrompt: "Add hover state to the nav links and make sure focus ring is visible"
+        lastPrompt: "Add hover state to the nav links and make sure focus ring is visible",
+        permissionMode: "auto",
+        lastTool: LastTool(name: "Edit", target: "src/components/Nav.tsx", agoSeconds: 4)
     )
 }
 
@@ -4545,6 +4767,9 @@ struct SettingsTabView: View {
                 .padding(.horizontal, 24)
 
                 MenuBehaviorSection()
+                    .padding(.horizontal, 24)
+
+                KeybindsSection()
                     .padding(.horizontal, 24)
 
                 Spacer(minLength: 24)
@@ -4782,6 +5007,139 @@ struct MenuBehaviorSection: View {
                 }
             }
             .padding(.vertical, 4)
+        }
+    }
+}
+
+/// Section for the per-instance-submenu keybinds. Each row is one
+/// SubmenuAction; the user types a single character to set the keybind,
+/// presses backspace to clear (disables that action's shortcut), or
+/// hits Reset to revert to the bundled default. Persists via the
+/// keybindFor / setKeybind / resetKeybind helpers, which post
+/// .menuBehaviorDidChange so the bar rebuilds the open menu with the
+/// new bindings.
+///
+/// Wiring: LiveRowView's submenu construction reads keybindFor(.openInFinder)
+/// etc. at build time. Changing a keybind here will be visible on the
+/// next menu open.
+struct KeybindsSection: View {
+    @State private var refreshTick = 0  // bumped to force re-read after edits
+
+    var body: some View {
+        OverviewSection(title: "Keybinds",
+                        icon: "command",
+                        iconColor: .blue) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Text("ACTION").frame(width: 200, alignment: .leading)
+                    Text("KEY").frame(width: 80, alignment: .leading)
+                    Text("USAGE").frame(maxWidth: .infinity, alignment: .leading)
+                    Text("").frame(width: 60, alignment: .trailing)
+                }
+                .font(.system(size: 10, weight: .bold))
+                .tracking(0.8)
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 4)
+
+                ForEach(SubmenuAction.allCases) { action in
+                    KeybindRow(action: action, refreshTick: refreshTick) {
+                        refreshTick &+= 1
+                    }
+                    Divider().opacity(0.4)
+                }
+
+                HStack {
+                    Text("Press a single character to set · Delete to clear (disable) · Reset to revert")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Reset all") {
+                        for a in SubmenuAction.allCases { resetKeybind(a) }
+                        refreshTick &+= 1
+                    }
+                    .controlSize(.small)
+                }
+                .padding(.top, 4)
+            }
+        }
+    }
+}
+
+/// One row of the keybinds table. The middle column is a TextField
+/// bound to the action's persisted key — empty string disables, single
+/// char sets the binding.
+struct KeybindRow: View {
+    let action: SubmenuAction
+    let refreshTick: Int                 // bumped to force the View id to refresh
+    let onChange: () -> Void
+
+    @State private var draft: String
+
+    init(action: SubmenuAction, refreshTick: Int, onChange: @escaping () -> Void) {
+        self.action = action
+        self.refreshTick = refreshTick
+        self.onChange = onChange
+        _draft = State(initialValue: keybindFor(action))
+    }
+
+    private var isOverridden: Bool { keybindIsOverridden(action) }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(action.displayName)
+                    .font(.system(size: 13, weight: .medium))
+                Text(action.rawValue)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+            .frame(width: 200, alignment: .leading)
+
+            // Single-character TextField — clamps to 1 char on commit,
+            // treats backspace-to-empty as "disable this keybind."
+            TextField("", text: $draft)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 13, design: .monospaced))
+                .frame(width: 64)
+                .multilineTextAlignment(.center)
+                .onChange(of: draft) { _, newVal in
+                    let clamped = String(newVal.prefix(1)).lowercased()
+                    if clamped != newVal { draft = clamped; return }
+                    if clamped.isEmpty {
+                        setKeybind(action, "")     // explicit disable
+                    } else {
+                        setKeybind(action, clamped)
+                    }
+                    onChange()
+                }
+
+            Text(usageDescription(action))
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button("Reset") {
+                resetKeybind(action)
+                draft = keybindFor(action)
+                onChange()
+            }
+            .controlSize(.small)
+            .disabled(!isOverridden)
+            .frame(width: 60, alignment: .trailing)
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 4)
+        .id(refreshTick)
+    }
+
+    private func usageDescription(_ a: SubmenuAction) -> String {
+        switch a {
+        case .openInFinder:   return "Reveal the session's cwd in Finder."
+        case .openInTerminal: return "Focus the Ghostty tab (or spawn one)."
+        case .openInVSCode:   return "Open the cwd in VSCode."
+        case .viewTranscript: return "Open the live HTML transcript viewer."
+        case .copyPID:        return "Copy the session's PID to clipboard."
+        case .terminate:      return "Send SIGTERM to the session."
         }
     }
 }
