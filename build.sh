@@ -49,6 +49,11 @@ echo "[build] OK -> ${APP_DIR}"
 ls -la "${APP_DIR}/Contents/MacOS/"
 
 if [[ "${RUN_AFTER}" -eq 1 ]]; then
+    # macOS `open` brings an already-running app to foreground rather than
+    # picking up a new binary. Kill any stale instance first so the user
+    # actually sees the build they just made.
+    pkill -f "${APP_DIR}/Contents/MacOS/${EXEC_NAME}" 2>/dev/null || true
+    sleep 0.3
     echo "[build] Launching ${APP_DIR}"
     open "${APP_DIR}"
 fi
