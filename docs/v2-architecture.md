@@ -1074,6 +1074,45 @@ the host can ship 2.0 → 2.7 with new surfaces, new event topics, new
 pane fields. Old plugins keep working. When a breaking change is
 needed, the host ships 3.0 and plugins update their `engines` range.
 
+### 13.1 Forward-compat invariants within a major
+
+While the host's major version stays constant (e.g. anywhere across
+`2.x.y`), the host promises every existing plugin keeps loading. The
+following changes are **additive** (no major bump, plugins unaffected):
+
+| Change | Why it's safe |
+|---|---|
+| Adding a new contribution point | Old plugins don't declare it; the unknown-key path warns, doesn't error. New plugins that need it bump their plugin version, not engines. |
+| Adding a new pane kind | Old plugins don't emit it; new plugins do. Host always renders an `error` pane for unrecognized kinds, so even cross-version mismatches degrade gracefully. |
+| Adding a new optional field to an existing payload | Codable ignores unknown keys when decoding; old plugins simply don't have the field. |
+| Adding a new host-emitted event topic | Old plugins don't subscribe to it. |
+| Adding a new error code | Host's `PluginErrorCode` enum is closed but additive. UI renderers fall through to a generic "unknown error" if they don't recognize a code. |
+| Tightening or loosening a budget *default* | Plugins that override budgets in their manifest are unaffected. |
+
+These changes **require** a major bump (and thus break old plugins
+until they update `engines`):
+
+| Change | Why it's breaking |
+|---|---|
+| Removing a contribution point | Plugins that used it can no longer load. |
+| Removing or renaming a payload field | Decoding fails for plugins relying on it. |
+| Changing a payload field's type | Same. |
+| Removing an event topic | Subscribers' handlers stop firing silently. |
+| Removing or renaming an error code | UI branches on code; renames break the contract. |
+
+### 13.2 Load-time warnings the registry emits
+
+The registry is forgiving but vocal. It produces warnings (not errors)
+for several patterns that work today but are likely to surprise later:
+
+- **Exact-pin engines.** A plugin declaring `engines: { claude-instances: "2.0.0" }` will refuse to load on host `2.0.1`. The registry warns and recommends `^2.0.0`.
+- **Unknown contribution-point keys.** A plugin declaring a contribution point the host doesn't know about gets a warning; the unknown contribution is preserved in the parsed manifest (forward-compat) but never rendered.
+- **Unknown pane kinds.** Catches typos at load (e.g. `"summray"` instead of `"summary"`) so they surface in Plugin Manager rather than as a generic error pane at runtime.
+- **Stubbed-surface contributions.** Declaring `menubar.item` / `statusbar.badge` / etc. is legal (forward-compat with later host versions) but the surface isn't rendered in V1 of V2 — the warning is the user's signal.
+
+All warnings are attached to the plugin's load outcome and surfaced in
+Plugin Manager (Phase 7+). They never block load.
+
 ---
 
 ## 14. Build & registry compilation

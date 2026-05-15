@@ -80,4 +80,12 @@ public enum SemVerRange: Equatable, Sendable {
             return v >= lower && v < upper
         }
     }
+
+    /// `true` if the range accepts only one specific version. Brittle for plugin
+    /// authors — they meant `^X.Y.Z` for "any patch within this major" but pinned
+    /// exact instead. The registry surfaces this as a warning.
+    public var isExactPin: Bool {
+        if case .exact = self { return true }
+        return false
+    }
 }

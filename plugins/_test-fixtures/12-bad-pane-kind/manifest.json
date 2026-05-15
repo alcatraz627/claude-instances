@@ -1,0 +1,14 @@
+{
+  "manifest_version": 1,
+  "id": "typo-pane",
+  "name": "Typo Pane",
+  "version": "0.1.0",
+  "engines": { "claude-instances": "^2.0.0" },
+  "exec": { "kind": "script", "fetch": "./fetch.sh" },
+  "contributes": {
+    "dashboard.pane": [
+      { "id": "typo-main", "title": "Typo",
+        "panes": [{ "kind": "frobnicate", "source": "fetch:s" }] }
+    ]
+  }
+}

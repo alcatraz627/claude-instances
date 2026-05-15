@@ -125,13 +125,33 @@ public final class Registry {
                 "plugin '\(manifest.id)' contributes nothing — at least one entry in 'contributes' is required"))
         }
 
-        // Unknown-key warnings on contributes (forward-compat for future contribution points)
         var pluginWarnings: [PluginWarning] = []
+
+        // Forward-compat: warn on exact-pin engines. Plugin authors usually mean
+        // caret ("^X.Y.Z" — any patch/minor in the major); exact pins refuse to
+        // load on the next patch release, which breaks silently.
+        if range.isExactPin {
+            pluginWarnings.append(.init(pluginId: manifest.id,
+                message: "engines.claude-instances is pinned exactly to '\(manifest.engines.claudeInstances)' — recommend '^\(manifest.engines.claudeInstances)' for forward-compat with patch/minor host updates"))
+        }
+
+        // Unknown-key warnings on contributes (forward-compat for future contribution points)
         if let raw = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
            let contributes = raw["contributes"] as? [String: Any] {
             for key in contributes.keys where !Registry.knownContributionKeys.contains(key) {
                 pluginWarnings.append(.init(pluginId: manifest.id,
                     message: "unknown contribution-point '\(key)' — preserved for forward-compat but not rendered"))
+            }
+        }
+
+        // Schema cross-check: every PaneSpec.kind in dashboard.pane contributions
+        // must be a known PaneKind. Unknown kinds render an error at runtime; we
+        // surface them at load so typos show up in Plugin Manager immediately.
+        let knownKinds = Set(PaneKind.allCases.map(\.rawValue))
+        for contribution in manifest.contributes.dashboardPane ?? [] {
+            for pane in contribution.panes where !knownKinds.contains(pane.kind) {
+                pluginWarnings.append(.init(pluginId: manifest.id,
+                    message: "dashboard.pane '\(contribution.id)' declares unknown pane kind '\(pane.kind)' — will render as error at runtime"))
             }
         }
 
