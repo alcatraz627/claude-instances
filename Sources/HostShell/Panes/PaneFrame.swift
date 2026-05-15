@@ -1,15 +1,17 @@
 import SwiftUI
 import HostKernel
 
-/// The chrome every pane shares: title bar, optional subtitle, refresh
-/// indicator, and an error overlay when content failed. The actual content
-/// renderer is injected as a generic view.
+/// Pane chrome: title strip + content area. Title strip uses Surface.header
+/// so it remains visible against both the page bg and the pane body in
+/// both color schemes. Border + corners + clip-shape come from
+/// `paneBackground()`.
 struct PaneFrame<Content: View>: View {
     let title: String?
     let subtitle: String?
     let fetchedAt: Date?
     let onRefresh: (() -> Void)?
     @ViewBuilder let content: () -> Content
+    @Environment(\.design) var design
 
     init(title: String? = nil, subtitle: String? = nil,
          fetchedAt: Date? = nil, onRefresh: (() -> Void)? = nil,
@@ -24,38 +26,48 @@ struct PaneFrame<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if title != nil || subtitle != nil || fetchedAt != nil {
-                HStack(alignment: .center, spacing: 8) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        if let title { Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.text) }
-                        if let subtitle { Text(subtitle).font(.system(size: 10)).foregroundStyle(Palette.dim) }
-                    }
-                    Spacer()
-                    if let fetchedAt {
-                        Text(relative(fetchedAt))
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(Palette.tertiary)
-                    }
-                    if let onRefresh {
-                        Button(action: onRefresh) {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 10))
-                                .foregroundStyle(Palette.dim)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Refresh")
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Palette.surfaceAlt)
+                titleBar
                 Divider()
             }
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .background(Palette.surface)
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Palette.panelBorder, lineWidth: 0.5))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .paneBackground()
+    }
+
+    private var titleBar: some View {
+        HStack(alignment: .center, spacing: design.space(DesignTokens.Space.s)) {
+            VStack(alignment: .leading, spacing: 1) {
+                if let title {
+                    Text(title)
+                        .font(design.font(DesignTokens.FontSize.title, weight: .semibold))
+                        .foregroundStyle(DesignTokens.TextColor.primary)
+                }
+                if let subtitle {
+                    Text(subtitle)
+                        .font(design.font(DesignTokens.FontSize.caption))
+                        .foregroundStyle(DesignTokens.TextColor.secondary)
+                }
+            }
+            Spacer()
+            if let fetchedAt {
+                Text(relative(fetchedAt))
+                    .font(design.font(DesignTokens.FontSize.caption, monospaced: true))
+                    .foregroundStyle(DesignTokens.TextColor.tertiary)
+            }
+            if let onRefresh {
+                Button(action: onRefresh) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(design.font(DesignTokens.FontSize.caption))
+                        .foregroundStyle(DesignTokens.TextColor.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Refresh")
+            }
+        }
+        .padding(.horizontal, design.space(DesignTokens.Space.m))
+        .padding(.vertical, design.space(DesignTokens.Space.s))
+        .sectionHeaderBackground()
     }
 
     private func relative(_ d: Date) -> String {

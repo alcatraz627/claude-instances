@@ -1,24 +1,23 @@
 import SwiftUI
 import HostKernel
 
-/// Monospaced plain-text view with ring-buffer rendering. Auto-scrolls to
-/// the bottom on new content (mimicking tail -f). 10k-line cap is enforced
-/// upstream by the surface router (host trims before passing in).
+/// Monospaced log viewer with auto-scroll to bottom on content change.
 struct LogPaneView: View {
     let content: LogContent
+    @Environment(\.design) var design
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 Text(content.text.isEmpty ? "(empty)" : content.text)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Palette.text)
+                    .font(design.font(DesignTokens.FontSize.label, monospaced: true))
+                    .foregroundStyle(DesignTokens.TextColor.primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
-                    .padding(12)
+                    .padding(design.space(DesignTokens.Space.m))
                     .id("bottom")
             }
-            .background(Palette.surface)
+            .background(DesignTokens.Surface.raised)
             .onChange(of: content.text) { _ in
                 proxy.scrollTo("bottom", anchor: .bottom)
             }

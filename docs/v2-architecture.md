@@ -1296,7 +1296,90 @@ breaching plugin's id, so the answer to "why did my menu-bar app eat
 
 ---
 
-## 17. Glossary
+## 17. Design System (the consistency contract)
+
+Every visual choice flows from one of these token namespaces. Plugins should
+consume tokens, not raw values. Direct overrides are permitted but
+**discouraged** — if a plugin diverges, it also takes responsibility for
+dark/light mode adaptation, text-size scaling, and density scaling.
+
+### 17.1 Token namespaces (Swift: `DesignTokens.*`)
+
+| Namespace | Members | Adapts to |
+|---|---|---|
+| `Surface` | `page`, `raised`, `header`, `hover`, `selected`, `border` | Color scheme (light/dark) |
+| `TextColor` | `primary`, `secondary`, `tertiary`, `onSelected` | Color scheme |
+| `SemanticColor` | `ok`, `warn`, `error`, `accent` | Constant (meaning > theme) |
+| `FontSize` | `caption`, `label`, `body`, `value`, `title`, `heroTitle` | Text-size setting (×0.85–1.28) |
+| `Space` | `xs`, `s`, `m`, `l`, `xl`, `xxl` | Density setting (×0.85–1.20) |
+| `Corner` | `s`, `m`, `l` | Constant |
+| `Tile` | `minWidth`, `maxWidth`, `minHeight` | Constant (for now) |
+
+### 17.2 Resolved tokens
+
+At render time, the host computes a `ResolvedDesign` value from the current
+`HostSettings`. Views read it via `@Environment(\.design)` and call:
+- `design.font(DesignTokens.FontSize.body)` — scaled-and-weighted Font
+- `design.font(.body, weight: .semibold, monospaced: true)` — overloads
+- `design.space(DesignTokens.Space.m)` — density-scaled CGFloat
+
+Plugins receive the same value as a read-only struct via
+`HostContext.design` (wired in Phase 4).
+
+### 17.3 Shared view modifiers
+
+| Modifier | Effect |
+|---|---|
+| `.paneBackground()` | Surface.raised + border + rounded corner |
+| `.sectionHeaderBackground()` | Surface.header — for sticky header strips |
+| `.chipBackground(tone:)` | Tone-tinted capsule background |
+| `HoverRow { … }` | Wraps content with hover-state highlight |
+
+### 17.4 Surface elevation
+
+```
+Layer 0  page                NSColor.windowBackgroundColor
+Layer 1  raised (pane body)  NSColor.controlBackgroundColor
+Layer 2  header (title bar)  NSColor.underPageBackgroundColor
+Layer +  hover overlay       NSColor.selectedContentBackgroundColor × 0.15
+```
+
+Both light and dark themes pick distinct values from the macOS catalog,
+so layering remains visible regardless of color scheme.
+
+### 17.5 User preferences (host-managed, plugin-readable)
+
+The `HostSettings` struct in HostKernel holds three appearance preferences:
+
+| Preference | Values | Effect |
+|---|---|---|
+| `colorScheme` | `system` / `light` / `dark` | Forces SwiftUI color scheme |
+| `textSize` | `extra_small` … `extra_large` (5 stops) | Multiplies every FontSize token |
+| `density` | `compact` / `comfortable` / `spacious` | Multiplies every Space token |
+
+Persisted to `~/Library/Application Support/dev.claude-instances-v2/state.json`
+under the `"appearance"` key. The store is debounced (200ms) so dragging a
+slider doesn't hammer disk. Other state.json keys (per-plugin enabled
+flags, per-plugin settings) are preserved across appearance writes.
+
+### 17.6 Override policy
+
+Plugins that diverge from the design system take on three responsibilities
+the host normally handles:
+
+1. **Color-scheme adaptation.** A hard-coded `Color.gray` looks wrong in
+   one of the two modes.
+2. **Text-size scaling.** Hard-coded font sizes don't grow when the user
+   picks "extra large."
+3. **Density scaling.** Hard-coded spacing doesn't shrink in compact mode.
+
+The cost of divergence falls entirely on the plugin author. The
+recommended path: file a host change to add a new token rather than
+hard-coding a value in plugin code.
+
+---
+
+## 18. Glossary
 
 - **Bundled plugin** — Native or script plugin shipped inside the host
   source tree, distributed with the binary.

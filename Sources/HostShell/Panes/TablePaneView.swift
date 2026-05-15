@@ -1,12 +1,12 @@
 import SwiftUI
 import HostKernel
 
-/// Header row + scrollable body. Cell widths honor manifest `width` (fixed
-/// points or `flex` for remaining space). Row actions render as chips on
-/// the trailing edge.
+/// Header strip + scrollable body. Rows highlight on hover via the shared
+/// `HoverRow` modifier.
 struct TablePaneView: View {
     let content: TableContent
     var onAction: ((TableContent.RowAction) -> Void)? = nil
+    @Environment(\.design) var design
 
     var body: some View {
         if content.rows.isEmpty {
@@ -18,22 +18,17 @@ struct TablePaneView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(content.rows.enumerated()), id: \.offset) { idx, row in
-                            rowView(row, index: idx)
+                            HoverRow {
+                                rowView(row)
+                            }
                             if idx < content.rows.count - 1 {
-                                Divider().opacity(0.5)
+                                Divider().opacity(0.4)
                             }
                         }
                     }
                 }
                 if let n = content.truncatedAt, content.hasMore == true {
-                    HStack {
-                        Text("Showing first \(n)…")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Palette.tertiary)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(Palette.surfaceAlt)
+                    truncatedFooter(n)
                 }
             }
         }
@@ -42,49 +37,77 @@ struct TablePaneView: View {
     private var header: some View {
         HStack(spacing: 0) {
             ForEach(Array(content.columns.enumerated()), id: \.offset) { _, col in
-                cellView(text: col.label.uppercased(), width: col.width, align: col.align,
-                         font: .system(size: 9, weight: .semibold),
-                         color: Palette.dim, tracking: 0.4)
+                cellView(text: col.label.uppercased(),
+                         width: col.width,
+                         align: col.align,
+                         font: design.font(DesignTokens.FontSize.caption, weight: .semibold),
+                         color: DesignTokens.TextColor.secondary,
+                         tracking: 0.4)
             }
-            // reserve slot for row actions
-            Spacer().frame(width: 6)
+            Spacer().frame(width: design.space(DesignTokens.Space.xs))
         }
-        .padding(.horizontal, 12).padding(.vertical, 6)
-        .background(Palette.surfaceAlt)
+        .padding(.horizontal, design.space(DesignTokens.Space.m))
+        .padding(.vertical, design.space(DesignTokens.Space.xs) + 2)
+        .sectionHeaderBackground()
     }
 
-    private func rowView(_ row: TableContent.Row, index: Int) -> some View {
+    private func rowView(_ row: TableContent.Row) -> some View {
         HStack(spacing: 0) {
             ForEach(Array(content.columns.enumerated()), id: \.offset) { _, col in
-                cellView(text: row.cells[col.id] ?? "—", width: col.width, align: col.align,
-                         font: .system(size: 11, design: .default), color: Palette.text)
+                cellView(text: row.cells[col.id] ?? "—",
+                         width: col.width,
+                         align: col.align,
+                         font: design.font(DesignTokens.FontSize.body),
+                         color: DesignTokens.TextColor.primary)
             }
-            Spacer().frame(width: 6)
+            Spacer().frame(width: design.space(DesignTokens.Space.xs))
             if let actions = row.rowActions, !actions.isEmpty {
-                HStack(spacing: 4) {
-                    ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
-                        Button(action: { onAction?(action) }) {
-                            Text(action.label)
-                                .font(.system(size: 10))
-                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                .foregroundStyle(action.destructive == true ? Palette.error : Palette.accent)
-                                .overlay(Capsule().stroke(
-                                    action.destructive == true ? Palette.error : Palette.accent,
-                                    lineWidth: 0.5))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+                rowActions(actions)
             }
         }
-        .padding(.horizontal, 12).padding(.vertical, 6)
-        .background(index.isMultiple(of: 2) ? Palette.surface : Palette.surfaceAlt.opacity(0.5))
+        .padding(.horizontal, design.space(DesignTokens.Space.m))
+        .padding(.vertical, design.space(DesignTokens.Space.xs) + 2)
+    }
+
+    private func rowActions(_ actions: [TableContent.RowAction]) -> some View {
+        HStack(spacing: 4) {
+            ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
+                Button(action: { onAction?(action) }) {
+                    Text(action.label)
+                        .font(design.font(DesignTokens.FontSize.caption))
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .foregroundStyle(action.destructive == true
+                                          ? DesignTokens.SemanticColor.error
+                                          : DesignTokens.SemanticColor.accent)
+                        .overlay(Capsule().stroke(
+                            action.destructive == true
+                              ? DesignTokens.SemanticColor.error
+                              : DesignTokens.SemanticColor.accent,
+                            lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func truncatedFooter(_ n: Int) -> some View {
+        HStack {
+            Text("Showing first \(n)…")
+                .font(design.font(DesignTokens.FontSize.caption))
+                .foregroundStyle(DesignTokens.TextColor.tertiary)
+            Spacer()
+        }
+        .padding(.horizontal, design.space(DesignTokens.Space.m))
+        .padding(.vertical, design.space(DesignTokens.Space.xs))
+        .sectionHeaderBackground()
     }
 
     @ViewBuilder
-    private func cellView(text: String, width: TableContent.WidthSpec?,
+    private func cellView(text: String,
+                          width: TableContent.WidthSpec?,
                           align: TableContent.Column.Alignment?,
-                          font: Font, color: Color,
+                          font: Font,
+                          color: Color,
                           tracking: CGFloat = 0) -> some View {
         let textView = Text(text)
             .font(font)
@@ -104,9 +127,9 @@ struct TablePaneView: View {
 
     private func alignment(for a: TableContent.Column.Alignment) -> Alignment {
         switch a {
-        case .leading: return .leading
+        case .leading:  return .leading
         case .trailing: return .trailing
-        case .center: return .center
+        case .center:   return .center
         }
     }
 }

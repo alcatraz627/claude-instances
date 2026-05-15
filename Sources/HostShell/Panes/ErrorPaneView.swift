@@ -1,58 +1,62 @@
 import SwiftUI
 import HostKernel
 
-/// Universal failure state. Surfaces the closed error `code`, the message,
-/// the actionable hint (if any), and a disclosure for `stderr_tail`.
+/// Universal failure state. Closed code chip + message + actionable card +
+/// stderr disclosure.
 struct ErrorPaneView: View {
     let error: PluginError
-
     @State private var showStderr = false
+    @Environment(\.design) var design
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: design.space(DesignTokens.Space.s)) {
+            HStack(spacing: design.space(DesignTokens.Space.xs) + 2) {
                 Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(Palette.error)
+                    .foregroundStyle(DesignTokens.SemanticColor.error)
                 Text(error.code.rawValue)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Palette.error)
+                    .font(design.font(DesignTokens.FontSize.label, monospaced: true))
+                    .foregroundStyle(DesignTokens.SemanticColor.error)
                     .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(Palette.error.opacity(0.12))
-                    .clipShape(Capsule())
+                    .chipBackground(tone: Tone.error)
             }
             Text(error.message)
-                .font(.system(size: 12))
-                .foregroundStyle(Palette.text)
+                .font(design.font(DesignTokens.FontSize.body))
+                .foregroundStyle(DesignTokens.TextColor.primary)
                 .fixedSize(horizontal: false, vertical: true)
             if let actionable = error.actionable {
                 Text(actionable)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Palette.dim)
-                    .padding(8)
+                    .font(design.font(DesignTokens.FontSize.label))
+                    .foregroundStyle(DesignTokens.TextColor.secondary)
+                    .padding(design.space(DesignTokens.Space.s))
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Palette.warn.opacity(0.08))
-                    .overlay(RoundedRectangle(cornerRadius: 4)
-                        .stroke(Palette.warn.opacity(0.3), lineWidth: 0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .background(DesignTokens.SemanticColor.warn.opacity(0.08))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DesignTokens.Corner.s)
+                            .stroke(DesignTokens.SemanticColor.warn.opacity(0.3),
+                                    lineWidth: 0.5)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Corner.s))
             }
             if let stderr = error.stderrTail, !stderr.isEmpty {
                 DisclosureGroup(isExpanded: $showStderr) {
                     ScrollView {
                         Text(stderr)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(Palette.dim)
+                            .font(design.font(DesignTokens.FontSize.caption, monospaced: true))
+                            .foregroundStyle(DesignTokens.TextColor.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
                     }
                     .frame(maxHeight: 160)
-                    .padding(8)
-                    .background(Palette.surfaceAlt)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .padding(design.space(DesignTokens.Space.s))
+                    .background(DesignTokens.Surface.header)
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Corner.s))
                 } label: {
-                    Text("stderr").font(.system(size: 11)).foregroundStyle(Palette.dim)
+                    Text("stderr")
+                        .font(design.font(DesignTokens.FontSize.label))
+                        .foregroundStyle(DesignTokens.TextColor.secondary)
                 }
             }
         }
-        .padding(12)
+        .padding(design.space(DesignTokens.Space.m))
     }
 }

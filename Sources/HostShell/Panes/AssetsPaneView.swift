@@ -1,10 +1,11 @@
 import SwiftUI
 import HostKernel
 
-/// File list with open-with action. `default` opens via macOS `open(1)`.
+/// File list with hover rows, size + mtime, open-with action.
 struct AssetsPaneView: View {
     let content: AssetsContent
     var onOpen: ((AssetsContent.Item) -> Void)? = nil
+    @Environment(\.design) var design
 
     var body: some View {
         if content.items.isEmpty {
@@ -12,27 +13,29 @@ struct AssetsPaneView: View {
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(content.items.enumerated()), id: \.offset) { idx, item in
-                    row(item)
-                    if idx < content.items.count - 1 { Divider().opacity(0.5) }
+                    HoverRow { row(item) }
+                    if idx < content.items.count - 1 {
+                        Divider().opacity(0.4)
+                    }
                 }
             }
         }
     }
 
     private func row(_ item: AssetsContent.Item) -> some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: design.space(DesignTokens.Space.s)) {
             Image(systemName: iconName(for: item.openWith))
-                .font(.system(size: 14))
-                .foregroundStyle(Palette.dim)
+                .font(design.font(DesignTokens.FontSize.label + 2))
+                .foregroundStyle(DesignTokens.TextColor.secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.label)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Palette.text)
+                    .font(design.font(DesignTokens.FontSize.body, weight: .medium))
+                    .foregroundStyle(DesignTokens.TextColor.primary)
                     .lineLimit(1)
                 Text(item.path)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Palette.tertiary)
+                    .font(design.font(DesignTokens.FontSize.caption, monospaced: true))
+                    .foregroundStyle(DesignTokens.TextColor.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -40,20 +43,21 @@ struct AssetsPaneView: View {
             VStack(alignment: .trailing, spacing: 2) {
                 if let bytes = item.sizeBytes {
                     Text(humanBytes(bytes))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(Palette.dim)
+                        .font(design.font(DesignTokens.FontSize.caption, monospaced: true))
+                        .foregroundStyle(DesignTokens.TextColor.secondary)
                 }
                 if let mtime = item.mtime {
                     Text(mtime.split(separator: "T").first.map(String.init) ?? mtime)
-                        .font(.system(size: 10))
-                        .foregroundStyle(Palette.tertiary)
+                        .font(design.font(DesignTokens.FontSize.caption))
+                        .foregroundStyle(DesignTokens.TextColor.tertiary)
                 }
             }
             Button("Open") { onOpen?(item) }
                 .controlSize(.small)
                 .buttonStyle(.bordered)
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
+        .padding(.horizontal, design.space(DesignTokens.Space.m))
+        .padding(.vertical, design.space(DesignTokens.Space.s))
     }
 
     private func iconName(for openWith: AssetsContent.Item.OpenWith?) -> String {
@@ -66,9 +70,9 @@ struct AssetsPaneView: View {
     }
 
     private func humanBytes(_ n: Int) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useKB, .useMB, .useGB]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: Int64(n))
+        let f = ByteCountFormatter()
+        f.allowedUnits = [.useKB, .useMB, .useGB]
+        f.countStyle = .file
+        return f.string(fromByteCount: Int64(n))
     }
 }

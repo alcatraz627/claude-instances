@@ -1,12 +1,11 @@
 import SwiftUI
 import HostKernel
 
-/// Read-only list of scheduled jobs (cron + launchd unified). V1 of V2 does
-/// not implement enable/disable mutations; the toggle is deferred per the
-/// implementation plan.
+/// Read-only cron + launchd unified list. Hover-highlighted rows.
 struct SchedulePaneView: View {
     let content: ScheduleContent
     var onOpenLog: ((String) -> Void)? = nil
+    @Environment(\.design) var design
 
     var body: some View {
         if content.items.isEmpty {
@@ -14,54 +13,61 @@ struct SchedulePaneView: View {
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(content.items.enumerated()), id: \.offset) { idx, item in
-                    row(item)
-                    if idx < content.items.count - 1 { Divider().opacity(0.5) }
+                    HoverRow { row(item) }
+                    if idx < content.items.count - 1 {
+                        Divider().opacity(0.4)
+                    }
                 }
             }
         }
     }
 
     private func row(_ item: ScheduleContent.Item) -> some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: design.space(DesignTokens.Space.s)) {
             Circle()
-                .fill(item.enabled ? Palette.ok : Palette.dim)
+                .fill(item.enabled
+                      ? DesignTokens.SemanticColor.ok
+                      : DesignTokens.TextColor.tertiary)
                 .frame(width: 8, height: 8)
                 .padding(.top, 6)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(item.id)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Palette.text)
+                        .font(design.font(DesignTokens.FontSize.body, weight: .medium))
+                        .foregroundStyle(DesignTokens.TextColor.primary)
                     Text(item.source.uppercased())
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(Palette.dim)
+                        .font(design.font(DesignTokens.FontSize.caption,
+                                          weight: .semibold,
+                                          monospaced: true))
+                        .foregroundStyle(DesignTokens.TextColor.secondary)
                         .padding(.horizontal, 4).padding(.vertical, 1)
-                        .background(Palette.panelBorder.opacity(0.5))
+                        .background(DesignTokens.Surface.border.opacity(0.5))
                         .clipShape(Capsule())
                     Spacer()
                     Text(item.when)
-                        .font(.system(size: 11))
-                        .foregroundStyle(Palette.dim)
+                        .font(design.font(DesignTokens.FontSize.body))
+                        .foregroundStyle(DesignTokens.TextColor.secondary)
                 }
                 Text(item.command)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Palette.tertiary)
+                    .font(design.font(DesignTokens.FontSize.caption, monospaced: true))
+                    .foregroundStyle(DesignTokens.TextColor.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if let logPath = item.logPath {
                     Button(action: { onOpenLog?(logPath) }) {
                         HStack(spacing: 3) {
                             Image(systemName: "doc.text")
-                                .font(.system(size: 9))
+                                .font(design.font(DesignTokens.FontSize.caption))
                             Text("View log")
-                                .font(.system(size: 10))
+                                .font(design.font(DesignTokens.FontSize.caption))
                         }
-                        .foregroundStyle(Palette.accent)
+                        .foregroundStyle(DesignTokens.SemanticColor.accent)
                     }
                     .buttonStyle(.plain)
                 }
             }
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
+        .padding(.horizontal, design.space(DesignTokens.Space.m))
+        .padding(.vertical, design.space(DesignTokens.Space.s))
     }
 }
