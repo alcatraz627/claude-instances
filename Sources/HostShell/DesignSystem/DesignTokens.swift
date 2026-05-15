@@ -24,9 +24,14 @@ public enum DesignTokens {
         public static let raised = Color(nsColor: .controlBackgroundColor)
 
         /// Layer 2 — pane title bars, sticky headers, settings sections.
-        /// Picked to read clearly against both `.page` and `.raised` in
-        /// both light and dark modes.
-        public static let header = Color(nsColor: .underPageBackgroundColor)
+        /// Hand-rolled via dynamic provider so both light and dark are
+        /// explicit: off-white in light mode (was reading too dark with
+        /// NSColor.underPageBackgroundColor), slightly-lighter-than-pane
+        /// in dark mode.
+        public static let header = Color(nsColor: NSColor(name: "headerStrip", dynamicProvider: { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
+            return isDark ? NSColor(white: 0.22, alpha: 1) : NSColor(white: 0.95, alpha: 1)
+        }))
 
         /// Subtle overlay applied to interactive rows on hover.
         public static let hover = Color(nsColor: .selectedContentBackgroundColor).opacity(0.15)

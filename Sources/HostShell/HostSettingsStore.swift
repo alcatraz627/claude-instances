@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import SwiftUI
 import HostKernel
 
@@ -16,6 +16,7 @@ public final class HostSettingsStore: ObservableObject {
 
     public init() {
         self.settings = HostSettingsStore.loadOnDisk()
+        applyAppearanceToNSApp()
     }
 
     private static func loadOnDisk() -> HostSettings {
@@ -24,7 +25,21 @@ public final class HostSettingsStore: ObservableObject {
 
     public func update(_ mutate: (inout HostSettings) -> Void) {
         mutate(&settings)
+        applyAppearanceToNSApp()
         scheduleSave()
+    }
+
+    /// Bridge the SwiftUI-level setting to AppKit. SwiftUI's
+    /// `.preferredColorScheme(nil)` only clears the override for SwiftUI
+    /// content — NSPanel/NSMenu chrome stays at whatever was last forced.
+    /// Setting `NSApp.appearance` propagates the choice to the whole app
+    /// including the menu-bar dropdown.
+    private func applyAppearanceToNSApp() {
+        switch settings.appearance.colorScheme {
+        case .system: NSApp.appearance = nil
+        case .light:  NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark:   NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
     }
 
     private func scheduleSave() {

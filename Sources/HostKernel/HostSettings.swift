@@ -46,13 +46,15 @@ public struct HostSettings: Codable, Sendable, Equatable {
         case extraLarge = "extra_large"
 
         /// Multiplier applied to every typography token. 1.0 = medium.
+        /// Larger gaps at the high end so "L" / "XL" feel meaningfully
+        /// bigger to users who want bigger UI.
         public var scale: Double {
             switch self {
             case .extraSmall: return 0.85
-            case .small:      return 0.92
+            case .small:      return 0.93
             case .medium:     return 1.00
-            case .large:      return 1.12
-            case .extraLarge: return 1.28
+            case .large:      return 1.22
+            case .extraLarge: return 1.50
             }
         }
     }

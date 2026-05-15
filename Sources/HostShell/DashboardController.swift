@@ -21,7 +21,9 @@ final class DashboardController {
         let hosting = NSHostingController(rootView: root)
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 820, height: 560),
-            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            // Drop `.fullSizeContentView` so the title bar's own background
+            // is preserved by AppKit; don't set titlebarAppearsTransparent.
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -30,7 +32,6 @@ final class DashboardController {
         panel.center()
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
-        panel.titlebarAppearsTransparent = true
         return panel
     }
 }

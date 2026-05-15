@@ -29,11 +29,11 @@ struct SettingsTab: View {
                             get: { store.settings.appearance.textSize },
                             set: { newValue in store.update { $0.appearance.textSize = newValue } }
                         )) {
-                            Text("xs").tag(HostSettings.TextSize.extraSmall)
-                            Text("s").tag(HostSettings.TextSize.small)
+                            Text("XS").tag(HostSettings.TextSize.extraSmall)
+                            Text("S").tag(HostSettings.TextSize.small)
                             Text("M").tag(HostSettings.TextSize.medium)
-                            Text("l").tag(HostSettings.TextSize.large)
-                            Text("xl").tag(HostSettings.TextSize.extraLarge)
+                            Text("L").tag(HostSettings.TextSize.large)
+                            Text("XL").tag(HostSettings.TextSize.extraLarge)
                         }
                         .pickerStyle(.segmented)
                         .frame(maxWidth: 240)

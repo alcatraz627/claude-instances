@@ -66,7 +66,11 @@ struct TablePaneView: View {
             }
         }
         .padding(.horizontal, design.space(DesignTokens.Space.m))
-        .padding(.vertical, design.space(DesignTokens.Space.xs) + 2)
+        .padding(.vertical, design.space(DesignTokens.Space.s))
+        // Stable minHeight prevents hover-state changes from triggering
+        // a layout shift when the row's chip buttons would otherwise be
+        // taller than the bare-text rest state.
+        .frame(minHeight: design.space(DesignTokens.Space.xl) + 4, alignment: .leading)
     }
 
     private func rowActions(_ actions: [TableContent.RowAction]) -> some View {
