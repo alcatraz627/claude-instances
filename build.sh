@@ -42,11 +42,28 @@ mkdir -p "${APP_DIR}/Contents/Resources"
 cp -f "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${EXEC_NAME}"
 cp -f Resources/Info.plist "${APP_DIR}/Contents/Info.plist"
 
+# Copy native-plugin manifests into the bundle so PlatformRegistry can
+# discover them via Bundle.main.resourceURL. Plugin.swift sources are
+# already compiled into the host binary; only manifest.json needs to
+# travel with the bundle.
+if [[ -d plugins ]]; then
+    mkdir -p "${APP_DIR}/Contents/Resources/plugins"
+    for plugindir in plugins/*/; do
+        [[ -d "${plugindir}" ]] || continue
+        pname="$(basename "${plugindir}")"
+        [[ "${pname}" == "_test-fixtures" ]] && continue
+        if [[ -f "${plugindir}manifest.json" ]]; then
+            mkdir -p "${APP_DIR}/Contents/Resources/plugins/${pname}"
+            cp -f "${plugindir}manifest.json" "${APP_DIR}/Contents/Resources/plugins/${pname}/manifest.json"
+        fi
+    done
+    echo "[build] Bundled plugin manifests: $(ls ${APP_DIR}/Contents/Resources/plugins/ | tr '\n' ' ')"
+fi
+
 # Ad-hoc sign so macOS does not refuse to launch unsigned + quarantined.
 codesign --force --sign - "${APP_DIR}" >/dev/null 2>&1 || true
 
 echo "[build] OK -> ${APP_DIR}"
-ls -la "${APP_DIR}/Contents/MacOS/"
 
 if [[ "${RUN_AFTER}" -eq 1 ]]; then
     # macOS `open` brings an already-running app to foreground rather than

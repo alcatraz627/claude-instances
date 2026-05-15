@@ -20,6 +20,8 @@ public enum PaneContent: Sendable {
 public struct SummaryContent: Codable, Sendable, Equatable {
     public var tiles: [Tile]
 
+    public init(tiles: [Tile]) { self.tiles = tiles }
+
     public struct Tile: Codable, Sendable, Equatable {
         public var label: String
         public var value: String
@@ -54,11 +56,27 @@ public struct TableContent: Codable, Sendable, Equatable {
     public var truncatedAt: Int?
     public var hasMore: Bool?
 
+    public init(columns: [Column], rows: [Row],
+                empty: String? = nil,
+                truncatedAt: Int? = nil, hasMore: Bool? = nil) {
+        self.columns = columns
+        self.rows = rows
+        self.empty = empty
+        self.truncatedAt = truncatedAt
+        self.hasMore = hasMore
+    }
+
     public struct Column: Codable, Sendable, Equatable {
         public var id: String
         public var label: String
         public var width: WidthSpec?
         public var align: Alignment?
+
+        public init(id: String, label: String,
+                    width: WidthSpec? = nil, align: Alignment? = nil) {
+            self.id = id; self.label = label
+            self.width = width; self.align = align
+        }
 
         public enum Alignment: String, Codable, Sendable {
             case leading, trailing, center
@@ -135,6 +153,13 @@ public struct TableContent: Codable, Sendable, Equatable {
         public var command: String
         public var args: [String: AnyCodable]?
         public var destructive: Bool?
+
+        public init(label: String, command: String,
+                    args: [String: AnyCodable]? = nil,
+                    destructive: Bool? = nil) {
+            self.label = label; self.command = command
+            self.args = args; self.destructive = destructive
+        }
     }
 
     enum CodingKeys: String, CodingKey {
@@ -149,6 +174,8 @@ public struct TableContent: Codable, Sendable, Equatable {
 public struct ScheduleContent: Codable, Sendable, Equatable {
     public var items: [Item]
 
+    public init(items: [Item]) { self.items = items }
+
     public struct Item: Codable, Sendable, Equatable {
         public var id: String
         public var source: String         // "cron" | "launchd" | etc.
@@ -157,6 +184,14 @@ public struct ScheduleContent: Codable, Sendable, Equatable {
         public var command: String
         public var enabled: Bool
         public var logPath: String?
+
+        public init(id: String, source: String, when: String,
+                    nextRun: String? = nil, command: String,
+                    enabled: Bool, logPath: String? = nil) {
+            self.id = id; self.source = source; self.when = when
+            self.nextRun = nextRun; self.command = command
+            self.enabled = enabled; self.logPath = logPath
+        }
 
         enum CodingKeys: String, CodingKey {
             case id, source, when, command, enabled
@@ -171,12 +206,23 @@ public struct ScheduleContent: Codable, Sendable, Equatable {
 public struct AssetsContent: Codable, Sendable, Equatable {
     public var items: [Item]
 
+    public init(items: [Item]) { self.items = items }
+
     public struct Item: Codable, Sendable, Equatable {
         public var path: String
         public var label: String
         public var sizeBytes: Int?
         public var mtime: String?
         public var openWith: OpenWith?
+
+        public init(path: String, label: String,
+                    sizeBytes: Int? = nil,
+                    mtime: String? = nil,
+                    openWith: OpenWith? = nil) {
+            self.path = path; self.label = label
+            self.sizeBytes = sizeBytes; self.mtime = mtime
+            self.openWith = openWith
+        }
 
         public enum OpenWith: String, Codable, Sendable {
             // Raw value stays "default" so manifest JSON is unchanged; we rename

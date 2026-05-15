@@ -1,0 +1,25 @@
+{
+  "manifest_version": 1,
+  "id": "about-v2",
+  "name": "About",
+  "version": "1.0.0",
+  "description": "Host info and developer docs.",
+  "engines": { "claude-instances": "^2.0.0" },
+  "icon": "info.circle",
+  "exec": { "kind": "native" },
+  "contributes": {
+    "dashboard.pane": [
+      {
+        "id": "about-main",
+        "title": "About",
+        "subtitle": "Host info and docs",
+        "section": "System",
+        "icon": "info.circle",
+        "panes": [
+          { "kind": "summary", "source": "native:summary" },
+          { "kind": "assets",  "source": "native:assets"  }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "manifest_version": 1,
+  "id": "events",
+  "name": "Events",
+  "version": "1.0.0",
+  "description": "Recent Claude session events (demo data; real scanner in Phase 5+).",
+  "engines": { "claude-instances": "^2.0.0" },
+  "icon": "list.bullet.rectangle",
+  "exec": { "kind": "native" },
+  "contributes": {
+    "dashboard.pane": [
+      {
+        "id": "events-main",
+        "title": "Events",
+        "subtitle": "Recent activity",
+        "section": "Dashboard",
+        "icon": "list.bullet.rectangle",
+        "panes": [
+          { "kind": "table", "source": "native:recent" }
+        ]
+      }
+    ]
+  }
+}

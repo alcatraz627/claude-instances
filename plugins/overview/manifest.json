@@ -1,0 +1,24 @@
+{
+  "manifest_version": 1,
+  "id": "overview",
+  "name": "Overview",
+  "version": "1.0.0",
+  "description": "At-a-glance dashboard stats.",
+  "engines": { "claude-instances": "^2.0.0" },
+  "icon": "rectangle.grid.2x2",
+  "exec": { "kind": "native" },
+  "contributes": {
+    "dashboard.pane": [
+      {
+        "id": "overview-main",
+        "title": "Overview",
+        "subtitle": "Stats + limits",
+        "section": "Dashboard",
+        "icon": "rectangle.grid.2x2",
+        "panes": [
+          { "kind": "summary", "source": "native:stats" }
+        ]
+      }
+    ]
+  }
+}
