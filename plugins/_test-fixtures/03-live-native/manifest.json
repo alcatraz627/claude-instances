@@ -1,0 +1,30 @@
+{
+  "manifest_version": 1,
+  "id": "live-sessions",
+  "name": "Live Sessions",
+  "version": "1.0.0",
+  "engines": { "claude-instances": "^2.0.0" },
+  "exec": { "kind": "native" },
+  "contributes": {
+    "commands": [
+      { "id": "live.focus", "title": "Focus session",
+        "exec": { "kind": "native", "handler": "focusSession" },
+        "args_schema": [{ "name": "pid", "type": "integer", "required": true }] },
+      { "id": "live.terminate", "title": "Terminate",
+        "exec": { "kind": "native", "handler": "terminateSession" },
+        "confirm": { "message": "Send SIGTERM?", "destructive": true } }
+    ],
+    "dashboard.pane": [
+      { "id": "live-main", "title": "Live", "section": "Dashboard",
+        "panes": [{ "kind": "custom", "source": "native:liveTabView" }] }
+    ],
+    "menubar.item": [
+      { "id": "live-rows",
+        "submenu": [{ "kind": "dynamic", "source": "native:rowsForMenu" }] }
+    ],
+    "hotkey": [
+      { "id": "live.focus-1", "command": "live.focus",
+        "args": { "index": 1 }, "default_binding": "1", "scope": "menu-open" }
+    ]
+  }
+}

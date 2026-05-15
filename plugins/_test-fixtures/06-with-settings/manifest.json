@@ -1,0 +1,18 @@
+{
+  "manifest_version": 1,
+  "id": "scheduled",
+  "name": "Scheduled Jobs",
+  "version": "0.2.0",
+  "engines": { "claude-instances": "^2.0.0" },
+  "exec": { "kind": "script", "fetch": "./fetch.sh" },
+  "contributes": {
+    "dashboard.pane": [
+      { "id": "scheduled-main", "title": "Scheduled",
+        "panes": [{ "kind": "schedule", "source": "fetch:list-all" }] }
+    ],
+    "settings.section": [
+      { "id": "scheduled-settings", "title": "Scheduled",
+        "schema": "./settings.schema.json", "view": "auto" }
+    ]
+  }
+}

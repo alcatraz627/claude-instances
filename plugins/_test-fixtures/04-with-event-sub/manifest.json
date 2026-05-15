@@ -1,0 +1,17 @@
+{
+  "manifest_version": 1,
+  "id": "tool-counter",
+  "name": "Tool Counter",
+  "version": "0.1.0",
+  "engines": { "claude-instances": "^2.0.0" },
+  "exec": { "kind": "script", "fetch": "./fetch.sh" },
+  "contributes": {
+    "dashboard.pane": [
+      { "id": "tool-counter-main", "title": "Tool Counter",
+        "panes": [{ "kind": "summary", "source": "fetch:summary" }] }
+    ],
+    "event.subscriptions": [
+      { "event": "claude.tool.use", "handler": "./on-tool.sh", "debounce_ms": 200 }
+    ]
+  }
+}

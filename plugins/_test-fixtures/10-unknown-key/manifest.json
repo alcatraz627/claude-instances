@@ -1,0 +1,17 @@
+{
+  "manifest_version": 1,
+  "id": "future-plugin",
+  "name": "Future Plugin",
+  "version": "0.1.0",
+  "engines": { "claude-instances": "^2.0.0" },
+  "exec": { "kind": "script", "fetch": "./fetch.sh" },
+  "contributes": {
+    "dashboard.pane": [
+      { "id": "future-main", "title": "Future",
+        "panes": [{ "kind": "summary", "source": "fetch:summary" }] }
+    ],
+    "experimental.touch-bar": [
+      { "id": "future-touch", "title": "Touch Bar item" }
+    ]
+  }
+}

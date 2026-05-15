@@ -1,0 +1,13 @@
+{
+  "manifest_version": 1,
+  "name": "Anonymous",
+  "version": "0.1.0",
+  "engines": { "claude-instances": "^2.0.0" },
+  "exec": { "kind": "script" },
+  "contributes": {
+    "dashboard.pane": [
+      { "id": "anon", "title": "Anon",
+        "panes": [{ "kind": "summary", "source": "fetch:s" }] }
+    ]
+  }
+}

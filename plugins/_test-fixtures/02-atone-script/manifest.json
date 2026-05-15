@@ -1,0 +1,38 @@
+{
+  "manifest_version": 1,
+  "id": "atone",
+  "name": "Atone",
+  "version": "0.3.0",
+  "description": "Records mistakes, runs RCAs, consolidates patterns.",
+  "engines": { "claude-instances": "^2.0.0" },
+  "icon": "exclamationmark.bubble",
+  "accent": "orange",
+  "capabilities": ["fs.read", "process.spawn"],
+  "activation": ["onSurface:dashboard.pane:atone-main", "onCommand:atone.consolidate"],
+  "requires": ["jq>=1.6", "flock"],
+  "exec": { "kind": "script", "fetch": "./fetch.sh", "action": "./actions.sh" },
+  "refresh": {
+    "on_fs_change": ["~/.claude/atone/events.jsonl"],
+    "poll_seconds": 600
+  },
+  "limits": {
+    "fetch_timeout_ms": 1500,
+    "fetch_hard_kill_ms": 5000,
+    "fetch_max_per_min": 6,
+    "max_payload_bytes": 262144
+  },
+  "contributes": {
+    "commands": [
+      { "id": "atone.consolidate", "title": "Run consolidate",
+        "exec": { "kind": "script", "argv": ["$pluginDir/actions.sh", "consolidate"] } }
+    ],
+    "dashboard.pane": [
+      { "id": "atone-main", "title": "Atone", "section": "Tools",
+        "panes": [
+          { "kind": "summary", "source": "fetch:summary" },
+          { "kind": "table", "source": "fetch:events --recent 20" },
+          { "kind": "assets", "source": "fetch:assets" }
+        ] }
+    ]
+  }
+}

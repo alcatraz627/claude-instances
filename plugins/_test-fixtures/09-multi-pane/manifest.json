@@ -1,0 +1,16 @@
+{
+  "manifest_version": 1,
+  "id": "overview-v2",
+  "name": "Overview",
+  "version": "1.0.0",
+  "engines": { "claude-instances": "^2.0.0" },
+  "exec": { "kind": "native" },
+  "contributes": {
+    "dashboard.pane": [
+      { "id": "overview-stats", "title": "Stats", "section": "Dashboard",
+        "panes": [{ "kind": "summary", "source": "native:stats" }] },
+      { "id": "overview-events", "title": "Recent Events", "section": "Dashboard",
+        "panes": [{ "kind": "table", "source": "native:recentEvents" }] }
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "manifest_version": 1,
+  "id": "minimal",
+  "name": "Minimal",
+  "version": "0.1.0",
+  "engines": { "claude-instances": "^2.0.0" },
+  "exec": { "kind": "script", "fetch": "./fetch.sh" },
+  "contributes": {
+    "dashboard.pane": [
+      { "id": "minimal-main", "title": "Minimal",
+        "panes": [{ "kind": "summary", "source": "fetch:summary" }] }
+    ]
+  }
+}

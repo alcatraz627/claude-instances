@@ -1,0 +1,18 @@
+{
+  "manifest_version": 1,
+  "id": "quick-open",
+  "name": "Quick Open",
+  "version": "0.1.0",
+  "engines": { "claude-instances": "^2.0.0" },
+  "exec": { "kind": "native" },
+  "contributes": {
+    "commands": [
+      { "id": "quick-open.run", "title": "Open quick-open",
+        "exec": { "kind": "native", "handler": "open" } }
+    ],
+    "hotkey": [
+      { "id": "quick-open.global", "command": "quick-open.run",
+        "default_binding": "cmd+shift+o", "scope": "global" }
+    ]
+  }
+}

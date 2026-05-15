@@ -12,6 +12,7 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [
         .executable(name: "HostShell", targets: ["HostShell"]),
+        .executable(name: "manifest-test", targets: ["ManifestTest"]),
         .library(name: "HostKernel", targets: ["HostKernel"]),
     ],
     targets: [
@@ -23,6 +24,13 @@ let package = Package(
             name: "HostShell",
             dependencies: ["HostKernel"],
             path: "Sources/HostShell"
+        ),
+        // CLI driver that exercises the manifest loader against fixtures.
+        // Stand-in for unit tests until Xcode is installed.
+        .executableTarget(
+            name: "ManifestTest",
+            dependencies: ["HostKernel"],
+            path: "Sources/ManifestTest"
         ),
         // Tests require Xcode (XCTest / Swift Testing modules ship in the Xcode toolchain,
         // not in Command Line Tools alone). The test sources live in `Tests/HostKernelTests/`;

@@ -1,0 +1,14 @@
+{
+  "manifest_version": 1,
+  "id": "about-v2",
+  "name": "About",
+  "version": "1.0.0",
+  "engines": { "claude-instances": "^2.0.0" },
+  "exec": { "kind": "native" },
+  "contributes": {
+    "dashboard.pane": [
+      { "id": "about-main", "title": "About", "section": "Help",
+        "panes": [{ "kind": "summary", "source": "static:{\"tiles\":[]}" }] }
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "manifest_version": 1,
+  "id": "from-the-future",
+  "name": "Future",
+  "version": "0.1.0",
+  "engines": { "claude-instances": "^99.0.0" },
+  "exec": { "kind": "script", "fetch": "./fetch.sh" },
+  "contributes": {
+    "dashboard.pane": [
+      { "id": "f-main", "title": "F",
+        "panes": [{ "kind": "summary", "source": "fetch:s" }] }
+    ]
+  }
+}

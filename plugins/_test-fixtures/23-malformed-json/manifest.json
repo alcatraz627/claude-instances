@@ -1,0 +1,7 @@
+{
+  "manifest_version": 1,
+  "id": "broken",
+  "name": "Broken",
+  "version": "0.1.0"
+  "engines": { "claude-instances": "^2.0.0" }
+}

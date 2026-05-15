@@ -1,0 +1,19 @@
+{
+  "manifest_version": 1,
+  "id": "git-prs",
+  "name": "GitHub PRs",
+  "version": "0.1.0",
+  "engines": { "claude-instances": "^2.0.0" },
+  "exec": { "kind": "script", "fetch": "./fetch.sh" },
+  "contributes": {
+    "dashboard.pane": [
+      { "id": "git-prs-main", "title": "GitHub PRs",
+        "panes": [{ "kind": "table", "source": "fetch:open" }] }
+    ],
+    "statusbar.badge": [
+      { "id": "git-prs-count", "source": "fetch:count",
+        "background_active": true,
+        "render": { "kind": "pill", "format": "{value} PRs" } }
+    ]
+  }
+}
