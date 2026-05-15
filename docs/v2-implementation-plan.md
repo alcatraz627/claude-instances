@@ -108,6 +108,13 @@ way to express this without an Xcode project.
 - Bundle id collision is impossible (different ids); plist collision
   is impossible (different filenames). Verify before launch.
 
+**Known toolchain gap:** the user's machine has Command Line Tools but no
+Xcode. `XCTest` and `Testing` modules both live inside the Xcode toolchain.
+The test target in `Package.swift` is commented out for now; test sources
+sit in `Tests/HostKernelTests/` ready to enable once Xcode is installed.
+Phase 1 ships without test-target enforcement. We'll revisit when Xcode
+arrives or migrate to a pure-CLT testing approach.
+
 **Halt and ask:** confirm the SPM-based structure (vs single-file V1
 style). If the user prefers a single-file V2, the structure changes
 significantly — better to clarify now.

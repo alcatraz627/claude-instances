@@ -1,6 +1,13 @@
-# Build artifacts
+# Build artifacts (V1)
 native/claude-instances-bar
 native/.build-info
+
+# Build artifacts (V2)
+.build/
+.swiftpm/
+*.xcodeproj/
+claude-instances-v2.app/
+Package.resolved
 
 # Claude agent scratch files
 _*.claude.md
