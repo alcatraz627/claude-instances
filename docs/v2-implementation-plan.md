@@ -301,19 +301,26 @@ contents look right (they're the first real V2 user-facing output).
 
 ---
 
-## 8. Phase 6 — Event bus + resource sampler
+## 8. Phase 6 — Event bus + Logger + Resource sampler
 
 **Goal:** In-process typed event bus. Host emits the standard topics.
 Plugins can subscribe (native via method, script via handler script).
+Unified logger lands in this phase (it shares plumbing with the event
+sampler — both write to JSONL files with ring-buffered rotation).
 Resource sampler runs in the background; metrics queryable.
 
 **Files created:**
 - `Sources/HostKernel/EventBus.swift` — typed broker over NotificationCenter
 - `Sources/HostKernel/EventTopics.swift` — the closed enum of
   `host.*` and `claude.*` topics
+- `Sources/HostKernel/HostLogger.swift` — leveled, tagged, plugin-attributed
+  logger writing to `host.log` + `plugins/<id>.log` + `events.jsonl`
+- `Sources/HostKernel/RingFile.swift` — append-with-truncate primitive
+  used by both logs and event-stream
 - `Sources/HostKernel/ResourceSampler.swift` — 5s tick, per-plugin
   spawn/payload/latency tracking
 - `Tests/HostKernelTests/EventBusTests.swift`
+- `Tests/HostKernelTests/LoggerTests.swift`
 
 **Topics emitted in V1 of V2:**
 - `host.startup`, `host.shutdown`, `host.tick.minute`,
@@ -503,16 +510,25 @@ declared panes, actions work, no errors in Plugin Manager.
 
 ---
 
-## 14. Phase 12 — Menubar + status-bar badge surfaces
+## 14. Phase 12 — Menubar + status-bar badge + hotkey surfaces
 
-**Goal:** Implement the menubar.item and statusbar.badge surfaces (still
-stubbed at this point). Migrate the rate-limit countdown to use them.
+**Goal:** Implement three background-active surfaces:
+- `menubar.item` (the dropdown items, including the rich per-session row card)
+- `statusbar.badge` (compact pills in the status-icon area)
+- `hotkey` (keyboard shortcuts → commands across the three scopes)
+
+Migrate the rate-limit countdown to use `statusbar.badge`. Migrate the
+V1 submenu-keystrokes feature to `hotkey` contributions with
+`scope: "menu-open"`. The worked example in architecture §4.13
+(live-sessions plugin) is the concrete target shape.
 
 **Files created:**
 - `Sources/HostShell/Surfaces/MenubarSurface.swift` — `NSMenu` builder
   from `menubar.item` contributions
 - `Sources/HostShell/Surfaces/StatusbarSurface.swift` — status-icon
   badge composition
+- `Sources/HostKernel/HotkeyRegistry.swift` — registers `NSEvent` global
+  + first-responder monitors; conflict detection
 
 **Rate-limit migration:** the rate-limit plugin (Phase 10 #3) gains a
 `statusbar.badge` contribution sourced from a `claude.rate-limit.update`

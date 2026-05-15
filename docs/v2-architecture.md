@@ -255,6 +255,7 @@ flows through plugin code (Swift class or shell stdout).
     "statusbar.badge": [ /* §4.6 */ ],
     "event.subscriptions": [ /* §4.7 */ ],
     "settings.section": [ /* §4.8 */ ],
+    "hotkey": [ /* §4.12 */ ],
     "quick-action": [ /* §4.9 */ ],
     "notification.handler": [ /* §4.10 */ ]
   },
@@ -337,6 +338,7 @@ topics (`host.*`, `claude.*`) are closed; plugin-prefixed topics
 | `dashboard.pane`         | Dashboard tab    | **shipped**   | Primary surface. Multi-pane stack inside a tab. |
 | `settings.section`       | Settings tab     | **shipped**   | Host auto-renders form from JSON Schema. |
 | `event.subscriptions`    | (no UI)          | **shipped**   | Plugin reacts to bus events. |
+| `hotkey`                 | Global / scoped  | **shipped**   | Keyboard shortcut → command binding. Scope: global / dashboard / menu-open. |
 | `menubar.item`           | Menu dropdown    | **stubbed**   | Schema known; host warns "not implemented yet". |
 | `statusbar.badge`        | Status icon area | **stubbed**   | Schema known; not rendered. |
 | `quick-action`           | Cmd-palette      | **stubbed**   | Schema known; palette UI not built. |
@@ -510,6 +512,103 @@ settings via:
 Schemas defined so V1 manifests can declare them; surfaces not implemented.
 See `_v1-reference/reviews/architect.md` §6.2 for full design.
 
+### 4.12 `hotkey`
+
+Keyboard shortcuts bound to commands. Defaults declared in manifest; user
+rebinds in Settings (and the binding persists in `state.json` under the
+plugin's id).
+
+```jsonc
+"hotkey": [
+  {
+    "id": "live.focus-1",
+    "command": "live.focus",
+    "args": { "index": 1 },                  // bound args; merged with site args
+    "default_binding": "cmd+1",              // human-readable; nil = unbound
+    "scope": "menu-open",                    // global | dashboard | menu-open
+    "title": "Focus session 1"               // shown in Settings rebinder UI
+  },
+  {
+    "id": "atone.consolidate-hotkey",
+    "command": "atone.consolidate",
+    "default_binding": "ctrl+opt+a",
+    "scope": "global"
+  }
+]
+```
+
+**Scopes:**
+- `global` — registered as a system-wide `NSEvent` global monitor. Fires
+  regardless of focused app. Host UI surfaces these in Plugin Manager so
+  the user can audit global bindings.
+- `dashboard` — only fires when the dashboard window has focus
+  (first-responder routing).
+- `menu-open` — only fires while the menu-bar dropdown is open. Useful
+  for "press `1` to focus the first session" and similar inside-menu
+  shortcuts (the V1 submenu-keystrokes feature).
+
+**Conflicts:** if two plugins bind the same chord at the same scope, the
+host disables the later-registered one and surfaces a conflict in
+Plugin Manager. User can rebind to resolve.
+
+**Hotkeys reference commands** rather than dispatching directly. Same
+command can have multiple bindings (one global, one menu-open) and a
+row-action button — they all do the same thing.
+
+### 4.13 Worked example — live-sessions plugin
+
+The V1 "menu-bar instance row card" + per-row hotkeys are a natural test
+of the contribution model. In V2 they become a single native plugin
+declaring four contribution kinds:
+
+```jsonc
+{
+  "manifest_version": 1,
+  "id": "live-sessions",
+  "name": "Live Sessions",
+  "exec": { "kind": "native" },
+  "contributes": {
+    "commands": [
+      { "id": "live.focus", "title": "Focus session",
+        "args_schema": [{ "name": "pid", "type": "integer", "required": true }],
+        "exec": { "kind": "native", "handler": "focusSession" } },
+      { "id": "live.terminate", "title": "Terminate",
+        "args_schema": [{ "name": "pid", "type": "integer", "required": true }],
+        "confirm": { "destructive": true, "message": "Send SIGTERM to {pid}?" },
+        "exec": { "kind": "native", "handler": "terminateSession" } },
+      { "id": "live.transcript", "title": "Open transcript",
+        "exec": { "kind": "native", "handler": "openTranscript" } }
+    ],
+    "menubar.item": [
+      { "id": "live-rows", "title_source": "native:menubarTitle",
+        "submenu": [
+          { "kind": "dynamic", "source": "native:rowsForMenu" }
+        ] }
+    ],
+    "dashboard.pane": [
+      { "id": "live-main", "section": "Dashboard", "title": "Live",
+        "panes": [ { "kind": "custom", "source": "native:liveTabView" } ] }
+    ],
+    "hotkey": [
+      { "id": "live.focus-1", "command": "live.focus", "args": { "index": 1 },
+        "default_binding": "1", "scope": "menu-open", "title": "Focus #1" },
+      { "id": "live.focus-2", "command": "live.focus", "args": { "index": 2 },
+        "default_binding": "2", "scope": "menu-open" }
+      // … indexed for visible rows
+    ]
+  }
+}
+```
+
+Single plugin, four surfaces, one set of commands referenced everywhere.
+No duplication. The hotkeys, the menu rows, the dashboard table, and the
+right-click actions all dispatch the same `live.focus` / `live.terminate`
+commands.
+
+This is the load-bearing demonstration that the contribution model
+isn't over-engineered: a real feature with 4 surfaces collapses cleanly
+into one manifest.
+
 ---
 
 ## 5. Event bus
@@ -662,6 +761,36 @@ on the host side at 10k lines / 1 MB.
 When a command runs, its stdout/stderr streams into a transient `log` pane
 that appears below the panes. Same 10k-lines/1 MB cap. Disappears when the
 user dismisses or after 5 minutes.
+
+### 6.7 Pane kind extension policy (the trade-off)
+
+Five kinds (summary, table, schedule, assets, log) cover the common case.
+For things outside the common case there are **two escape hatches**, each
+with a clear trade-off:
+
+**Option A — request a new pane kind to be added to the host.** The host
+gains a primitive every plugin can use. Cost: host change required, takes
+a release cycle, schema-versioned. When to choose: the pattern repeats
+across plugins (e.g., `gauge` for progress bars surfaces in rate-limit AND
+disk-usage AND token-budget). Filing a request implies "this should be
+shared."
+
+**Option B — use a custom view.** A pane declares `kind: "custom"` with a
+`source: "native:<method>"`. The plugin returns a SwiftUI `View` and the
+host wraps it in a standard pane chrome (title, refresh, error overlay).
+Cost: only native plugins can do this (script plugins are constrained to
+declarative kinds). The plugin loses host-provided affordances — palette
+auto-tinting, theme-aware borders, accessibility hooks — that come for
+free with standard kinds. When to choose: search-as-you-type tables,
+hover-affordance lists, anything genuinely visually unique.
+
+**Default position:** most plugins use standard kinds. Custom views are
+for the ~10% of cases where standard kinds genuinely don't fit. If you
+find yourself reaching for custom view for the second time, consider
+filing Option A instead — it's probably a new primitive.
+
+The standard library grows over time. New kinds are additive (don't bump
+manifest version). Old plugins keep working.
 
 ---
 
@@ -997,7 +1126,138 @@ claude-instances-v2.menubar.plist`. V1 keeps working untouched.
 
 ---
 
-## 16. Glossary
+## 16. Logging
+
+A unified, tagged, long-lived logging system. Every plugin gets the same
+structured logger. Host writes its own logs through the same machinery.
+The result is one place to look when the platform misbehaves — including
+"are these resource limits reasonable" questions.
+
+### 16.1 Storage
+
+```
+~/Library/Application Support/dev.claude-instances-v2/logs/
+  host.log                       (host-emitted; 10 MB ring buffer)
+  plugins/<plugin-id>.log        (per-plugin; 5 MB ring buffer each)
+  events.jsonl                   (structured event log; 50 MB ring)
+```
+
+Ring-buffered means: when a file hits its cap, the oldest 10% is dropped
+and the file truncates. No log rotation cron. No multi-file segments.
+
+### 16.2 Log entry shape
+
+Every log entry is one line, JSON:
+
+```jsonc
+{
+  "ts": "2026-05-15T16:14:02.183Z",
+  "src": "atone",                  // "host" or plugin-id
+  "level": "info",                 // debug | info | warn | error
+  "tag": "fetch",                  // free-form category (see §16.3)
+  "msg": "fetch summary done in 87 ms (cached, no-op publish)",
+  "ctx": {                         // optional structured context
+    "elapsed_ms": 87,
+    "payload_bytes": 4231,
+    "cache_hit": true
+  }
+}
+```
+
+Plain `.log` files (`host.log`, `plugins/<id>.log`) contain a
+human-readable rendering of these entries; the canonical structured
+record is in `events.jsonl`.
+
+### 16.3 Tags (closed-ish enum)
+
+Tags are documented but not strictly enforced. Standard tags:
+
+- `lifecycle` — plugin activate/deactivate, host startup/shutdown
+- `fetch` — script plugin fetches (start, end, error)
+- `render` — pane render dispatch
+- `event` — event bus emit / handler dispatch
+- `command` — command execution
+- `budget` — budget warnings / breaches (auto-disables, throttles)
+- `manifest` — manifest validation results
+- `surface` — surface activation / deactivation
+- `error` — anything that produced a user-facing error
+- `debug` — opt-in verbose tracing (off by default)
+
+Plugin authors can add their own tags by writing them. Linting in
+`claude-widget validate` warns on unknown tags.
+
+### 16.4 What gets logged by default
+
+**Always (info+):**
+- Plugin lifecycle transitions
+- Manifest validation failures
+- Budget breaches (soft + hard)
+- Command invocations + their outcomes
+- Fetches with latency > soft timeout
+- Errors from any boundary
+- Host startup / shutdown
+- Surface activations
+
+**Opt-in (debug):** all fetches, all renders, all event deliveries, all
+hot-reload triggers. Enabled per plugin via Settings ("Verbose logging
+for this plugin") or globally via the `CLAUDE_INSTANCES_DEBUG=1` env var
+at host launch.
+
+### 16.5 Logger API
+
+**Native plugins** get `host.logger` in `HostContext`:
+
+```swift
+public protocol HostLogger {
+    func debug(_ tag: String, _ msg: String, _ ctx: [String: Any]?)
+    func info (_ tag: String, _ msg: String, _ ctx: [String: Any]?)
+    func warn (_ tag: String, _ msg: String, _ ctx: [String: Any]?)
+    func error(_ tag: String, _ msg: String, _ ctx: [String: Any]?)
+}
+```
+
+The logger automatically stamps `src` with the plugin's id. No
+cross-plugin log pollution.
+
+**Script plugins** get two channels:
+- Anything written to stderr is captured + tagged `src: <plugin-id>`,
+  `level: warn` (heuristic; lines starting with `info:` `warn:` `error:`
+  `debug:` get parsed for level).
+- A dedicated file descriptor `CLAUDE_PLUGIN_LOG_FD=3` accepts JSONL
+  entries directly (no parsing, structured logging).
+
+Example in script:
+```sh
+echo "fetched 12 events in $elapsed ms" >&2                  # tagged warn
+echo "{\"level\":\"info\",\"tag\":\"fetch\",\"msg\":\"ok\"}" >&3   # structured
+```
+
+### 16.6 Log viewer
+
+Plugin Manager → plugin detail → "Open log" opens the per-plugin log in
+the host's built-in log viewer (mono, syntax-highlighted by level,
+filterable by tag, follow-tail mode).
+
+A separate "Core" view shows `host.log`. The structured `events.jsonl`
+is accessible via "Export log" → downloads the JSONL for external
+analysis (jq, ripgrep, etc.).
+
+### 16.7 Why this lives in the host, not in plugins
+
+The user's stated goal — "general long lived logging for basic things to
+diagnose long term issues" — implies one consistent format, one location,
+one retention policy. If each plugin rolled its own, "look at the logs"
+becomes "look at 12 logs in 12 formats in 12 locations." The unified
+logger eliminates that.
+
+It also lets the host attribute resource breaches to the right plugin
+automatically — every budget warning is a log entry tagged with the
+breaching plugin's id, so the answer to "why did my menu-bar app eat
+2 GB last night" is one grep.
+
+---
+
+## 17. Glossary
 
 - **Bundled plugin** — Native or script plugin shipped inside the host
   source tree, distributed with the binary.
