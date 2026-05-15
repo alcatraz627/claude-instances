@@ -27,6 +27,10 @@ struct TablePaneView: View {
                         }
                     }
                 }
+                // Pin scroll indicators off — macOS overlay scrollbars pop in
+                // on hover and narrow the content by ~15pt, which used to
+                // cause row content to re-measure on hover.
+                .scrollIndicators(.hidden)
                 if let n = content.truncatedAt, content.hasMore == true {
                     truncatedFooter(n)
                 }
@@ -66,11 +70,16 @@ struct TablePaneView: View {
             }
         }
         .padding(.horizontal, design.space(DesignTokens.Space.m))
-        .padding(.vertical, design.space(DesignTokens.Space.s))
-        // Stable minHeight prevents hover-state changes from triggering
-        // a layout shift when the row's chip buttons would otherwise be
-        // taller than the bare-text rest state.
-        .frame(minHeight: design.space(DesignTokens.Space.xl) + 4, alignment: .leading)
+        // Fixed exact height (not minHeight): hover state must not influence
+        // the row's bounding box at all. Buttons + cell text both fit inside.
+        // Scales with density via the same Space tokens.
+        .frame(height: rowHeight, alignment: .leading)
+    }
+
+    /// Hard row height — chip-button visual height (~22pt) + breathing room
+    /// (Space.s top + bottom) — scaled by current density.
+    private var rowHeight: CGFloat {
+        22 + design.space(DesignTokens.Space.s) * 2
     }
 
     private func rowActions(_ actions: [TableContent.RowAction]) -> some View {

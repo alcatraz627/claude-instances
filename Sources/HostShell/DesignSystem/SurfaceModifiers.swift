@@ -29,10 +29,11 @@ public extension View {
     }
 }
 
-/// Wraps a row view with a hover-tracking background. Used by every list
-/// renderer (Table, Schedule, Assets, sidebar entries) so the affordance is
-/// consistent. The hovered color is `Surface.hover`, the resting color is
-/// transparent (the underlying pane provides the actual surface).
+/// Wraps a row view with a hover-tracking highlight. The highlight is
+/// applied as a background BEHIND the content with `contentShape` set,
+/// so the row's own size is invariant — hover/no-hover render identically
+/// at the layout level. Used by every list renderer for consistent
+/// hover affordance.
 public struct HoverRow<Content: View>: View {
     @State private var isHovered = false
     let content: () -> Content
@@ -43,7 +44,12 @@ public struct HoverRow<Content: View>: View {
 
     public var body: some View {
         content()
-            .background(isHovered ? DesignTokens.Surface.hover : Color.clear)
+            .contentShape(Rectangle())
+            .background(
+                Rectangle()
+                    .fill(DesignTokens.Surface.hover)
+                    .opacity(isHovered ? 1 : 0)
+            )
             .onHover { isHovered = $0 }
     }
 }
