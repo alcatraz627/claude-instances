@@ -1,0 +1,303 @@
+#!/bin/bash
+# claude-widget — scaffolding CLI for claude-instances V2 plugins.
+#
+# Subcommands:
+#   new <id>          Create a new script-plugin folder under plugins/<id>/
+#   validate <dir>    Smoke-test a plugin folder: manifest parses, fetch.sh
+#                     runs, output looks valid for declared pane kinds
+#   doctor            List installed plugins, missing tool deps, recent errors
+#   help              Show this help
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# When run from the worktree (./scaffolding/claude-widget), the repo root is
+# one level up. When run from elsewhere, fall back to $PWD.
+if [[ -f "${SCRIPT_DIR}/../Package.swift" ]]; then
+    REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+else
+    REPO_ROOT="${PWD}"
+fi
+PLUGINS_DIR="${REPO_ROOT}/plugins"
+TEMPLATES_DIR="${SCRIPT_DIR}/templates"
+
+cmd_help() {
+    cat <<EOF
+claude-widget — claude-instances V2 plugin scaffolder
+
+Usage:
+  claude-widget new <id>          Scaffold a new script plugin
+  claude-widget validate <dir>    Smoke-test an existing plugin
+  claude-widget doctor            Health summary of installed plugins
+  claude-widget help              This message
+
+Examples:
+  claude-widget new memory-browser
+  claude-widget validate plugins/atone
+  claude-widget doctor
+EOF
+}
+
+cmd_new() {
+    local id="${1:-}"
+    if [[ -z "${id}" ]]; then
+        echo "error: 'new' requires a plugin id" >&2
+        echo "usage: claude-widget new <id>" >&2
+        return 2
+    fi
+    if [[ ! "${id}" =~ ^[a-z][a-z0-9._-]*$ ]]; then
+        echo "error: id must be lowercase alphanumeric (with .-_), starting with a letter" >&2
+        return 2
+    fi
+    local dest="${PLUGINS_DIR}/${id}"
+    if [[ -e "${dest}" ]]; then
+        echo "error: ${dest} already exists" >&2
+        return 1
+    fi
+    mkdir -p "${dest}"
+
+    # manifest.json
+    cat > "${dest}/manifest.json" <<EOF
+{
+  "manifest_version": 1,
+  "id": "${id}",
+  "name": "${id}",
+  "version": "0.1.0",
+  "description": "TODO: describe what ${id} does.",
+  "engines": { "claude-instances": "^2.0.0" },
+  "icon": "puzzlepiece.extension",
+  "exec": {
+    "kind": "script",
+    "fetch": "./fetch.sh"
+  },
+  "limits": {
+    "fetch_timeout_ms": 3000
+  },
+  "contributes": {
+    "dashboard.pane": [
+      {
+        "id": "${id}-main",
+        "title": "${id}",
+        "section": "Plugins",
+        "icon": "puzzlepiece.extension",
+        "panes": [
+          { "kind": "summary", "source": "fetch:summary" }
+        ]
+      }
+    ]
+  }
+}
+EOF
+
+    # fetch.sh
+    cat > "${dest}/fetch.sh" <<'EOF'
+#!/bin/bash
+# fetch.sh — invoked by the host with the source identifier as $1.
+# Prints JSON to stdout matching the declared pane kind.
+
+set -euo pipefail
+source_id="${1:-summary}"
+
+case "${source_id}" in
+  summary)
+    cat <<'JSON'
+{
+  "kind": "summary",
+  "tiles": [
+    { "label": "Hello", "value": "world" },
+    { "label": "Edit me", "value": "fetch.sh", "tone": "warn" }
+  ]
+}
+JSON
+    ;;
+  *)
+    echo "{\"kind\":\"summary\",\"tiles\":[{\"label\":\"Error\",\"value\":\"unknown source: ${source_id}\",\"tone\":\"error\"}]}"
+    ;;
+esac
+EOF
+    chmod +x "${dest}/fetch.sh"
+
+    # README
+    cat > "${dest}/README.md" <<EOF
+# ${id}
+
+Plugin for claude-instances V2.
+
+## Files
+
+- \`manifest.json\` — host contract (id, contributions, limits)
+- \`fetch.sh\` — invoked per pane refresh; prints JSON to stdout
+- \`README.md\` — this file
+
+## Test
+
+\`\`\`bash
+./fetch.sh summary | jq .
+claude-widget validate plugins/${id}
+\`\`\`
+EOF
+
+    echo "[claude-widget] created ${dest}"
+    echo "  - manifest.json"
+    echo "  - fetch.sh"
+    echo "  - README.md"
+    echo ""
+    echo "Next:"
+    echo "  1. Edit ${dest}/fetch.sh to print your data"
+    echo "  2. claude-widget validate ${dest}"
+    echo "  3. Rebuild: cd ${REPO_ROOT} && ./build.sh release --run"
+}
+
+cmd_validate() {
+    local dir="${1:-}"
+    if [[ -z "${dir}" ]]; then
+        echo "error: 'validate' requires a plugin directory" >&2
+        return 2
+    fi
+    if [[ ! -d "${dir}" ]]; then
+        echo "error: ${dir} not a directory" >&2
+        return 1
+    fi
+    local manifest="${dir}/manifest.json"
+    if [[ ! -f "${manifest}" ]]; then
+        echo "FAIL: ${manifest} missing"; return 1
+    fi
+    echo "[validate] ${dir}"
+
+    # 1. manifest parses
+    if ! jq . "${manifest}" > /dev/null 2>&1; then
+        echo "  manifest.json: FAIL — not valid JSON"
+        return 1
+    fi
+    local id
+    id=$(jq -r '.id // ""' "${manifest}")
+    local exec_kind
+    exec_kind=$(jq -r '.exec.kind // ""' "${manifest}")
+    echo "  manifest.json: OK (id=${id}, exec=${exec_kind})"
+
+    # 2. Engines range present
+    local engines
+    engines=$(jq -r '.engines["claude-instances"] // ""' "${manifest}")
+    if [[ -z "${engines}" ]]; then
+        echo "  engines:       FAIL — engines.claude-instances missing"
+        return 1
+    fi
+    if [[ "${engines}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "  engines:       OK (${engines}) — note: exact-pin will warn at load"
+    else
+        echo "  engines:       OK (${engines})"
+    fi
+
+    # 3. Script plugin: fetch.sh exists and is executable
+    if [[ "${exec_kind}" == "script" ]]; then
+        local fetch_rel
+        fetch_rel=$(jq -r '.exec.fetch // "./fetch.sh"' "${manifest}")
+        local fetch_abs="${dir}/${fetch_rel#./}"
+        if [[ ! -x "${fetch_abs}" ]]; then
+            echo "  fetch.sh:      FAIL — ${fetch_abs} missing or not executable"
+            return 1
+        fi
+        echo "  fetch.sh:      OK"
+
+        # 4. Smoke-test each declared pane source
+        local pane_count
+        pane_count=$(jq -r '.contributes["dashboard.pane"][0].panes | length // 0' "${manifest}")
+        if [[ "${pane_count}" -gt 0 ]]; then
+            local i=0
+            while [[ ${i} -lt ${pane_count} ]]; do
+                local source
+                source=$(jq -r ".contributes[\"dashboard.pane\"][0].panes[${i}].source // \"\"" "${manifest}")
+                local kind
+                kind=$(jq -r ".contributes[\"dashboard.pane\"][0].panes[${i}].kind // \"\"" "${manifest}")
+                if [[ "${source}" =~ ^fetch: ]]; then
+                    local arg="${source#fetch:}"
+                    # macOS doesn't ship `timeout`; rely on the fetch's own
+                    # behavior. Capture stdout only — stderr lines would
+                    # corrupt jq's input.
+                    local out
+                    out=$(cd "${dir}" && "./${fetch_rel#./}" ${arg} 2>/dev/null || true)
+                    local out_kind
+                    out_kind=$(echo "${out}" | jq -r '.kind // ""' 2>/dev/null || echo "")
+                    if [[ "${out_kind}" == "${kind}" ]]; then
+                        echo "  fetch:${arg}: OK (matches kind '${kind}')"
+                    else
+                        echo "  fetch:${arg}: FAIL — got kind '${out_kind}', expected '${kind}'"
+                        return 1
+                    fi
+                fi
+                i=$((i + 1))
+            done
+        fi
+    fi
+
+    # 5. Settings schema (if declared)
+    local has_settings
+    has_settings=$(jq -r '.contributes["settings.section"] // [] | length' "${manifest}")
+    if [[ "${has_settings}" -gt 0 ]]; then
+        local schema_rel
+        schema_rel=$(jq -r '.contributes["settings.section"][0].schema // ""' "${manifest}")
+        local schema_abs="${dir}/${schema_rel#./}"
+        if [[ -f "${schema_abs}" ]] && jq . "${schema_abs}" > /dev/null 2>&1; then
+            echo "  settings:      OK (${schema_rel})"
+        else
+            echo "  settings:      FAIL — schema file missing or invalid"
+            return 1
+        fi
+    fi
+
+    echo "  --> all checks passed"
+}
+
+cmd_doctor() {
+    if [[ ! -d "${PLUGINS_DIR}" ]]; then
+        echo "no plugins/ directory found"
+        return 1
+    fi
+    echo "Plugins under ${PLUGINS_DIR}/"
+    echo ""
+    printf "  %-22s %-8s %-10s %s\n" "ID" "EXEC" "STATUS" "TOOLS"
+    printf "  %s\n" "----------------------------------------------------------"
+    for plugindir in "${PLUGINS_DIR}"/*/; do
+        local pname; pname="$(basename "${plugindir}")"
+        [[ "${pname}" == "_test-fixtures" ]] && continue
+        if [[ ! -f "${plugindir}manifest.json" ]]; then
+            printf "  %-22s %-8s %-10s %s\n" "${pname}" "?" "no-manifest" "-"
+            continue
+        fi
+        local exec_kind
+        exec_kind=$(jq -r '.exec.kind // "?"' "${plugindir}manifest.json")
+        local requires
+        requires=$(jq -r '(.requires // []) | join(",")' "${plugindir}manifest.json")
+        local status="ok"
+        # Check required tools
+        local missing=""
+        if [[ -n "${requires}" ]]; then
+            IFS=',' read -ra tools <<<"${requires}"
+            for t in "${tools[@]}"; do
+                local toolname="${t%%>*}"; toolname="${toolname%% *}"
+                if ! command -v "${toolname}" > /dev/null 2>&1; then
+                    missing="${missing}${toolname} "
+                fi
+            done
+            if [[ -n "${missing}" ]]; then status="MISSING"; fi
+        fi
+        printf "  %-22s %-8s %-10s %s\n" "${pname}" "${exec_kind}" "${status}" "${requires:-(none)}${missing:+ [MISSING: ${missing% }]}"
+    done
+
+    echo ""
+    local hostlog="${HOME}/Library/Application Support/dev.claude-instances-v2/logs/host.log"
+    if [[ -f "${hostlog}" ]]; then
+        echo "Host log: ${hostlog} ($(wc -l <"${hostlog}" | tr -d ' ') lines)"
+        echo "Recent errors:"
+        grep " ERROR " "${hostlog}" 2>/dev/null | tail -5 | sed 's/^/  /'
+    fi
+}
+
+# Dispatch
+case "${1:-help}" in
+    new)      shift; cmd_new "$@" ;;
+    validate) shift; cmd_validate "$@" ;;
+    doctor)   shift; cmd_doctor "$@" ;;
+    help|-h|--help) cmd_help ;;
+    *)        echo "unknown command: ${1}" >&2; cmd_help >&2; exit 2 ;;
+esac
