@@ -6,6 +6,8 @@ import HostKernel
 /// supply the render content; `PaneRenderer` paints it through the design
 /// system the user controls in Settings.
 struct DashboardSurface: View {
+    let onTitleChange: (String) -> Void
+
     @EnvironmentObject var store: HostSettingsStore
     @EnvironmentObject var platform: PlatformRegistry
     @Environment(\.design) var design
@@ -31,6 +33,27 @@ struct DashboardSurface: View {
                 selection = platform.dashboardSections(disabledIds: disabledPluginIds)
                     .flatMap { $0.items }
                     .first?.1.id
+            }
+            pushTitle(for: selection)
+        }
+        .onChange(of: selection) { newSel in
+            pushTitle(for: newSel)
+        }
+    }
+
+    /// Compute the human page name for the current selection and bridge
+    /// it up to the NSPanel via the host-supplied callback. SwiftUI's
+    /// .navigationTitle doesn't reach NSPanel chrome.
+    private func pushTitle(for id: String?) {
+        guard let id else { onTitleChange(""); return }
+        switch id {
+        case "settings": onTitleChange("Settings")
+        case "plugins":  onTitleChange("Plugins")
+        default:
+            if let pair = findContribution(by: id) {
+                onTitleChange(pair.1.title)
+            } else {
+                onTitleChange("")
             }
         }
     }
@@ -145,6 +168,7 @@ private struct PaneHolder: View {
     let index: Int
 
     @EnvironmentObject var platform: PlatformRegistry
+    @EnvironmentObject var store: HostSettingsStore
     @State private var content: PaneContent? = nil
     @State private var fetchedAt: Date? = nil
     @State private var watcher: FSEventsWatcher? = nil
@@ -262,14 +286,26 @@ private struct PaneHolder: View {
         let logger = platform.logger(for: manifest.id)
         logger.info("fetch", "start \(args.joined(separator: " "))")
 
+        // Per-plugin settings as JSON env var. Plugins parse with
+        //   `jq -r '.foo // empty' <<< "$CLAUDE_PLUGIN_SETTINGS"`
+        // (or any other JSON-aware tool). Phase-9 fetch.sh template
+        // documents the convention.
+        var pluginSettingsJSON = "{}"
+        if let dict = store.settings.pluginSettings[manifest.id],
+           let data = try? JSONEncoder().encode(dict),
+           let s = String(data: data, encoding: .utf8) {
+            pluginSettingsJSON = s
+        }
+
         do {
             let result = try await ScriptExec.run(
                 executable: exec,
                 args: args,
                 cwd: dir,
                 env: [
-                    "CLAUDE_PLUGIN_ID":  manifest.id,
-                    "CLAUDE_HOST_VERSION": HostKernel.version,
+                    "CLAUDE_PLUGIN_ID":     manifest.id,
+                    "CLAUDE_HOST_VERSION":  HostKernel.version,
+                    "CLAUDE_PLUGIN_SETTINGS": pluginSettingsJSON,
                 ],
                 timeoutMs: timeoutMs,
                 maxPayloadBytes: maxBytes)

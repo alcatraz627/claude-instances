@@ -5,9 +5,11 @@ import CoreServices
 /// `onChange` on the main queue when any of them (or their descendants)
 /// change. Debounce is applied by FSEvents itself via the `latency` arg.
 ///
-/// Plugin lifecycle: PaneHolder creates one watcher per plugin (covering all
-/// the manifest's `refresh.on_fs_change` paths) and stops it when the
-/// contribution becomes invisible.
+/// Lifetime contract: CoreServices is given a strong reference to this
+/// watcher via the retain/release callbacks on FSEventStreamContext. The
+/// watcher cannot be deallocated until `stop()` (or deinit) tears the
+/// stream down, which releases the reference. This avoids the dangling-
+/// pointer crash if a hosting view goes away mid-callback.
 public final class FSEventsWatcher {
     private var stream: FSEventStreamRef?
     private let paths: [String]
@@ -25,11 +27,23 @@ public final class FSEventsWatcher {
     public func start() {
         guard stream == nil, !paths.isEmpty else { return }
 
+        // CoreServices keeps its own +1 retain via retainCb. We start with
+        // passRetained (which gives us a +1 we own), then balance below.
+        let retainCb: CFAllocatorRetainCallBack = { info -> UnsafeRawPointer? in
+            guard let info else { return nil }
+            _ = Unmanaged<FSEventsWatcher>.fromOpaque(info).retain()
+            return info
+        }
+        let releaseCb: CFAllocatorReleaseCallBack = { info in
+            guard let info else { return }
+            Unmanaged<FSEventsWatcher>.fromOpaque(info).release()
+        }
+
         var context = FSEventStreamContext(
             version: 0,
-            info: Unmanaged.passUnretained(self).toOpaque(),
-            retain: nil,
-            release: nil,
+            info: Unmanaged.passRetained(self).toOpaque(),
+            retain: retainCb,
+            release: releaseCb,
             copyDescription: nil
         )
 
@@ -52,6 +66,11 @@ public final class FSEventsWatcher {
             latencySeconds,
             flags
         )
+
+        // Drop the extra +1 from passRetained. CoreServices retained its
+        // own via retainCb above; releasing here just balances.
+        Unmanaged.passUnretained(self).release()
+
         guard let stream else { return }
         FSEventStreamSetDispatchQueue(stream, DispatchQueue.main)
         FSEventStreamStart(stream)
@@ -61,7 +80,7 @@ public final class FSEventsWatcher {
     public func stop() {
         guard let stream else { return }
         FSEventStreamStop(stream)
-        FSEventStreamInvalidate(stream)
+        FSEventStreamInvalidate(stream)   // triggers releaseCb internally
         FSEventStreamRelease(stream)
         self.stream = nil
     }

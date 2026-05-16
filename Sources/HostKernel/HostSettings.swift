@@ -6,6 +6,12 @@ import Foundation
 /// snapshot of this via `HostContext.settings` (Phase 4+); the host
 /// rebroadcasts changes via the event bus topic `host.appearance.change`.
 public struct HostSettings: Codable, Sendable, Equatable {
+    /// Schema version of the state.json layout. Bumped when the host
+    /// changes how it parses state.json. Future host versions will
+    /// migrate old layouts in-place rather than discarding state.
+    public static let currentStateVersion = 1
+    public var stateVersion: Int
+
     public var appearance: Appearance
     public var plugins: [String: PluginState]
     /// Per-plugin user-set settings values, keyed by plugin id then by
@@ -13,9 +19,11 @@ public struct HostSettings: Codable, Sendable, Equatable {
     /// AnyCodable so we can serialize back to state.json.
     public var pluginSettings: [String: [String: AnyCodable]]
 
-    public init(appearance: Appearance = .init(),
+    public init(stateVersion: Int = HostSettings.currentStateVersion,
+                appearance: Appearance = .init(),
                 plugins: [String: PluginState] = [:],
                 pluginSettings: [String: [String: AnyCodable]] = [:]) {
+        self.stateVersion = stateVersion
         self.appearance = appearance
         self.plugins = plugins
         self.pluginSettings = pluginSettings
@@ -141,7 +149,10 @@ public enum HostSettingsPersistence {
                                                     from: psData) {
             pluginSettings = decoded
         }
-        return HostSettings(appearance: appearance,
+        let stateVersion = (raw["state_version"] as? Int) ?? HostSettings.currentStateVersion
+        // Future: switch on stateVersion to migrate old layouts.
+        return HostSettings(stateVersion: stateVersion,
+                            appearance: appearance,
                             plugins: plugins,
                             pluginSettings: pluginSettings)
     }
@@ -160,6 +171,7 @@ public enum HostSettingsPersistence {
             root = existing
         }
 
+        root["state_version"] = settings.stateVersion
         let appearanceData = try JSONEncoder().encode(settings.appearance)
         root["appearance"] = try JSONSerialization.jsonObject(with: appearanceData)
 

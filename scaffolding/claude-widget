@@ -29,13 +29,61 @@ Usage:
   claude-widget new <id>          Scaffold a new script plugin
   claude-widget validate <dir>    Smoke-test an existing plugin
   claude-widget doctor            Health summary of installed plugins
+  claude-widget install-hook      Install pre-commit hook that runs validate
   claude-widget help              This message
 
 Examples:
   claude-widget new memory-browser
   claude-widget validate plugins/atone
   claude-widget doctor
+  claude-widget install-hook
 EOF
+}
+
+cmd_install_hook() {
+    local git_dir
+    git_dir=$(git -C "${REPO_ROOT}" rev-parse --git-path hooks 2>/dev/null) || {
+        echo "error: not in a git repo (or git missing)" >&2
+        return 1
+    }
+    mkdir -p "${git_dir}"
+    local hook="${git_dir}/pre-commit"
+    cat > "${hook}" <<HOOK
+#!/bin/bash
+# Pre-commit hook installed by 'claude-widget install-hook'.
+# Validates every plugin folder under plugins/ that has changed files staged.
+set -euo pipefail
+
+CLAUDE_WIDGET="\$(git rev-parse --show-toplevel)/scaffolding/claude-widget"
+[[ -x "\${CLAUDE_WIDGET}" ]] || exit 0
+
+# Find unique plugin dirs touched by the staged changes.
+changed_plugins=\$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null \\
+    | awk -F'/' '\$1 == "plugins" && \$2 != "_test-fixtures" { print \$2 }' \\
+    | sort -u)
+
+if [[ -z "\${changed_plugins}" ]]; then
+    exit 0
+fi
+
+echo "[pre-commit] Validating changed plugins:"
+fail=0
+for p in \${changed_plugins}; do
+    if [[ -d "plugins/\${p}" ]]; then
+        echo "  -> plugins/\${p}"
+        if ! bash "\${CLAUDE_WIDGET}" validate "plugins/\${p}"; then
+            fail=1
+        fi
+    fi
+done
+exit \${fail}
+HOOK
+    chmod +x "${hook}"
+    echo "[claude-widget] installed pre-commit hook at:"
+    echo "  ${hook}"
+    echo ""
+    echo "Hook will run claude-widget validate on every plugin folder"
+    echo "with staged changes. To bypass: git commit --no-verify"
 }
 
 cmd_new() {
@@ -295,9 +343,10 @@ cmd_doctor() {
 
 # Dispatch
 case "${1:-help}" in
-    new)      shift; cmd_new "$@" ;;
-    validate) shift; cmd_validate "$@" ;;
-    doctor)   shift; cmd_doctor "$@" ;;
+    new)           shift; cmd_new "$@" ;;
+    validate)      shift; cmd_validate "$@" ;;
+    doctor)        shift; cmd_doctor "$@" ;;
+    install-hook)  shift; cmd_install_hook "$@" ;;
     help|-h|--help) cmd_help ;;
     *)        echo "unknown command: ${1}" >&2; cmd_help >&2; exit 2 ;;
 esac

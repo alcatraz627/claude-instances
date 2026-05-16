@@ -15,6 +15,20 @@ META="${ATONE_DIR}/derived/_meta.json"
 
 source_id="${1:-summary}"
 
+# Per-plugin settings: the host passes a JSON object in
+# CLAUDE_PLUGIN_SETTINGS. Keys match settings.schema.json properties.
+# Fall back to schema defaults if user hasn't set anything yet.
+# (Note: avoid `${VAR:-{}}` default — bash's brace handling is finicky
+#  inside default values; an explicit if-block is safer.)
+SETTINGS_JSON='{}'
+if [[ -n "${CLAUDE_PLUGIN_SETTINGS:-}" ]]; then
+    SETTINGS_JSON="${CLAUDE_PLUGIN_SETTINGS}"
+fi
+max_events=$(echo "${SETTINGS_JSON}" | jq -r '.max_events // 20' 2>/dev/null)
+[[ -z "${max_events}" ]] && max_events=20
+show_s3_only=$(echo "${SETTINGS_JSON}" | jq -r '.show_s3_only // false' 2>/dev/null)
+[[ -z "${show_s3_only}" ]] && show_s3_only=false
+
 case "${source_id}" in
 
   summary)
@@ -70,8 +84,15 @@ case "${source_id}" in
       echo '{"kind":"table","columns":[],"rows":[],"empty":"No events.jsonl yet."}'
       exit 0
     fi
-    rows=$(jq -rs '
-      sort_by(.ts) | reverse | .[0:20]
+    # Honor user settings: max_events caps row count; show_s3_only filters
+    # to severity S3 if true.
+    rows=$(jq -rs \
+      --argjson max "${max_events}" \
+      --argjson s3only "${show_s3_only}" \
+      '
+      sort_by(.ts) | reverse
+      | (if $s3only then map(select(.severity == "S3")) else . end)
+      | .[0:$max]
       | map({
           ts:   (.ts | sub("T"; " ") | sub("Z"; "")),
           slug: (.slug // "(no slug)"),

@@ -27,12 +27,6 @@ final class DashboardController {
     }
 
     private func makePanel() -> NSPanel {
-        let root = DashboardRootView()
-            .environmentObject(platform)
-            .environmentObject(settings)
-            .environment(\.design, settings.design)
-            .preferredColorScheme(settings.preferredColorScheme)
-        let hosting = NSHostingController(rootView: root)
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 820, height: 560),
             styleMask: [.titled, .closable, .resizable],
@@ -40,7 +34,19 @@ final class DashboardController {
             defer: false
         )
         panel.title = "claude-instances V2"
-        panel.contentViewController = hosting
+        // SwiftUI -> NSPanel title bridge. NSPanel ignores SwiftUI's
+        // .navigationTitle modifier, so child views call this closure when
+        // the selected page changes.
+        let root = DashboardRootView(onTitleChange: { [weak panel] page in
+            panel?.title = page.isEmpty
+                ? "claude-instances V2"
+                : "claude-instances V2 — \(page)"
+        })
+            .environmentObject(platform)
+            .environmentObject(settings)
+            .environment(\.design, settings.design)
+            .preferredColorScheme(settings.preferredColorScheme)
+        panel.contentViewController = NSHostingController(rootView: root)
         panel.center()
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false

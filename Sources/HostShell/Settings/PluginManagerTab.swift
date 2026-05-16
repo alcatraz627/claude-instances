@@ -130,11 +130,39 @@ struct PluginManagerTab: View {
             detailIdentity(manifest)
             detailContributions(manifest)
             if let metrics { detailMetrics(metrics) }
+            detailSettings(manifest)
             detailActions(manifest)
         }
         .padding(design.space(DesignTokens.Space.l))
         .frame(maxWidth: .infinity, alignment: .leading)
         .id(platform.samplerTick)
+    }
+
+    /// Per-plugin settings.section rendered inline. Decision PLUGIN-MGR-001
+    /// in docs/known-issues.md — co-locating with health + toggle wins over
+    /// pushing them into the global Settings tab.
+    @ViewBuilder
+    private func detailSettings(_ manifest: Manifest) -> some View {
+        if let dir = manifest.pluginDir {
+            let sections = (manifest.contributes.settingsSection ?? [])
+                .compactMap { entry -> (SettingsSection, SettingsSchema)? in
+                    let url = URL(fileURLWithPath: entry.schema, relativeTo: dir)
+                    guard let schema = SettingsSchema.load(from: url) else { return nil }
+                    return (entry, schema)
+                }
+            if !sections.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    sectionLabel("SETTINGS")
+                    ForEach(Array(sections.enumerated()), id: \.offset) { _, pair in
+                        SchemaForm(pluginId: manifest.id, schema: pair.1)
+                            .padding(.vertical, 4)
+                    }
+                }
+                .padding(design.space(DesignTokens.Space.m))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .paneBackground()
+            }
+        }
     }
 
     private func detailHeader(manifest: Manifest, enabled: Bool) -> some View {

@@ -54,11 +54,10 @@ struct SettingsTab: View {
                     }
                 }
 
-                ForEach(pluginSettingsSections(), id: \.0.id) { manifest, sectionEntry, schema in
-                    section(title: sectionEntry.title.uppercased()) {
-                        SchemaForm(pluginId: manifest.id, schema: schema)
-                    }
-                }
+                // Per-plugin settings.section UI moved to Plugin Manager
+                // detail (Q2 decision, 2026-05-16). Settings tab stays
+                // focused on host-level concerns; plugin configuration
+                // co-locates with health + toggle.
 
                 section(title: "ABOUT") {
                     Text("claude-instances V2 — preview")
@@ -71,21 +70,6 @@ struct SettingsTab: View {
             }
             .padding(design.space(DesignTokens.Space.l))
         }
-    }
-
-    /// Collect every plugin's settings.section + its resolved JSON Schema.
-    private func pluginSettingsSections() -> [(Manifest, SettingsSection, SettingsSchema)] {
-        var out: [(Manifest, SettingsSection, SettingsSchema)] = []
-        for manifest in platform.manifests {
-            guard let dir = manifest.pluginDir else { continue }
-            for entry in manifest.contributes.settingsSection ?? [] {
-                let schemaURL = URL(fileURLWithPath: entry.schema, relativeTo: dir)
-                if let schema = SettingsSchema.load(from: schemaURL) {
-                    out.append((manifest, entry, schema))
-                }
-            }
-        }
-        return out
     }
 
     // MARK: helpers
