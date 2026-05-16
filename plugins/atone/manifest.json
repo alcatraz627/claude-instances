@@ -39,6 +39,14 @@
           { "kind": "table",   "source": "fetch:events"  }
         ]
       }
+    ],
+    "settings.section": [
+      {
+        "id": "atone-settings",
+        "title": "Atone",
+        "schema": "settings.schema.json",
+        "view": "auto"
+      }
     ]
   }
 }

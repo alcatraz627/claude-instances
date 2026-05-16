@@ -8,11 +8,17 @@ import Foundation
 public struct HostSettings: Codable, Sendable, Equatable {
     public var appearance: Appearance
     public var plugins: [String: PluginState]
+    /// Per-plugin user-set settings values, keyed by plugin id then by
+    /// JSON-Schema property name. Each leaf is a JSON scalar held in
+    /// AnyCodable so we can serialize back to state.json.
+    public var pluginSettings: [String: [String: AnyCodable]]
 
     public init(appearance: Appearance = .init(),
-                plugins: [String: PluginState] = [:]) {
+                plugins: [String: PluginState] = [:],
+                pluginSettings: [String: [String: AnyCodable]] = [:]) {
         self.appearance = appearance
         self.plugins = plugins
+        self.pluginSettings = pluginSettings
     }
 
     /// Per-plugin user-controlled state. Absent = default enabled.
@@ -127,7 +133,17 @@ public enum HostSettingsPersistence {
                                                     from: pluginsData) {
             plugins = decoded
         }
-        return HostSettings(appearance: appearance, plugins: plugins)
+
+        var pluginSettings: [String: [String: AnyCodable]] = [:]
+        if let ps = raw["plugin_settings"] as? [String: Any],
+           let psData = try? JSONSerialization.data(withJSONObject: ps),
+           let decoded = try? JSONDecoder().decode([String: [String: AnyCodable]].self,
+                                                    from: psData) {
+            pluginSettings = decoded
+        }
+        return HostSettings(appearance: appearance,
+                            plugins: plugins,
+                            pluginSettings: pluginSettings)
     }
 
     /// Persist under top-level keys "appearance" and "plugins". Preserves
@@ -149,6 +165,9 @@ public enum HostSettingsPersistence {
 
         let pluginsData = try JSONEncoder().encode(settings.plugins)
         root["plugins"] = try JSONSerialization.jsonObject(with: pluginsData)
+
+        let psData = try JSONEncoder().encode(settings.pluginSettings)
+        root["plugin_settings"] = try JSONSerialization.jsonObject(with: psData)
 
         let out = try JSONSerialization.data(withJSONObject: root,
                                              options: [.prettyPrinted, .sortedKeys])

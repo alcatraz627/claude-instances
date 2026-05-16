@@ -5,6 +5,7 @@ import HostKernel
 /// sections arrive in Phase 8 (auto-form from JSON Schema).
 struct SettingsTab: View {
     @EnvironmentObject var store: HostSettingsStore
+    @EnvironmentObject var platform: PlatformRegistry
     @Environment(\.design) var design
 
     var body: some View {
@@ -53,6 +54,12 @@ struct SettingsTab: View {
                     }
                 }
 
+                ForEach(pluginSettingsSections(), id: \.0.id) { manifest, sectionEntry, schema in
+                    section(title: sectionEntry.title.uppercased()) {
+                        SchemaForm(pluginId: manifest.id, schema: schema)
+                    }
+                }
+
                 section(title: "ABOUT") {
                     Text("claude-instances V2 — preview")
                         .font(design.font(DesignTokens.FontSize.body))
@@ -64,6 +71,21 @@ struct SettingsTab: View {
             }
             .padding(design.space(DesignTokens.Space.l))
         }
+    }
+
+    /// Collect every plugin's settings.section + its resolved JSON Schema.
+    private func pluginSettingsSections() -> [(Manifest, SettingsSection, SettingsSchema)] {
+        var out: [(Manifest, SettingsSection, SettingsSchema)] = []
+        for manifest in platform.manifests {
+            guard let dir = manifest.pluginDir else { continue }
+            for entry in manifest.contributes.settingsSection ?? [] {
+                let schemaURL = URL(fileURLWithPath: entry.schema, relativeTo: dir)
+                if let schema = SettingsSchema.load(from: schemaURL) {
+                    out.append((manifest, entry, schema))
+                }
+            }
+        }
+        return out
     }
 
     // MARK: helpers

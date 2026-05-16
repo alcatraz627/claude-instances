@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "title": "Atone settings",
+  "order": ["show_s3_only", "max_events", "default_view"],
+  "properties": {
+    "show_s3_only": {
+      "type": "boolean",
+      "title": "Show S3 events only",
+      "description": "Filter the events table to severity-3 entries.",
+      "default": false
+    },
+    "max_events": {
+      "type": "integer",
+      "title": "Max events to show",
+      "description": "How many rows the events table renders at once.",
+      "minimum": 5,
+      "maximum": 200,
+      "default": 20
+    },
+    "default_view": {
+      "type": "string",
+      "title": "Default group-by",
+      "description": "How the events table groups when first opened.",
+      "enum": ["severity", "cluster", "slug"],
+      "default": "severity"
+    }
+  }
+}

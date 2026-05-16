@@ -64,6 +64,12 @@ if [[ -d plugins ]]; then
                 cp -f "${sh}" "${dest}/$(basename "${sh}")"
                 chmod +x "${dest}/$(basename "${sh}")"
             done
+            # Settings schemas, JSON helpers, README — all data, all bundled.
+            for js in "${plugindir}"*.json; do
+                [[ -f "${js}" ]] || continue
+                [[ "$(basename "${js}")" == "manifest.json" ]] && continue
+                cp -f "${js}" "${dest}/$(basename "${js}")"
+            done
         fi
     done
     echo "[build] Bundled plugin manifests: $(ls ${APP_DIR}/Contents/Resources/plugins/ | tr '\n' ' ')"
