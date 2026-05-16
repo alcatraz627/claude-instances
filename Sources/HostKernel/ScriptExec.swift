@@ -52,21 +52,22 @@ public enum ScriptExec {
         let started = Date()
         try proc.run()
 
-        // Timeout enforcement runs in its own Task; cancels on success.
-        let timeoutTask = Task<Bool, Never> {
+        // Timeout watchdog: sleeps the budget, then SIGTERMs (with 1s grace
+        // before SIGKILL). We *don't* await its completion — we detect
+        // whether it fired by checking terminationReason after waitUntilExit.
+        let timeoutTask = Task {
             try? await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
-            if Task.isCancelled { return false }
-            // Soft kill first.
+            if Task.isCancelled { return }
             proc.terminate()
-            // 1s grace then SIGKILL.
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             if proc.isRunning {
                 kill(proc.processIdentifier, SIGKILL)
             }
-            return true
         }
 
-        // Drain stdout fully (with payload cap), then wait for exit.
+        // Drain stdout fully (with payload cap). `availableData` blocks
+        // until at least one byte is available, OR returns empty on EOF
+        // (pipe closed = child exited and let go of its end).
         var stdoutBuffer = Data()
         let stdoutHandle = stdoutPipe.fileHandleForReading
         while true {
@@ -76,7 +77,7 @@ public enum ScriptExec {
                 let remain = maxPayloadBytes - stdoutBuffer.count
                 if remain > 0 { stdoutBuffer.append(chunk.prefix(remain)) }
                 // Keep draining so the child doesn't block on a full pipe;
-                // we just don't keep the bytes.
+                // discard the overflow bytes.
                 while !stdoutHandle.availableData.isEmpty {}
                 break
             }
@@ -84,8 +85,12 @@ public enum ScriptExec {
         }
 
         proc.waitUntilExit()
-        let timedOut = await timeoutTask.value
+        // Now cancel the watchdog (no-op if it already fired). We detect
+        // "timed out" via terminationReason — `.uncaughtSignal` means the
+        // process died from SIGTERM/SIGKILL, which is what our watchdog
+        // sends.
         timeoutTask.cancel()
+        let timedOut = (proc.terminationReason == .uncaughtSignal)
 
         let stderrData = try? stderrPipe.fileHandleForReading.readToEnd()
         let stderrString = (stderrData.flatMap { String(data: $0, encoding: .utf8) }) ?? ""
