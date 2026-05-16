@@ -138,12 +138,9 @@ private struct PaneHolder: View {
     @EnvironmentObject var platform: PlatformRegistry
     @State private var content: PaneContent? = nil
     @State private var fetchedAt: Date? = nil
+    @State private var watcher: FSEventsWatcher? = nil
 
     private var paneTitle: String? {
-        // Only the first pane in a contribution shows the contribution's title
-        // in its chrome — subsequent panes are sub-sections without a separate
-        // title. Keep it simple for Phase 4; surface-specific titling is a
-        // future refinement.
         index == 0 ? contribution.title : spec.label
     }
 
@@ -163,7 +160,11 @@ private struct PaneHolder: View {
                 placeholder
             }
         }
-        .task(id: spec.source) { await refresh() }
+        .task(id: spec.source) {
+            await refresh()
+            installWatcher()
+        }
+        .onDisappear { watcher?.stop(); watcher = nil }
     }
 
     private var placeholder: some View {
@@ -176,30 +177,160 @@ private struct PaneHolder: View {
             fetchedAt: nil)
     }
 
+    // MARK: - Watcher
+
+    @MainActor
+    private func installWatcher() {
+        guard watcher == nil,
+              let paths = manifest.refresh?.onFsChange, !paths.isEmpty
+        else { return }
+        let w = FSEventsWatcher(paths: paths) { _ in
+            Task { @MainActor in await self.refresh() }
+        }
+        w.start()
+        watcher = w
+    }
+
+    // MARK: - Refresh
+
     @MainActor
     private func refresh() async {
-        guard let plugin = platform.plugin(for: manifest) else {
+        guard let source = PaneSource(spec.source) else {
             content = .error(PluginError(
-                .nativeActivationFailed,
-                "No plugin instance for id '\(manifest.id)' (script plugins arrive in Phase 5)"))
+                .fetchSchemaViolation,
+                "Plugin '\(manifest.id)': unparseable source string '\(spec.source)'"))
             fetchedAt = Date()
             return
         }
-        // Source string: "native:method" → "method". "fetch:..." / "event:..."
-        // are deferred to later phases; for now anything non-native errors.
-        let source = parseSource(spec.source)
         do {
-            content = try await plugin.render(source.argument)
+            switch source {
+            case .native(let method):
+                content = try await renderNative(method: method)
+            case .fetch(let args):
+                content = await renderFetch(args: args)
+            case .event:
+                content = .error(PluginError(
+                    .eventUnknownTopic,
+                    "Event sources are wired in Phase 6 (got '\(spec.source)')"))
+            case .staticData(let json):
+                content = renderStatic(json: json)
+            }
         } catch {
             content = .error(PluginError(
                 .nativeMethodThrew,
-                "Plugin \(manifest.id) threw during render('\(source.argument)'): \(error)"))
+                "Render failed: \(error.localizedDescription)"))
         }
         fetchedAt = Date()
     }
 
+    private func renderNative(method: String) async throws -> PaneContent {
+        guard let plugin = platform.plugin(for: manifest) else {
+            return .error(PluginError(
+                .nativeActivationFailed,
+                "No Swift plugin registered for id '\(manifest.id)'"))
+        }
+        return try await plugin.render(method)
+    }
+
+    @MainActor
+    private func renderFetch(args: [String]) async -> PaneContent {
+        guard let dir = manifest.pluginDir,
+              let fetchRel = manifest.exec.fetch
+        else {
+            return .error(PluginError(
+                .manifestInvalid,
+                "Plugin '\(manifest.id)' has no exec.fetch path"))
+        }
+        let exec = URL(fileURLWithPath: fetchRel, relativeTo: dir)
+            .standardizedFileURL
+        guard FileManager.default.isExecutableFile(atPath: exec.path) else {
+            return .error(PluginError(
+                .manifestInvalid,
+                "fetch executable missing or not executable: \(exec.path)"))
+        }
+        let timeoutMs = manifest.limits?.fetchTimeoutMs ?? 5000
+        let maxBytes  = manifest.limits?.maxPayloadBytes ?? 262_144
+
+        do {
+            let result = try await ScriptExec.run(
+                executable: exec,
+                args: args,
+                cwd: dir,
+                env: [
+                    "CLAUDE_PLUGIN_ID":  manifest.id,
+                    "CLAUDE_HOST_VERSION": HostKernel.version,
+                ],
+                timeoutMs: timeoutMs,
+                maxPayloadBytes: maxBytes)
+
+            if result.timedOut {
+                return .error(PluginError(
+                    .fetchTimeout,
+                    "fetch.sh exceeded \(timeoutMs)ms",
+                    stderrTail: result.stderr,
+                    actionable: "Increase manifest limits.fetch_timeout_ms or speed up fetch.sh"))
+            }
+            if result.exitCode != 0 {
+                return .error(PluginError(
+                    .fetchExitNonzero,
+                    "fetch.sh exited with code \(result.exitCode)",
+                    stderrTail: result.stderr))
+            }
+            return parseStdoutAsPane(result.stdout, stderr: result.stderr)
+        } catch {
+            return .error(PluginError(
+                .fetchExitNonzero,
+                "Failed to spawn fetch.sh: \(error.localizedDescription)"))
+        }
+    }
+
+    private func renderStatic(json: String) -> PaneContent {
+        guard let data = json.data(using: .utf8) else {
+            return .error(PluginError(.fetchBadJson, "static source is not valid UTF-8"))
+        }
+        return parseStdoutAsPane(data, stderr: "")
+    }
+
+    /// Parse fetch.sh output as the appropriate `PaneContent` variant.
+    /// Switches on the JSON's "kind" key.
+    private func parseStdoutAsPane(_ data: Data, stderr: String) -> PaneContent {
+        guard let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let kind = raw["kind"] as? String else {
+            return .error(PluginError(
+                .fetchBadJson,
+                "fetch.sh output is not a JSON object with a 'kind' field",
+                stderrTail: stderr))
+        }
+        let decoder = JSONDecoder()
+        do {
+            switch kind {
+            case "summary":
+                return .summary(try decoder.decode(SummaryContent.self, from: data))
+            case "table":
+                return .table(try decoder.decode(TableContent.self, from: data))
+            case "schedule":
+                return .schedule(try decoder.decode(ScheduleContent.self, from: data))
+            case "assets":
+                return .assets(try decoder.decode(AssetsContent.self, from: data))
+            case "log":
+                let s = String(data: data, encoding: .utf8) ?? ""
+                return .log(LogContent(text: s))
+            default:
+                return .error(PluginError(
+                    .fetchSchemaViolation,
+                    "Unknown pane kind '\(kind)' in fetch output",
+                    stderrTail: stderr))
+            }
+        } catch {
+            return .error(PluginError(
+                .fetchSchemaViolation,
+                "fetch output did not match the '\(kind)' schema: \(error.localizedDescription)",
+                stderrTail: stderr))
+        }
+    }
+
     private struct ParsedSource {
-        let scheme: String   // "native" | "fetch" | "event" | "static"
+        let scheme: String
         let argument: String
     }
 

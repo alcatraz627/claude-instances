@@ -1,0 +1,44 @@
+{
+  "manifest_version": 1,
+  "id": "atone",
+  "name": "Atone",
+  "version": "0.1.0",
+  "description": "Mistake tracking, RCAs, and consolidate runs.",
+  "engines": { "claude-instances": "^2.0.0" },
+  "icon": "exclamationmark.bubble",
+  "accent": "orange",
+  "capabilities": ["fs.read", "process.spawn"],
+  "requires": ["jq"],
+  "exec": {
+    "kind": "script",
+    "fetch": "./fetch.sh",
+    "action": "./actions.sh"
+  },
+  "refresh": {
+    "on_fs_change": [
+      "~/.claude/atone/events.jsonl",
+      "~/.claude/atone/derived/_meta.json"
+    ],
+    "poll_seconds": 600
+  },
+  "limits": {
+    "fetch_timeout_ms": 3000,
+    "max_payload_bytes": 524288
+  },
+  "contributes": {
+    "dashboard.pane": [
+      {
+        "id": "atone-main",
+        "title": "Atone",
+        "subtitle": "Mistake tracking & RCAs",
+        "section": "Tools",
+        "icon": "exclamationmark.bubble",
+        "accent": "orange",
+        "panes": [
+          { "kind": "summary", "source": "fetch:summary" },
+          { "kind": "table",   "source": "fetch:events"  }
+        ]
+      }
+    ]
+  }
+}

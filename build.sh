@@ -53,8 +53,17 @@ if [[ -d plugins ]]; then
         pname="$(basename "${plugindir}")"
         [[ "${pname}" == "_test-fixtures" ]] && continue
         if [[ -f "${plugindir}manifest.json" ]]; then
-            mkdir -p "${APP_DIR}/Contents/Resources/plugins/${pname}"
-            cp -f "${plugindir}manifest.json" "${APP_DIR}/Contents/Resources/plugins/${pname}/manifest.json"
+            dest="${APP_DIR}/Contents/Resources/plugins/${pname}"
+            mkdir -p "${dest}"
+            cp -f "${plugindir}manifest.json" "${dest}/manifest.json"
+            # Script-plugin executables travel with the bundle. Plugin.swift
+            # is already compiled into the host binary so it does NOT get
+            # copied — only fetch.sh / actions.sh / helpers.
+            for sh in "${plugindir}"*.sh; do
+                [[ -f "${sh}" ]] || continue
+                cp -f "${sh}" "${dest}/$(basename "${sh}")"
+                chmod +x "${dest}/$(basename "${sh}")"
+            done
         fi
     done
     echo "[build] Bundled plugin manifests: $(ls ${APP_DIR}/Contents/Resources/plugins/ | tr '\n' ' ')"
