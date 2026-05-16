@@ -23,7 +23,12 @@ struct DashboardSurface: View {
             sidebar
                 .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 260)
         } detail: {
+            // .id(selection) forces SwiftUI to tear down the old detail
+            // tree and build the new one atomically. Without this the old
+            // pane stays visible while the new ContributionView initializes
+            // — the "tab change page lag" the user reported.
             detail
+                .id(selection ?? "_none")
                 .frame(minWidth: 520)
                 .background(DesignTokens.Surface.page)
         }
@@ -37,6 +42,7 @@ struct DashboardSurface: View {
             pushTitle(for: selection)
         }
         .onChange(of: selection) { newSel in
+            platform.hostLogger.info("user.action", "sidebar.select \(newSel ?? "(none)")")
             pushTitle(for: newSel)
         }
     }
@@ -171,7 +177,6 @@ private struct PaneHolder: View {
     @EnvironmentObject var store: HostSettingsStore
     @State private var content: PaneContent? = nil
     @State private var fetchedAt: Date? = nil
-    @State private var watcher: FSEventsWatcher? = nil
 
     private var paneTitle: String? {
         index == 0 ? contribution.title : spec.label
@@ -190,39 +195,42 @@ private struct PaneHolder: View {
                              fetchedAt: fetchedAt,
                              onRefresh: { Task { await refresh() } })
             } else {
-                placeholder
+                skeleton
             }
         }
         .task(id: spec.source) {
             await refresh()
-            installWatcher()
         }
-        .onDisappear { watcher?.stop(); watcher = nil }
+        // FSEvents watchers live on PlatformRegistry now; they publish
+        // "<plugin-id>.fs-change" to the bus on every change. SwiftUI's
+        // .onReceive owns the subscription lifetime, so PaneHolder going
+        // away cleanly tears down the receiver — no more dangling
+        // self-capture from a CoreServices callback (the Phase-6 crash).
+        .onReceive(NotificationCenter.default.publisher(
+            for: Notification.Name("ci.bus.\(manifest.id).fs-change"))) { _ in
+            Task { @MainActor in await refresh() }
+        }
     }
 
-    private var placeholder: some View {
+    /// Skeleton shown instantly when a pane is selected, before the first
+    /// fetch returns. Pane chrome + dim placeholder tiles — looks like the
+    /// real shape without pretending to be real data.
+    private var skeleton: some View {
         PaneRenderer(
             content: .summary(SummaryContent(tiles: [
-                .init(label: "Loading", value: "…", tone: .dim)
+                .init(label: " ", value: "—", tone: .dim),
+                .init(label: " ", value: "—", tone: .dim),
+                .init(label: " ", value: "—", tone: .dim)
             ])),
             title: paneTitle,
-            subtitle: paneSubtitle,
+            subtitle: "loading…",
             fetchedAt: nil)
     }
 
-    // MARK: - Watcher
-
-    @MainActor
-    private func installWatcher() {
-        guard watcher == nil,
-              let paths = manifest.refresh?.onFsChange, !paths.isEmpty
-        else { return }
-        let w = FSEventsWatcher(paths: paths) { _ in
-            Task { @MainActor in await self.refresh() }
-        }
-        w.start()
-        watcher = w
-    }
+    // FSEvents watchers live on PlatformRegistry now; PaneHolder no
+    // longer creates one (was the source of the Phase-6 EXC_BAD_ACCESS
+    // when CoreServices fired the callback after the SwiftUI view + its
+    // @State storage had been torn down).
 
     // MARK: - Refresh
 

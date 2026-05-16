@@ -24,19 +24,32 @@ public final class HostSettingsStore: ObservableObject {
     }
 
     public func update(_ mutate: (inout HostSettings) -> Void) {
+        let before = settings
         mutate(&settings)
         applyAppearanceToNSApp()
         scheduleSave()
+        // Notify observers (host logger, plugins via bus later) that
+        // something changed. Diff at JSON-encoded level to stay
+        // forward-compat with new fields.
+        if let beforeData = try? JSONEncoder().encode(before),
+           let afterData = try? JSONEncoder().encode(settings),
+           beforeData != afterData {
+            NotificationCenter.default.post(name: .hostSettingsChanged, object: settings)
+        }
     }
 
     /// Convenience: flip a plugin's enabled state. Defaults are true, so
-    /// the first toggle creates a new dict entry.
+    /// the first toggle creates a new dict entry. Posts a structured
+    /// notification so AppDelegate can log the action.
     public func setPluginEnabled(_ id: String, _ enabled: Bool) {
         update { settings in
             var ps = settings.plugins[id] ?? .init(enabled: true)
             ps.enabled = enabled
             settings.plugins[id] = ps
         }
+        NotificationCenter.default.post(
+            name: .hostPluginToggled,
+            object: (id: id, enabled: enabled))
     }
 
     /// Bridge the SwiftUI-level setting to AppKit. SwiftUI's
@@ -59,13 +72,8 @@ public final class HostSettingsStore: ObservableObject {
             try? await Task.sleep(nanoseconds: 200_000_000)
             guard !Task.isCancelled else { return }
             try? HostSettingsPersistence.save(snapshot)
-            await self?.notifyListeners()
+            _ = self
         }
-    }
-
-    private func notifyListeners() async {
-        // Phase 6 will emit `host.appearance.change` on the real event bus.
-        // For now this is a placeholder hook the rest of the host can wire to.
     }
 
     /// Resolved tokens for the current settings. Recomputed when settings change.
@@ -81,4 +89,9 @@ public final class HostSettingsStore: ObservableObject {
         case .dark:   return .dark
         }
     }
+}
+
+public extension Notification.Name {
+    static let hostSettingsChanged = Notification.Name("ci.host.settings.changed")
+    static let hostPluginToggled = Notification.Name("ci.host.plugin.toggled")
 }

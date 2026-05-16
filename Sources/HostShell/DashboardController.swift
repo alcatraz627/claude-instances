@@ -33,14 +33,15 @@ final class DashboardController {
             backing: .buffered,
             defer: false
         )
-        panel.title = "claude-instances V2"
+        panel.title = "Dashboard"
         // SwiftUI -> NSPanel title bridge. NSPanel ignores SwiftUI's
         // .navigationTitle modifier, so child views call this closure when
-        // the selected page changes.
+        // the selected page changes. The title bar is narrow, so we put
+        // ONLY the page name there — Activity-Monitor / System-Settings
+        // pattern. App identity is conveyed by the menu-bar icon + window
+        // existence.
         let root = DashboardRootView(onTitleChange: { [weak panel] page in
-            panel?.title = page.isEmpty
-                ? "claude-instances V2"
-                : "claude-instances V2 — \(page)"
+            panel?.title = page.isEmpty ? "Dashboard" : page
         })
             .environmentObject(platform)
             .environmentObject(settings)

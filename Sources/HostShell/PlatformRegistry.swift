@@ -25,6 +25,13 @@ public final class PlatformRegistry: ObservableObject {
     private var pluginLoggers: [String: HostLogger] = [:]
     private var minuteTimer: Timer?
     private var fiveSecondTimer: Timer?
+    /// FSEvents watchers, one per plugin that declared `refresh.on_fs_change`.
+    /// Owned by the registry so their lifetime doesn't depend on transient
+    /// SwiftUI views — a callback firing after a view is destroyed used to
+    /// crash via dangling environment references (see PaneHolder Phase-6
+    /// crash report). Now watchers publish to the bus; views subscribe via
+    /// SwiftUI .onReceive which handles its own teardown.
+    private var watchers: [String: FSEventsWatcher] = [:]
 
     private let kernel: Registry
     private let bundled: BundledPluginRegistry
@@ -56,8 +63,38 @@ public final class PlatformRegistry: ObservableObject {
         // Start the periodic tick timers + emit host.startup.
         bus.publish(HostTopics.startup)
         startTimers()
+        installWatchers()
+
+        // Check for + log any pre-session crash artifacts.
+        if let prev = CrashReporter.consumePrevious() {
+            for line in prev.split(separator: "\n") {
+                hostLogger.error("prev-session-crash", String(line))
+            }
+        }
 
         bootstrapped = true
+    }
+
+    /// Create one FSEventsWatcher per plugin that declared
+    /// `refresh.on_fs_change`. Each watcher's callback publishes to the bus
+    /// — it captures only Sendable values (plugin id + bus reference), so
+    /// there's no dangling-SwiftUI-view crash regardless of which views are
+    /// alive when the callback fires.
+    private func installWatchers() {
+        for m in manifests {
+            guard let paths = m.refresh?.onFsChange, !paths.isEmpty else { continue }
+            let pluginId = m.id
+            let bus = self.bus
+            let logger = self.logger(for: pluginId)
+            let topic = "\(pluginId).fs-change"
+            let w = FSEventsWatcher(paths: paths) { _ in
+                logger.info("fs-events", "change -> publishing \(topic)")
+                bus.publish(topic)
+            }
+            w.start()
+            watchers[pluginId] = w
+            hostLogger.info("watchers", "installed FSEvents for \(pluginId) (\(paths.count) path(s))")
+        }
     }
 
     /// Returns the per-plugin logger; creates one on first use.
