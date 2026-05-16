@@ -250,6 +250,8 @@ private struct PaneHolder: View {
         }
         let timeoutMs = manifest.limits?.fetchTimeoutMs ?? 5000
         let maxBytes  = manifest.limits?.maxPayloadBytes ?? 262_144
+        let logger = platform.logger(for: manifest.id)
+        logger.info("fetch", "start \(args.joined(separator: " "))")
 
         do {
             let result = try await ScriptExec.run(
@@ -264,23 +266,35 @@ private struct PaneHolder: View {
                 maxPayloadBytes: maxBytes)
 
             if result.timedOut {
+                let msg = "fetch.sh exceeded \(timeoutMs)ms"
+                logger.error("fetch", msg)
+                platform.sampler.recordFetch(plugin: manifest.id,
+                    latencyMs: result.elapsedMs, payloadBytes: 0, error: msg)
                 return .error(PluginError(
-                    .fetchTimeout,
-                    "fetch.sh exceeded \(timeoutMs)ms",
+                    .fetchTimeout, msg,
                     stderrTail: result.stderr,
                     actionable: "Increase manifest limits.fetch_timeout_ms or speed up fetch.sh"))
             }
             if result.exitCode != 0 {
+                let msg = "exit \(result.exitCode)"
+                logger.error("fetch", "\(msg): \(result.stderr.prefix(200))")
+                platform.sampler.recordFetch(plugin: manifest.id,
+                    latencyMs: result.elapsedMs, payloadBytes: 0, error: msg)
                 return .error(PluginError(
                     .fetchExitNonzero,
                     "fetch.sh exited with code \(result.exitCode)",
                     stderrTail: result.stderr))
             }
+            logger.info("fetch", "ok in \(result.elapsedMs)ms (\(result.stdout.count) bytes)")
+            platform.sampler.recordFetch(plugin: manifest.id,
+                latencyMs: result.elapsedMs, payloadBytes: result.stdout.count, error: nil)
             return parseStdoutAsPane(result.stdout, stderr: result.stderr)
         } catch {
-            return .error(PluginError(
-                .fetchExitNonzero,
-                "Failed to spawn fetch.sh: \(error.localizedDescription)"))
+            let msg = "spawn failed: \(error.localizedDescription)"
+            logger.error("fetch", msg)
+            platform.sampler.recordFetch(plugin: manifest.id,
+                latencyMs: 0, payloadBytes: 0, error: msg)
+            return .error(PluginError(.fetchExitNonzero, msg))
         }
     }
 

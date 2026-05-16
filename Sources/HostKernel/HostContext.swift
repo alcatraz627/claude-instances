@@ -39,17 +39,6 @@ public struct PrintLogger: HostLogger {
     public func error(_ tag: String, _ msg: String) { print("[error \(tag)] \(msg)") }
 }
 
-// MARK: - Event bus (Phase-4 stub)
-
-/// In-process typed topic broker. The Phase-4 implementation is a no-op
-/// stub so plugins can be coded against the API today; Phase 6 fills in
-/// the real publish/subscribe machinery.
-public struct EventBus {
-    public init() {}
-
-    /// Plugin-side: emit an event under your plugin's id prefix.
-    /// Stub no-op until Phase 6.
-    public func publish(_ topic: String, _ payload: [String: AnyCodable] = [:]) {
-        // intentionally empty
-    }
-}
+// EventBus is now defined in EventBusImpl.swift as a real publish/subscribe
+// broker backed by NotificationCenter (Phase 6). The Phase-4 stub is gone;
+// callers compile unchanged since publish() signature is preserved.

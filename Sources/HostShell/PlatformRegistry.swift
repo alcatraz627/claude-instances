@@ -15,6 +15,16 @@ public final class PlatformRegistry: ObservableObject {
     @Published public private(set) var manifests: [Manifest] = []
     @Published public private(set) var warnings: [PluginWarning] = []
     @Published public private(set) var bootstrapped: Bool = false
+    @Published public private(set) var samplerTick: Int = 0   // bumped on each sample
+
+    /// Cross-plugin runtime services. Plugins receive references to these
+    /// in their HostContext on activation.
+    public let bus = EventBus()
+    public let sampler = ResourceSampler()
+    public let hostLogger: HostLogger
+    private var pluginLoggers: [String: HostLogger] = [:]
+    private var minuteTimer: Timer?
+    private var fiveSecondTimer: Timer?
 
     private let kernel: Registry
     private let bundled: BundledPluginRegistry
@@ -23,6 +33,8 @@ public final class PlatformRegistry: ObservableObject {
                 bundled: BundledPluginRegistry? = nil) {
         self.kernel = kernel ?? Registry(hostVersion: HostKernel.semver)
         self.bundled = bundled ?? .shared
+        self.hostLogger = FileLogger(source: "host", baseDir: HostLogPaths.baseDir)
+        self.hostLogger.info("startup", "PlatformRegistry init (host \(HostKernel.version))")
     }
 
     public func bootstrap() {
@@ -31,10 +43,55 @@ public final class PlatformRegistry: ObservableObject {
 
         if let pluginsDir = PlatformRegistry.locatePluginsDir() {
             kernel.loadAll(in: pluginsDir)
+            hostLogger.info("registry", "loaded \(kernel.manifests.count) manifests from \(pluginsDir.path)")
+        } else {
+            hostLogger.warn("registry", "no plugins/ directory found at any candidate path")
         }
         manifests = Array(kernel.manifests.values).sorted { $0.id < $1.id }
         warnings = kernel.warnings
+        for w in warnings {
+            hostLogger.warn("manifest", w.description)
+        }
+
+        // Start the periodic tick timers + emit host.startup.
+        bus.publish(HostTopics.startup)
+        startTimers()
+
         bootstrapped = true
+    }
+
+    /// Returns the per-plugin logger; creates one on first use.
+    public func logger(for pluginId: String) -> HostLogger {
+        if let l = pluginLoggers[pluginId] { return l }
+        let dir = HostLogPaths.pluginLogDir()
+        let l = FileLogger(source: pluginId, baseDir: dir)
+        pluginLoggers[pluginId] = l
+        return l
+    }
+
+    private func startTimers() {
+        // 5-second tick — bumps a counter so resource-stats UI re-renders,
+        // and fires host.tick.5s on the bus for any subscribers.
+        fiveSecondTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.samplerTick &+= 1
+                self.bus.publish(HostTopics.tickFiveSec)
+            }
+        }
+        // 60-second tick — resets minute counters + fires host.tick.minute.
+        minuteTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.sampler.resetMinuteCounters()
+                self.bus.publish(HostTopics.tickMinute)
+            }
+        }
+    }
+
+    deinit {
+        minuteTimer?.invalidate()
+        fiveSecondTimer?.invalidate()
     }
 
     /// Look up the plugin instance for a manifest. Currently only native
