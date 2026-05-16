@@ -7,9 +7,26 @@ import Foundation
 /// rebroadcasts changes via the event bus topic `host.appearance.change`.
 public struct HostSettings: Codable, Sendable, Equatable {
     public var appearance: Appearance
+    public var plugins: [String: PluginState]
 
-    public init(appearance: Appearance = .init()) {
+    public init(appearance: Appearance = .init(),
+                plugins: [String: PluginState] = [:]) {
         self.appearance = appearance
+        self.plugins = plugins
+    }
+
+    /// Per-plugin user-controlled state. Absent = default enabled.
+    public struct PluginState: Codable, Sendable, Equatable {
+        public var enabled: Bool
+
+        public init(enabled: Bool = true) {
+            self.enabled = enabled
+        }
+    }
+
+    /// True if the plugin is enabled (default true if no record exists).
+    public func isPluginEnabled(_ id: String) -> Bool {
+        plugins[id]?.enabled ?? true
     }
 
     public struct Appearance: Codable, Sendable, Equatable {
@@ -94,8 +111,6 @@ public enum HostSettingsPersistence {
               let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return HostSettings() }
 
-        // Settings.json may have other top-level keys we don't care about here
-        // (e.g. per-plugin "plugins" map). Decode just the "appearance" subtree.
         let appearance: HostSettings.Appearance
         if let appearanceDict = raw["appearance"] as? [String: Any],
            let appearanceData = try? JSONSerialization.data(withJSONObject: appearanceDict),
@@ -104,12 +119,20 @@ public enum HostSettingsPersistence {
         } else {
             appearance = .init()
         }
-        return HostSettings(appearance: appearance)
+
+        var plugins: [String: HostSettings.PluginState] = [:]
+        if let pluginsDict = raw["plugins"] as? [String: Any],
+           let pluginsData = try? JSONSerialization.data(withJSONObject: pluginsDict),
+           let decoded = try? JSONDecoder().decode([String: HostSettings.PluginState].self,
+                                                    from: pluginsData) {
+            plugins = decoded
+        }
+        return HostSettings(appearance: appearance, plugins: plugins)
     }
 
-    /// Persist appearance under the `"appearance"` top-level key. Preserves
-    /// any other top-level keys already present in state.json (so plugin
-    /// settings written by other code paths are not clobbered).
+    /// Persist under top-level keys "appearance" and "plugins". Preserves
+    /// any other top-level keys already present in state.json (so future
+    /// host extensions don't clobber user data).
     public static func save(_ settings: HostSettings) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: stateFileURL.deletingLastPathComponent(),
@@ -122,11 +145,11 @@ public enum HostSettingsPersistence {
         }
 
         let appearanceData = try JSONEncoder().encode(settings.appearance)
-        let appearanceJSON = try JSONSerialization.jsonObject(with: appearanceData)
-        root["appearance"] = appearanceJSON
+        root["appearance"] = try JSONSerialization.jsonObject(with: appearanceData)
 
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let pluginsData = try JSONEncoder().encode(settings.plugins)
+        root["plugins"] = try JSONSerialization.jsonObject(with: pluginsData)
+
         let out = try JSONSerialization.data(withJSONObject: root,
                                              options: [.prettyPrinted, .sortedKeys])
         try out.write(to: stateFileURL, options: [.atomic])

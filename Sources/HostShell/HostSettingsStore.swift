@@ -29,6 +29,16 @@ public final class HostSettingsStore: ObservableObject {
         scheduleSave()
     }
 
+    /// Convenience: flip a plugin's enabled state. Defaults are true, so
+    /// the first toggle creates a new dict entry.
+    public func setPluginEnabled(_ id: String, _ enabled: Bool) {
+        update { settings in
+            var ps = settings.plugins[id] ?? .init(enabled: true)
+            ps.enabled = enabled
+            settings.plugins[id] = ps
+        }
+    }
+
     /// Bridge the SwiftUI-level setting to AppKit. SwiftUI's
     /// `.preferredColorScheme(nil)` only clears the override for SwiftUI
     /// content — NSPanel/NSMenu chrome stays at whatever was last forced.

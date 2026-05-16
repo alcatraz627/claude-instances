@@ -12,6 +12,10 @@ struct DashboardSurface: View {
 
     @State private var selection: String? = nil
 
+    private var disabledPluginIds: Set<String> {
+        Set(store.settings.plugins.compactMap { $0.value.enabled ? nil : $0.key })
+    }
+
     var body: some View {
         NavigationSplitView {
             sidebar
@@ -24,8 +28,7 @@ struct DashboardSurface: View {
         .frame(minWidth: 760, minHeight: 480)
         .onAppear {
             if selection == nil {
-                // Default to the first dashboard.pane contribution.
-                selection = platform.dashboardSections()
+                selection = platform.dashboardSections(disabledIds: disabledPluginIds)
                     .flatMap { $0.items }
                     .first?.1.id
             }
@@ -36,7 +39,8 @@ struct DashboardSurface: View {
 
     private var sidebar: some View {
         List(selection: $selection) {
-            ForEach(platform.dashboardSections(), id: \.section) { group in
+            ForEach(platform.dashboardSections(disabledIds: disabledPluginIds),
+                    id: \.section) { group in
                 Section(group.section) {
                     ForEach(group.items, id: \.1.id) { _, contribution in
                         NavigationLink(value: contribution.id) {
@@ -47,6 +51,9 @@ struct DashboardSurface: View {
                 }
             }
             Section("System") {
+                NavigationLink(value: "plugins") {
+                    Label("Plugins", systemImage: "puzzlepiece.extension")
+                }
                 NavigationLink(value: "settings") {
                     Label("Settings", systemImage: "slider.horizontal.3")
                 }
@@ -69,6 +76,8 @@ struct DashboardSurface: View {
         switch selection {
         case "settings":
             SettingsTab()
+        case "plugins":
+            PluginManagerTab()
         case let id? where id != "settings":
             if let pair = findContribution(by: id) {
                 ContributionView(manifest: pair.0, contribution: pair.1)

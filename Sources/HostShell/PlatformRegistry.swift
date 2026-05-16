@@ -102,10 +102,10 @@ public final class PlatformRegistry: ObservableObject {
 
     /// Returns every `dashboard.pane` contribution from every loaded manifest,
     /// grouped by `section` (preserving insertion order within each section).
-    public func dashboardSections() -> [(section: String, items: [(Manifest, DashboardPane)])] {
+    public func dashboardSections(disabledIds: Set<String> = []) -> [(section: String, items: [(Manifest, DashboardPane)])] {
         var byCategory: [String: [(Manifest, DashboardPane)]] = [:]
         var order: [String] = []
-        for m in manifests {
+        for m in manifests where !disabledIds.contains(m.id) {
             for contribution in m.contributes.dashboardPane ?? [] {
                 let key = contribution.section ?? "Plugins"
                 if byCategory[key] == nil {
