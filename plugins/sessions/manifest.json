@@ -1,0 +1,36 @@
+{
+  "manifest_version": 1,
+  "id": "sessions",
+  "name": "Sessions",
+  "version": "0.1.0",
+  "description": "Recent Claude session transcripts (last activity, size, project).",
+  "engines": { "claude-instances": "^2.0.0" },
+  "icon": "clock.arrow.circlepath",
+  "exec": {
+    "kind": "script",
+    "fetch": "./fetch.sh"
+  },
+  "refresh": {
+    "on_fs_change": ["~/.claude/projects"],
+    "poll_seconds": 300
+  },
+  "limits": {
+    "fetch_timeout_ms": 5000,
+    "max_payload_bytes": 524288
+  },
+  "contributes": {
+    "dashboard.pane": [
+      {
+        "id": "sessions-main",
+        "title": "Sessions",
+        "subtitle": "Recent transcripts under ~/.claude/projects/",
+        "section": "Dashboard",
+        "icon": "clock.arrow.circlepath",
+        "panes": [
+          { "kind": "summary", "source": "fetch:summary" },
+          { "kind": "table",   "source": "fetch:recent"  }
+        ]
+      }
+    ]
+  }
+}
