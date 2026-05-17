@@ -86,19 +86,49 @@ struct PluginManagerTab: View {
         .id(platform.samplerTick)  // re-render on sampler tick
     }
 
+    @State private var confirmingPanic = false
+
     private var footer: some View {
         VStack(alignment: .leading, spacing: design.space(DesignTokens.Space.s)) {
             Divider()
-            Button(role: .destructive) {
-                for m in platform.manifests {
-                    settings.setPluginEnabled(m.id, false)
+            HStack(spacing: design.space(DesignTokens.Space.m)) {
+                Button {
+                    for m in platform.manifests {
+                        settings.setPluginEnabled(m.id, true)
+                    }
+                } label: {
+                    Label("Enable all", systemImage: "checkmark.circle")
+                        .font(design.font(DesignTokens.FontSize.caption))
                 }
-            } label: {
-                Label("Panic disable all", systemImage: "power")
-                    .font(design.font(DesignTokens.FontSize.caption))
+                .buttonStyle(.plain)
+                .foregroundStyle(DesignTokens.SemanticColor.ok)
+
+                Spacer()
+
+                Button(role: .destructive) {
+                    confirmingPanic = true
+                } label: {
+                    Label("Panic disable", systemImage: "power")
+                        .font(design.font(DesignTokens.FontSize.caption))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(DesignTokens.SemanticColor.error)
+                .confirmationDialog(
+                    "Disable every plugin?",
+                    isPresented: $confirmingPanic,
+                    titleVisibility: .visible
+                ) {
+                    Button("Disable all (\(platform.manifests.count))", role: .destructive) {
+                        for m in platform.manifests {
+                            settings.setPluginEnabled(m.id, false)
+                        }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("All plugin tabs will disappear from the sidebar. " +
+                         "Use Enable all here to bring them back.")
+                }
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(DesignTokens.SemanticColor.error)
         }
         .padding(design.space(DesignTokens.Space.m))
     }

@@ -1,0 +1,35 @@
+{
+  "manifest_version": 1,
+  "id": "proposals",
+  "name": "Proposals",
+  "version": "0.1.0",
+  "description": "Improvement proposals filed via ~/.claude/scripts/propose.sh.",
+  "engines": { "claude-instances": "^2.0.0" },
+  "icon": "lightbulb",
+  "requires": ["jq"],
+  "exec": {
+    "kind": "script",
+    "fetch": "./fetch.sh"
+  },
+  "refresh": {
+    "poll_seconds": 300
+  },
+  "limits": {
+    "fetch_timeout_ms": 3000
+  },
+  "contributes": {
+    "dashboard.pane": [
+      {
+        "id": "proposals-main",
+        "title": "Proposals",
+        "subtitle": "Improvement backlog",
+        "section": "Tools",
+        "icon": "lightbulb",
+        "panes": [
+          { "kind": "summary", "source": "fetch:summary" },
+          { "kind": "table",   "source": "fetch:open"    }
+        ]
+      }
+    ]
+  }
+}

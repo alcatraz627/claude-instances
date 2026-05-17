@@ -87,6 +87,25 @@ struct DashboardSurface: View {
                     Label("Settings", systemImage: "slider.horizontal.3")
                 }
             }
+            // Recovery affordance: after panic-disable the sidebar is
+            // dominated by System; a friendly Re-enable button avoids the
+            // "lol everything is gone" moment without forcing the user
+            // into Plugin Manager to figure it out.
+            if !platform.manifests.isEmpty
+                && disabledPluginIds.count == platform.manifests.count {
+                Section("All plugins disabled") {
+                    Button {
+                        for m in platform.manifests {
+                            store.setPluginEnabled(m.id, true)
+                        }
+                    } label: {
+                        Label("Re-enable all", systemImage: "checkmark.circle")
+                            .font(design.font(DesignTokens.FontSize.caption))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(DesignTokens.SemanticColor.ok)
+                }
+            }
             if platform.bootstrapped == false {
                 Section("Status") {
                     Text("Loading plugins…")

@@ -1,0 +1,34 @@
+{
+  "manifest_version": 1,
+  "id": "memory",
+  "name": "Memory",
+  "version": "0.1.0",
+  "description": "Browse ~/.claude/memory/ — user profile, feedback, project, reference entries.",
+  "engines": { "claude-instances": "^2.0.0" },
+  "icon": "brain",
+  "exec": {
+    "kind": "script",
+    "fetch": "./fetch.sh"
+  },
+  "refresh": {
+    "poll_seconds": 600
+  },
+  "limits": {
+    "fetch_timeout_ms": 3000
+  },
+  "contributes": {
+    "dashboard.pane": [
+      {
+        "id": "memory-main",
+        "title": "Memory",
+        "subtitle": "Cross-session knowledge",
+        "section": "Tools",
+        "icon": "brain",
+        "panes": [
+          { "kind": "summary", "source": "fetch:summary" },
+          { "kind": "table",   "source": "fetch:list"    }
+        ]
+      }
+    ]
+  }
+}
