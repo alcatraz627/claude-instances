@@ -151,7 +151,22 @@ Same as C but no commitment to retire V1 until each individual piece is verified
 
 ---
 
-## Recommended decision
+## DECISION (locked 2026-05-17): **Option A — Dual-binary**
+
+Both V1 and V2 auto-launch on login via their separate launchd plists:
+
+| Binary | launchd label | Plist path |
+|---|---|---|
+| V1 | `dev.claude-instances.menubar` | `~/Library/LaunchAgents/dev.claude-instances.menubar.plist` |
+| V2 | `dev.claude-instances-v2.menubar` | `~/Library/LaunchAgents/dev.claude-instances-v2.menubar.plist` |
+
+V2's plist template is committed at `setup/dev.claude-instances-v2.menubar.plist` and installable via `./setup/install.sh` (idempotent; rewrites the binary path for whatever the worktree is, then `launchctl bootstrap`s it). To revert: `./setup/install.sh --uninstall`.
+
+Two menu-bar icons going forward; that's the deliberate UX.
+
+---
+
+## Recommended decision (history — kept for reference)
 
 **Stay on A (dual-binary) for now, with a soft target of C (port scanner) when there's a stretch of time for a 1-day project.**
 

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.claude-instances-v2.menubar</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/alcatraz627/.claude/widgets/claude-instances-v2/claude-instances-v2.app/Contents/MacOS/claude-instances-v2</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/claude-instances-v2.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/claude-instances-v2.log</string>
+</dict>
+</plist>
