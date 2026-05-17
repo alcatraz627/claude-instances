@@ -33,6 +33,14 @@ public protocol Plugin: AnyObject {
     /// `args` carry whatever the call site passed (row action args, hotkey args).
     /// Default returns "not implemented".
     func runCommand(_ id: String, args: [String: AnyCodable]) async throws -> CommandResult
+
+    /// Return rich rows for a `menubar.item` submenu whose `kind` is
+    /// "dynamic" and whose source is `native:<submenuId>`. Default: empty.
+    func menubarRows(submenuId: String) async throws -> [MenubarRow]
+
+    /// Return the current value for a `statusbar.badge` contribution whose
+    /// source is `native:<badgeId>`. Default: nil (hidden).
+    func badgeValue(badgeId: String) async throws -> BadgeValue?
 }
 
 public extension Plugin {
@@ -41,6 +49,8 @@ public extension Plugin {
     func runCommand(_ id: String, args: [String: AnyCodable]) async throws -> CommandResult {
         CommandResult(exitCode: 1, output: "command not implemented: \(id)")
     }
+    func menubarRows(submenuId: String) async throws -> [MenubarRow] { [] }
+    func badgeValue(badgeId: String) async throws -> BadgeValue? { nil }
 }
 
 /// Outcome of a command invocation. `exitCode == 0` is success; any other

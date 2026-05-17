@@ -110,6 +110,35 @@ case "${source_id}" in
     }'
     ;;
 
+  badge)
+    s3=0
+    if [[ -f "${EVENTS}" ]]; then
+      s3=$(jq -rs 'map(select(.severity == "S3")) | length' "${EVENTS}" 2>/dev/null || echo 0)
+    fi
+    tone="dim"
+    [[ "${s3}" -gt 0 ]] && tone="warn"
+    [[ "${s3}" -gt 5 ]] && tone="error"
+    jq -n --arg text "S3:${s3}" --arg tone "${tone}" '{text: $text, tone: $tone}'
+    ;;
+
+  menubar)
+    if [[ ! -f "${EVENTS}" ]]; then
+      jq -n '{rows:[{label:"No events recorded", tone:"dim"}]}'
+      exit 0
+    fi
+    rows=$(jq -rs '
+      sort_by(.ts) | reverse | .[0:5]
+      | map({
+          label:    (.slug // "(no slug)"),
+          subtitle: ((.ts // "" | sub("T"; " ") | sub("Z"; "")) + " · " + (.severity // "?")),
+          icon:     "exclamationmark.bubble",
+          tone:     (if .severity == "S3" then "error"
+                     elif .severity == "S2" then "warn"
+                     else "dim" end)
+        })' "${EVENTS}")
+    jq -n --argjson rows "${rows}" '{rows: $rows}'
+    ;;
+
   *)
     jq -n --arg s "${source_id}" '{
       kind: "summary",

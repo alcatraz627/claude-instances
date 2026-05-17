@@ -47,6 +47,25 @@
         "schema": "settings.schema.json",
         "view": "auto"
       }
+    ],
+    "menubar.item": [
+      {
+        "id": "atone-menu",
+        "title": "Atone",
+        "submenu": [
+          { "kind": "static", "label": "Atone — mistake tracking" },
+          { "kind": "separator" },
+          { "kind": "dynamic", "source": "menubar" }
+        ]
+      }
+    ],
+    "statusbar.badge": [
+      {
+        "id": "atone-s3",
+        "source": "fetch:badge",
+        "fallback": { "source": "fetch:badge", "poll_seconds": 60 },
+        "background_active": true
+      }
     ]
   }
 }

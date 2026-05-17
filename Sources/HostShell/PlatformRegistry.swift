@@ -109,6 +109,71 @@ public final class PlatformRegistry: ObservableObject {
         return l
     }
 
+    /// Settings + design bridge so surface code doesn't have to pass
+    /// HostSettingsStore around separately. AppDelegate sets this once
+    /// at bootstrap.
+    public var settingsBridge: (() -> HostSettings)?
+    public var designBridge: (() -> ResolvedDesign)?
+
+    public func isEnabled(_ pluginId: String) -> Bool {
+        settingsBridge?().isPluginEnabled(pluginId) ?? true
+    }
+
+    public func currentDesign() -> ResolvedDesign {
+        designBridge?() ?? ResolvedDesign(settings: HostSettings())
+    }
+
+    /// Generic command dispatch. Native plugins handle via runCommand;
+    /// script plugins via actions.sh invocation. Used by menubar items,
+    /// hotkeys, and row actions.
+    public func runCommand(pluginId: String,
+                            commandId: String,
+                            args: [String: AnyCodable]?) async {
+        guard let manifest = manifests.first(where: { $0.id == pluginId }) else {
+            hostLogger.warn("runCommand", "unknown plugin id: \(pluginId)")
+            return
+        }
+        let argsDict = args ?? [:]
+        let logger = self.logger(for: pluginId)
+        logger.info("command", "invoke \(commandId)")
+
+        // Native path
+        if let plugin = plugin(for: manifest) {
+            do {
+                let result = try await plugin.runCommand(commandId, args: argsDict)
+                logger.info("command", "ok exit=\(result.exitCode)")
+            } catch {
+                logger.error("command", "threw: \(error.localizedDescription)")
+            }
+            return
+        }
+
+        // Script path
+        if let action = manifest.exec.action, let dir = manifest.pluginDir {
+            let exec = URL(fileURLWithPath: action, relativeTo: dir).standardizedFileURL
+            guard FileManager.default.isExecutableFile(atPath: exec.path) else {
+                logger.warn("command", "actions.sh not executable: \(exec.path)")
+                return
+            }
+            do {
+                let result = try await ScriptExec.run(
+                    executable: exec, args: [commandId], cwd: dir,
+                    env: [
+                        "CLAUDE_PLUGIN_ID": pluginId,
+                        "CLAUDE_HOST_VERSION": HostKernel.version,
+                    ],
+                    timeoutMs: 5000)
+                logger.info("command",
+                    "exit=\(result.exitCode) elapsed=\(result.elapsedMs)ms")
+            } catch {
+                logger.error("command", "spawn failed: \(error.localizedDescription)")
+            }
+        } else {
+            logger.warn("command",
+                "no native plugin and no exec.action — command \(commandId) ignored")
+        }
+    }
+
     private func startTimers() {
         // 5-second tick — bumps a counter so resource-stats UI re-renders,
         // and fires host.tick.5s on the bus for any subscribers.

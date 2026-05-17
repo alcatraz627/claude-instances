@@ -103,6 +103,33 @@ case "${source_id}" in
     }'
     ;;
 
+  menubar)
+    tmpf=$(mktemp); trap "rm -f ${tmpf}" EXIT
+    if [[ -d "${PROJECTS}" ]]; then
+        list_sessions 2>/dev/null | head -5 > "${tmpf}" || true
+    fi
+    rows="[]"
+    if [[ -s "${tmpf}" ]]; then
+        i=1
+        rows=$(while IFS=$'\t' read -r mtime size path; do
+            [[ -z "${mtime}" ]] && continue
+            session=$(basename "${path}" .jsonl)
+            project_raw=$(basename "$(dirname "${path}")")
+            project=$(echo "${project_raw}" | sed 's|--|/|g' | sed 's|^-|/|')
+            when=$(date -r "${mtime}" "+%H:%M")
+            size_kb=$((size / 1024))
+            jq -nc \
+                --arg label "${project##*/}" \
+                --arg sub "${session:0:8} · ${when} · ${size_kb} KB" \
+                --arg key "${i}" \
+                '{label: $label, subtitle: $sub, icon: "doc.text",
+                  tone: "dim", key_equivalent: $key}'
+            i=$((i + 1))
+        done < "${tmpf}" | jq -s '.')
+    fi
+    jq -n --argjson rows "${rows}" '{rows: $rows}'
+    ;;
+
   *)
     jq -n --arg s "${source_id}" '{
       kind: "summary",

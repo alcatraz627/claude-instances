@@ -65,6 +65,23 @@ case "${source_id}" in
     }'
     ;;
 
+  menubar)
+    if [[ ! -f "${PROPOSALS}" ]]; then
+      jq -n '{rows:[{label:"No proposals.jsonl yet", tone:"dim"}]}'
+      exit 0
+    fi
+    rows=$(jq -rs '
+      map(select(.status == "open" or (.status == null)))
+      | sort_by(.ts) | reverse | .[0:5]
+      | map({
+          label: (.title // "(untitled)"),
+          subtitle: ((.category // "uncategorized") + " · " + (.effort // "?")),
+          icon: "lightbulb",
+          tone: "warn"
+        })' "${PROPOSALS}")
+    jq -n --argjson rows "${rows}" '{rows: $rows}'
+    ;;
+
   *)
     jq -n --arg s "${source_id}" '{
       kind: "summary",

@@ -31,6 +31,15 @@
           { "kind": "table",   "source": "fetch:recent"  }
         ]
       }
+    ],
+    "menubar.item": [
+      {
+        "id": "sessions-menu",
+        "title": "Sessions",
+        "submenu": [
+          { "kind": "dynamic", "source": "menubar" }
+        ]
+      }
     ]
   }
 }

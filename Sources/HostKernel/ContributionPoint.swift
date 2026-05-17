@@ -20,10 +20,10 @@ public enum ContributionPoint: String, CaseIterable, Sendable {
     public var isShipped: Bool {
         switch self {
         case .commands, .dashboardPane, .settingsSection,
-             .eventSubscriptions, .hotkey:
+             .eventSubscriptions, .hotkey,
+             .menubarItem, .statusbarBadge:    // Phase 12
             return true
-        case .menubarItem, .statusbarBadge, .quickAction,
-             .floater, .notificationHandler:
+        case .quickAction, .floater, .notificationHandler:
             return false
         }
     }
