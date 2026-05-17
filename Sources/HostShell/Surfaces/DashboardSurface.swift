@@ -200,15 +200,19 @@ private struct PaneHolder: View {
         }
         .task(id: spec.source) {
             await refresh()
-        }
-        // FSEvents watchers live on PlatformRegistry now; they publish
-        // "<plugin-id>.fs-change" to the bus on every change. SwiftUI's
-        // .onReceive owns the subscription lifetime, so PaneHolder going
-        // away cleanly tears down the receiver — no more dangling
-        // self-capture from a CoreServices callback (the Phase-6 crash).
-        .onReceive(NotificationCenter.default.publisher(
-            for: Notification.Name("ci.bus.\(manifest.id).fs-change"))) { _ in
-            Task { @MainActor in await refresh() }
+            // Safety-net polling loop. Honors manifest.refresh.poll_seconds
+            // (or contribution-level pane refresh override). Replaces the
+            // FSEvents-driven auto-refresh which crashed on macOS Tahoe
+            // (KNOWN-ISSUE FSEVENTS-001). Loop exits when the task is
+            // cancelled — which SwiftUI does automatically on view dispose.
+            let pollSec = manifest.refresh?.pollSeconds ?? 30
+            if pollSec > 0 {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: UInt64(pollSec) * 1_000_000_000)
+                    if Task.isCancelled { break }
+                    await refresh()
+                }
+            }
         }
     }
 

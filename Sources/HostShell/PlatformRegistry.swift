@@ -75,25 +75,28 @@ public final class PlatformRegistry: ObservableObject {
         bootstrapped = true
     }
 
-    /// Create one FSEventsWatcher per plugin that declared
-    /// `refresh.on_fs_change`. Each watcher's callback publishes to the bus
-    /// — it captures only Sendable values (plugin id + bus reference), so
-    /// there's no dangling-SwiftUI-view crash regardless of which views are
-    /// alive when the callback fires.
+    /// **DISABLED 2026-05-17** — FSEvents has caused 3 SIGSEGVs in
+    /// `objc_msgSend_uncached` from inside the FSEventStreamCallback,
+    /// even after correct retain/release lifetime + PlatformRegistry-owned
+    /// watchers. The crash signature is identical across attempts; the
+    /// macOS Tahoe runtime appears to have an issue with our wrapping
+    /// pattern that I can't reproduce reliably enough to fix.
+    ///
+    /// Replaced with safety-net polling on PaneHolder side. Plugins that
+    /// declared `refresh.on_fs_change` now refresh on their `poll_seconds`
+    /// cadence instead of on-change. Tradeoff: a few seconds of staleness
+    /// in exchange for stability. Per architecture §17 PERF-001 (TBD,
+    /// stability wins over "lightweight" when the latter crashes).
+    ///
+    /// Re-enable when we have a proper Swift wrapper (e.g.
+    /// FilesProvider-style or DispatchSource-based) that survives the
+    /// crash conditions.
     private func installWatchers() {
-        for m in manifests {
-            guard let paths = m.refresh?.onFsChange, !paths.isEmpty else { continue }
-            let pluginId = m.id
-            let bus = self.bus
-            let logger = self.logger(for: pluginId)
-            let topic = "\(pluginId).fs-change"
-            let w = FSEventsWatcher(paths: paths) { _ in
-                logger.info("fs-events", "change -> publishing \(topic)")
-                bus.publish(topic)
-            }
-            w.start()
-            watchers[pluginId] = w
-            hostLogger.info("watchers", "installed FSEvents for \(pluginId) (\(paths.count) path(s))")
+        let total = manifests.compactMap { $0.refresh?.onFsChange }.filter { !$0.isEmpty }.count
+        if total > 0 {
+            hostLogger.warn("watchers",
+                "FSEvents disabled (KNOWN-ISSUE FSEVENTS-001); \(total) plugin(s) " +
+                "would have used FSEvents — falling back to poll_seconds cadence")
         }
     }
 
