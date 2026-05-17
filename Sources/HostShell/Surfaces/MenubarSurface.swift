@@ -70,10 +70,11 @@ final class MenubarSurface: NSObject, NSMenuDelegate {
     private func addMenubarItem(manifest: Manifest, item: MenubarItem) {
         let title = item.title ?? manifest.name
         let topItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        let submenu = NSMenu()
+        // HotkeyAwareMenu lets ⌘<digit>/etc on rich (view-based) rows
+        // actually fire — AppKit's default NSMenu ignores keyEquivalent
+        // on items with a custom view.
+        let submenu = HotkeyAwareMenu()
         submenu.delegate = self
-        // Stash the contribution coordinates on the submenu so the delegate
-        // callback can refresh dynamic items.
         submenu.identifier = NSUserInterfaceItemIdentifier("ci.menu.\(manifest.id).\(item.id)")
         topItem.submenu = submenu
         menu.addItem(topItem)
