@@ -179,6 +179,44 @@ HTTP server (`lib/detail-server.py`, port `5400 + pid % 500`) and opens the page
 | **Theme toggle** | Light/dark; persists across reloads via localStorage |
 | **State persistence** | Search, chip toggles, scroll position survive reload via sessionStorage |
 
+### Session Hub — read your sessions from your phone
+
+The menu bar's **View Transcript** and the **Sessions (phone)** action both open
+the *session hub*: one long-lived server that serves a live index of every
+session and each session's transcript, reachable from any device on your
+Tailscale network.
+
+```bash
+bash lib/hub.sh start      # prints the URL to open (localhost + tailnet)
+bash lib/hub.sh status     # is it running? where is it bound?
+bash lib/hub.sh stop
+```
+
+**Why a hub instead of the old per-pid servers:** discovery. Your phone can't
+guess that a session lives on port `5400 + pid % 500`. The hub is one address,
+the index page is the entry point, and every session is one tap away.
+
+**Routes** (`lib/hub-server.py`):
+
+| Route | Serves |
+|---|---|
+| `GET /` | the session index (`lib/hub-index.html`) — live cards + rate bars + recent list |
+| `GET /s/<session-id>` | that session's transcript SPA (`lib/transcript-app.html`) |
+| `GET /s/<session-id>/data` | the normalized transcript JSON (`lib/transcript.py`); `?since=` / `?agent=` supported |
+| `GET /api/sessions` | the index's live feed (reshaped `scan.sh` output) |
+
+**Tailnet scoping:** the hub binds to this Mac's Tailscale address
+(`100.64.0.0/10`) when Tailscale is up, so it is reachable from your tailnet but
+not from a public or café LAN. With Tailscale down it falls back to `127.0.0.1`
+(localhost only). **Sessions (phone)** copies the tailnet URL to your clipboard
+when available, so it is one paste away on your phone.
+
+**The viewer** (the SPA) shows full multi-day transcripts with no truncation
+(paginated), whole-transcript search, an activity ribbon, sub-agent drill-in,
+and 8-second live append — all mobile-first. Tool calls render richly: `Edit` /
+`Write` as colored diffs, `Bash` as a command block, with copy-as-markdown (which
+works over plain http too) and a jump-to-latest button. Dark default, light toggle.
+
 ### Native Dashboard (SwiftUI)
 
 A floating `NSPanel` with `NavigationSplitView` sidebar and `.ultraThinMaterial`:
@@ -319,8 +357,13 @@ Three persisted preferences, each wired to its render path:
 │   └── .build-info                  # Auto-generated build metadata
 ├── lib/
 │   ├── scan.sh                      # Python scanner → JSON output (~950 lines)
-│   ├── detail.sh                    # Transcript HTML generator (~1600 lines)
-│   └── detail-server.py             # Localhost http.server backing live updates
+│   ├── transcript.py                # Parses a session .jsonl into a clean JSON model
+│   ├── transcript-app.html          # Data-first transcript SPA (served by the hub)
+│   ├── hub-server.py                # Session hub — index + per-session transcript over the tailnet
+│   ├── hub-index.html               # Hub landing page — live index of all sessions
+│   ├── hub.sh                       # Hub lifecycle: start/stop/status/url
+│   ├── detail.sh                    # Legacy per-pid transcript generator (fallback)
+│   └── detail-server.py             # Legacy per-pid localhost server (fallback)
 ├── tests/
 │   ├── run-tests.sh                 # Smoke-test suite (65 tests)
 │   └── fixtures/sample-session.jsonl

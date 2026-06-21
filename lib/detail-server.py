@@ -19,6 +19,8 @@
 
 import sys
 import os
+import glob
+import json
 import http.server
 import socketserver
 import urllib.parse
@@ -26,6 +28,14 @@ import subprocess
 import threading
 import time
 import signal
+
+# The data model lives next to this server. Import it in-process so /data can
+# parse the transcript directly (~64ms for a 10MB file) without shelling out.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import transcript
+except Exception:
+    transcript = None
 
 if len(sys.argv) < 4:
     sys.stderr.write("Usage: detail-server.py <port> <script_path> <pid> [<sid>]\n")
@@ -37,6 +47,36 @@ PID     = sys.argv[3]
 SID     = sys.argv[4] if len(sys.argv) > 4 else ""
 SERVE_DIR = "/tmp"
 PID_FILE  = f"/tmp/claude-widget-{PID}.server"
+PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
+
+
+def resolve_jsonl():
+    """Locate this session's transcript .jsonl on disk.
+
+    Mirrors detail.sh's resolution: prefer the session id, fall back to the
+    most-recently-touched transcript in the project the Claude PID is running
+    in. Returns an absolute path or None.
+    """
+    if SID:
+        hits = glob.glob(os.path.join(PROJECTS_DIR, "**", f"{SID}.jsonl"),
+                         recursive=True)
+        if hits:
+            return hits[0]
+    if PID and PID.isdigit():
+        try:
+            out = subprocess.run(["lsof", "-p", PID, "-d", "cwd", "-Fn"],
+                                 capture_output=True, text=True, timeout=5).stdout
+            cwd = next((l[1:] for l in out.splitlines() if l.startswith("n/")), "")
+        except (OSError, subprocess.SubprocessError):
+            cwd = ""
+        if cwd:
+            slug = cwd.replace("/", "-").lstrip("-")
+            proj = os.path.join(PROJECTS_DIR, f"-{slug}")
+            files = sorted(glob.glob(os.path.join(proj, "*.jsonl")),
+                           key=os.path.getmtime, reverse=True)
+            if files:
+                return files[0]
+    return None
 
 # ── Lifetime caps ──────────────────────────────────────────────────────────
 # DEADLINE  — 2-hour hard stop regardless of activity (was the only cap).
@@ -99,6 +139,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         last_request_at = time.time()
         parsed = urllib.parse.urlparse(self.path)
 
+        if parsed.path == "/data":
+            # Normalized transcript model as JSON. Query params:
+            #   since=<seq>   only blocks after this seq (incremental live tail)
+            #   agent=<id>    a sub-agent's own transcript instead of the parent
+            self._serve_data(urllib.parse.parse_qs(parsed.query))
+            return
+
         if parsed.path == "/regen":
             # Synchronous regen so JS can fetch the HTML right after the
             # /regen call returns 200 and know it's reading fresh content.
@@ -122,6 +169,47 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         # Static file serving for /claude-widget-<pid>.html and friends.
         super().do_GET()
+
+    def _serve_data(self, qs):
+        """Parse the transcript and return the normalized model as JSON."""
+        def fail(code, msg):
+            body = json.dumps({"error": msg}).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(body)
+
+        if transcript is None:
+            return fail(500, "transcript module unavailable")
+        jsonl = resolve_jsonl()
+        if not jsonl or not os.path.exists(jsonl):
+            return fail(404, "transcript not found")
+
+        agent = (qs.get("agent") or [None])[0]
+        target = jsonl
+        if agent:
+            target = transcript._resolve_agent_file(jsonl, agent)
+            if not target:
+                return fail(404, f"no sub-agent transcript for id {agent}")
+        try:
+            result = transcript.parse_transcript(target)
+        except Exception as e:
+            return fail(500, f"parse failed: {e}")
+
+        since = (qs.get("since") or [None])[0]
+        if since is not None:
+            try:
+                s = int(since)
+                result["records"] = [r for r in result["records"] if r["seq"] > s]
+                result["meta"]["since"] = s
+            except ValueError:
+                pass
+
+        body = json.dumps(result, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(body)
 
 
 def claude_alive():

@@ -1541,6 +1541,16 @@ os.replace(tmp_path, output_path)
 print(f"Detail page written to: {output_path}")
 PYEOF
 
+# Serve the data-first viewer (transcript-app.html) in place of the baked HTML
+# above. It is static — it pulls the transcript live from the server's /data
+# endpoint — so a one-time copy is enough and --regen ticks just refresh it
+# harmlessly. The legacy generator still runs above as a fallback; remove it
+# once the new viewer is confirmed. Set CLAUDE_WIDGET_LEGACY=1 to opt back out.
+APP_TEMPLATE="$(dirname "$SCRIPT_PATH")/transcript-app.html"
+if [[ "${CLAUDE_WIDGET_LEGACY:-0}" != "1" && -f "$APP_TEMPLATE" ]]; then
+    cp -f "$APP_TEMPLATE" "$OUTPUT"
+fi
+
 # In regen-only mode, we're done — server / daemon own this branch.
 if [[ "$REGEN_ONLY" == "1" ]]; then
     exit 0

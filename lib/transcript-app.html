@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude transcript</title>
+<!--
+  Live transcript viewer (data-first rewrite of the claude-instances detail page).
+
+  This page holds NO transcript content of its own. On load it fetches /data —
+  the normalized model emitted by transcript.py — and renders it client-side.
+  That separation is what lets it show a full multi-day transcript that the old
+  bake-everything-to-HTML page had to truncate:
+
+    - the full model lives in memory; the list is PAGINATED so only one page of
+      blocks is in the DOM at a time (snappy, no virtualization quirks);
+    - the activity ribbon up top maps the whole conversation (one dot per block,
+      coloured by who spoke) — click a dot to jump to its page;
+    - search runs over the whole in-memory model, not the rendered page, so it
+      finds matches on pages that were never opened, then jumps to them;
+    - live updates fetch /data?since=<lastSeq> and append, instead of
+      re-shipping the entire transcript every tick.
+-->
+<style>
+:root {
+    --bg: #0d1117; --surface: #161b22; --surface2: #1c2333;
+    --text: #e6edf3; --dim: #7d8590; --accent: #58a6ff;
+    --accent2: #3fb950; --warn: #d29922; --err: #f85149;
+    --border: #30363d; --user-bg: #1a2332; --asst-bg: #161b22;
+    --mark: #d29922; --mark-cur: #f85149; --sel: #2dd4bf; --sel-soft: rgba(45,212,191,0.16);
+}
+:root.light {
+    --bg: #f6f8fa; --surface: #fff; --surface2: #f0f3f6;
+    --text: #1f2328; --dim: #656d76; --accent: #0969da;
+    --accent2: #1a7f37; --warn: #9a6700; --err: #cf222e;
+    --border: #d0d7de; --user-bg: #ddf4ff; --asst-bg: #fff;
+    --mark: #ffd33d; --mark-cur: #ff8c42; --sel: #0d9488; --sel-soft: rgba(13,148,136,0.14);
+}
+* { box-sizing: border-box; }
+body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+}
+code, pre, .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+/* Header + controls — shared tokens: 28px control height, 7px radius */
+.topbar {
+    position: sticky; top: 0; z-index: 30; background: var(--surface);
+    border-bottom: 1px solid var(--border); padding: 9px 14px;
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+}
+.title { font-weight: 700; font-size: 15px; display: inline-flex; align-items: baseline; gap: 7px; }
+.title .sid { color: var(--dim); font-weight: 400; font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
+.spacer { flex: 1; }
+.pill {
+    height: 28px; display: inline-flex; align-items: center; gap: 5px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 7px; padding: 0 10px; font-size: 12px; color: var(--dim);
+}
+.pill b { color: var(--text); font-weight: 600; }
+button {
+    height: 28px; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 7px; padding: 0 10px;
+    font-size: 12px; cursor: pointer; transition: border-color .1s ease, background .1s ease;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.4; cursor: default; }
+select {
+    height: 28px; background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 7px; padding: 0 6px; font-size: 12px; cursor: pointer;
+}
+.searchwrap { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 240px; max-width: 470px; }
+.searchbox { position: relative; flex: 1; display: flex; }
+.searchbox::before {
+    content: '⌕'; position: absolute; left: 9px; top: 50%; transform: translateY(-50%);
+    color: var(--dim); font-size: 17px; line-height: 1; pointer-events: none;
+}
+#q {
+    width: 100%; height: 28px; background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); border-radius: 7px; padding: 0 10px 0 26px; font-size: 13px;
+}
+#q:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--sel-soft); }
+.matchnav { font-size: 12px; color: var(--dim); min-width: 64px; text-align: center; }
+/* role filter chips — segmented, each carrying its ribbon colour swatch */
+.chips { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.chip {
+    height: 28px; display: inline-flex; align-items: center; gap: 6px;
+    border: none; border-left: 1px solid var(--border); border-radius: 0;
+    background: var(--surface2); padding: 0 11px; color: var(--text);
+}
+.chip:first-child { border-left: none; }
+.chip::before { content: ''; width: 8px; height: 8px; border-radius: 2px; background: var(--chip-c, var(--dim)); }
+.chip[data-role="user"]      { --chip-c: var(--accent); }
+.chip[data-role="assistant"] { --chip-c: var(--accent2); }
+.chip[data-role="tools"]     { --chip-c: var(--warn); }
+.chip[data-role="event"]     { --chip-c: var(--dim); }
+.chip[aria-pressed="false"] { color: var(--dim); opacity: 0.5; }
+.chip[aria-pressed="false"]::before { filter: grayscale(1); }
+
+/* Activity ribbon (restored): one dot per block, click to jump. */
+.section-title {
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--dim); margin-bottom: 6px;
+}
+.timeline { padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.timeline > summary {
+    font-family: ui-monospace, Menlo, monospace; color: var(--dim);
+    font-size: 12px; cursor: pointer; margin-bottom: 6px; list-style: none;
+}
+.timeline > summary::-webkit-details-marker { display: none; }
+.timeline .dots {
+    display: grid; grid-template-columns: repeat(20, 1fr); gap: 4px; padding: 4px 2px;
+    max-height: 260px; overflow-y: auto;
+}
+button.dot {
+    width: 100%; height: 16px; border-radius: 3px; border: 1px solid transparent;
+    padding: 0; margin: 0; cursor: pointer;
+    transition: transform 0.08s ease, box-shadow 0.08s ease, filter 0.08s ease;
+}
+button.dot:hover {
+    transform: scale(1.18); filter: brightness(1.2);
+    box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px currentColor; z-index: 5;
+}
+/* current page = a teal highlight that PRESERVES each dot's role colour: the
+   role colour stays the fill; teal rings the dots so the run reads as a band. */
+button.dot.onpage { box-shadow: 0 0 0 4px var(--sel); border-radius: 2px; z-index: 1; }
+button.dot.match  { outline: 2px solid var(--mark); outline-offset: 1px; }
+.dot { display: inline-block; vertical-align: middle; }
+.legend .dot { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.dot-u { background: var(--accent);  color: var(--accent); }
+.dot-a { background: var(--accent2); color: var(--accent2); }
+.dot-t { background: var(--warn);    color: var(--warn); }
+.dot-h { background: #a78bfa;        color: #a78bfa; }
+.dot-m { background: var(--err);     color: var(--err); }
+.dot-e { background: var(--dim);     color: var(--dim); }
+.legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px; font-size: 11px; color: var(--dim); font-family: ui-monospace, monospace; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Pagination bar */
+.pager {
+    position: sticky; top: 47px; z-index: 20; display: flex; gap: 10px; align-items: center;
+    justify-content: center; padding: 8px 16px; background: var(--surface);
+    border-bottom: 1px solid var(--border); font-size: 12px; color: var(--dim); flex-wrap: wrap;
+}
+.pager.bottom { position: static; border-bottom: none; border-top: 1px solid var(--border); }
+.pgroup { display: inline-flex; align-items: stretch; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface2); }
+.pgroup button {
+    height: 30px; border: none; border-left: 1px solid var(--border); border-radius: 0;
+    background: transparent; padding: 0 12px; font-size: 13px; color: var(--text);
+}
+.pgroup button:first-child { border-left: none; }
+.pgroup button:hover:not(:disabled) { background: var(--surface); color: var(--accent); }
+.pgroup .range {
+    display: inline-flex; align-items: center; padding: 0 14px; color: var(--text);
+    font-weight: 600; white-space: nowrap; border-left: 1px solid var(--border);
+}
+.psize { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); }
+.pageinput {
+    width: 38px; height: 22px; text-align: center; font-size: 12px; font-weight: 600;
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 5px; margin: 0 2px; -moz-appearance: textfield;
+}
+.pageinput:focus { outline: none; border-color: var(--accent); }
+
+/* Message list */
+#list { padding: 14px 16px 30vh; max-width: 1100px; margin: 0 auto; }
+.msg {
+    border: 1px solid var(--border); border-radius: 8px; margin: 8px 0;
+    padding: 10px 12px; background: var(--surface);
+}
+.msg.user { background: var(--user-bg); }
+.msg.assistant { background: var(--asst-bg); }
+.msg.tools, .msg.event { background: transparent; }
+.msg.event { border-style: dashed; padding: 6px 12px; color: var(--dim); font-size: 13px; }
+.msg.event.event-err { border-color: var(--err); color: var(--err); }
+.msg.sidechain { border-left: 3px solid var(--accent); }
+.msg.flash { animation: flash 1.2s ease; }
+@keyframes flash { 0%,100% { box-shadow: none; } 30% { box-shadow: 0 0 0 3px var(--accent); } }
+.row-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12px; color: var(--dim); }
+.role-name { font-weight: 600; color: var(--text); }
+.badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface2); }
+.badge.sub { color: var(--accent); border-color: var(--accent); }
+.badge.tok { color: var(--accent2); }
+.seq { margin-left: auto; opacity: 0.6; }
+.content { overflow-wrap: anywhere; }
+.content p { margin: 0.4em 0; }
+.content pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; overflow-x: auto; font-size: 12.5px; }
+.content :not(pre) > code { background: var(--surface2); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+mark { background: var(--mark); color: #000; border-radius: 2px; }
+mark.cur { background: var(--mark-cur); outline: 2px solid var(--mark-cur); }
+
+/* Sub-agent dispatch card */
+.subcard { border: 1px solid var(--accent); border-radius: 8px; margin: 8px 0; background: var(--surface); }
+.subcard .sc-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; }
+.subcard .sc-type { color: var(--accent); font-weight: 600; }
+.subcard .sc-desc { color: var(--text); }
+.subcard .sc-panel { border-top: 1px solid var(--border); padding: 8px 12px; display: none; }
+.subcard.open .sc-panel { display: block; }
+.subcard .sc-panel .msg { margin-left: 12px; }
+
+/* Tool list */
+.tool-list { list-style: none; margin: 0; padding: 0; }
+.tool-item { padding: 3px 0; border-bottom: 1px dashed var(--border); }
+.tool-item:last-child { border-bottom: none; }
+.tool-name { color: var(--accent); font-weight: 600; font-family: ui-monospace, monospace; font-size: 12.5px; }
+.tool-prev { color: var(--dim); font-size: 12px; }
+details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(--dim); font-size: 12px; }
+
+/* Rich tool bodies: Edit/Write → colored diff; Bash → highlighted command */
+.tool-body { margin-top: 5px; }
+.diff { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin: 2px 0; }
+.diff .file { padding: 4px 8px; background: var(--surface2); color: var(--dim); font: 11.5px ui-monospace, Menlo, monospace; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.diff .lines { padding: 5px 0; overflow-x: auto; font: 12px/1.5 ui-monospace, Menlo, monospace; max-height: 360px; overflow-y: auto; }
+.diff .del, .diff .add { display: block; white-space: pre; padding: 0 8px; }
+.diff .del { background: rgba(248,81,73,0.13); color: var(--err); }
+.diff .add { background: rgba(63,185,80,0.15); color: var(--accent2); }
+.diff .del::before { content: '−\00a0'; opacity: 0.55; }
+.diff .add::before { content: '+\00a0'; opacity: 0.55; }
+.diff .more { padding: 3px 8px; color: var(--dim); font-style: italic; }
+.bash-desc { color: var(--dim); font-size: 12px; margin: 2px 0 4px; }
+.bash-cmd { background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--accent2);
+    border-radius: 6px; padding: 7px 9px; font: 12.5px ui-monospace, Menlo, monospace;
+    overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.copybtn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 13px;
+    height: 22px; width: 24px; padding: 0; border-radius: 5px; line-height: 1; }
+.copybtn:hover { color: var(--accent); background: var(--surface2); }
+.jumplatest { position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 40;
+    display: none; align-items: center; gap: 6px; height: 40px; padding: 0 17px; border-radius: 22px;
+    background: var(--accent); color: #fff; border: none; font-size: 13px; font-weight: 600; cursor: pointer;
+    box-shadow: 0 4px 16px -4px rgba(0,0,0,0.5); }
+.jumplatest.show { display: inline-flex; }
+.sysrem { margin-top: 6px; }
+.loading, .empty { color: var(--dim); text-align: center; padding: 40px; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent2); display: inline-block; }
+.live-dot.stale { background: var(--dim); }
+
+/* Narrow screens (phone) — the page's primary mobile target. The activity
+   ribbon is collapsed by default here (see JS) so the conversation, not a wall
+   of dots, is what greets you; the topbar packs tight and search gets its own
+   full-width row; the pager stops floating and grows to finger-sized hits. */
+@media (max-width: 760px) {
+    .topbar { padding: 8px 10px; gap: 6px; }
+    .title { font-size: 14px; }
+    .pill { height: 26px; font-size: 11px; padding: 0 8px; }
+    .spacer { display: none; }
+    .searchwrap { flex-basis: 100%; max-width: none; order: 2; }
+    #themeToggle { margin-left: auto; }
+    .timeline { padding: 8px 12px; }
+    .timeline .dots { grid-template-columns: repeat(12, 1fr); max-height: 144px; gap: 3px; }
+    button.dot { height: 14px; }
+    .pager { position: static; top: auto; padding: 8px 10px; }
+    .pgroup button { height: 38px; padding: 0 13px; }
+    .pageinput { height: 26px; width: 42px; }
+    #list { padding: 12px 12px 30vh; }
+    .msg { padding: 10px 11px; }
+    .subcard .sc-panel .msg { margin-left: 6px; }
+}
+</style>
+</head>
+<body>
+<div class="topbar">
+    <span class="title" id="title">Transcript <span class="sid" id="sid"></span></span>
+    <span class="pill" id="pill-model">—</span>
+    <span class="pill" id="pill-tokens">—</span>
+    <span class="pill" id="pill-count">—</span>
+    <span class="spacer"></span>
+    <div class="searchwrap">
+        <span class="searchbox"><input id="q" type="search" placeholder="Search whole transcript…" autocomplete="off"></span>
+        <span class="matchnav" id="matchnav"></span>
+        <button id="prevMatch" title="Previous match (Shift+Enter)">↑</button>
+        <button id="nextMatch" title="Next match (Enter)">↓</button>
+    </div>
+    <div class="chips" id="chips">
+        <button class="chip" data-role="user" aria-pressed="true">You</button>
+        <button class="chip" data-role="assistant" aria-pressed="true">Claude</button>
+        <button class="chip" data-role="tools" aria-pressed="true">Tools</button>
+        <button class="chip" data-role="event" aria-pressed="true">Events</button>
+    </div>
+    <span class="pill"><span class="live-dot" id="liveDot"></span> <span id="liveLabel">live</span></span>
+    <button id="themeToggle" title="Toggle theme">◐</button>
+</div>
+
+<details class="timeline" id="timeline" open>
+    <summary id="timelineSummary">━━ activity ━━</summary>
+    <div class="dots" id="dots"></div>
+    <div class="legend">
+        <span><span class="dot dot-u"></span>You</span>
+        <span><span class="dot dot-a"></span>Claude</span>
+        <span><span class="dot dot-t"></span>Tools</span>
+        <span><span class="dot dot-h"></span>Hooks</span>
+        <span><span class="dot dot-m"></span>Mode</span>
+    </div>
+</details>
+
+<div class="pager" id="pagerTop"></div>
+<div id="list"><div class="loading">Loading transcript…</div></div>
+<div class="pager bottom" id="pagerBottom"></div>
+<button class="jumplatest" id="jumpLatest" title="Jump to newest activity">↓ latest</button>
+
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+<script>
+"use strict";
+
+// API base + per-session storage key work in two deployments:
+//   hub:    page served at /s/<id>/  → data at /s/<id>/data
+//   legacy: page served at /claude-widget-<pid>.html → data at /data
+const HUB = location.pathname.match(/\/s\/([\w-]+)\/?$/);
+const SESSION_KEY = HUB ? HUB[1] : (location.pathname.match(/claude-widget-(\w+)/) || [, 'x'])[1];
+const API = HUB ? `/s/${HUB[1]}/` : '/';
+const SS = {
+    theme: 'ct-theme', q: 'ct-q-' + SESSION_KEY, roles: 'ct-roles-' + SESSION_KEY,
+    page: 'ct-page-' + SESSION_KEY, size: 'ct-size-' + SESSION_KEY,
+};
+
+// ── Theme (dark default, persisted) ─────────────────────────────────────────
+function applyTheme(t) {
+    document.documentElement.classList.toggle('light', t === 'light');
+    const link = document.getElementById('hljs-theme');
+    link.href = t === 'light'
+        ? 'https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css'
+        : 'https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css';
+}
+(function () {
+    const link = document.createElement('link');
+    link.id = 'hljs-theme'; link.rel = 'stylesheet'; document.head.appendChild(link);
+    applyTheme(localStorage.getItem(SS.theme) || 'dark');
+})();
+document.getElementById('themeToggle').addEventListener('click', () => {
+    const next = document.documentElement.classList.contains('light') ? 'dark' : 'light';
+    localStorage.setItem(SS.theme, next); applyTheme(next);
+});
+
+// ── Model + view state ──────────────────────────────────────────────────────
+const state = {
+    meta: {}, records: [], bySeq: new Map(),
+    enabledRoles: new Set(JSON.parse(localStorage.getItem(SS.roles) || '["user","assistant","tools","event"]')),
+    page: 0,
+    pageSize: parseInt(localStorage.getItem(SS.size) || '50', 10),
+    pageWasLast: true,            // stick to the newest page as live data arrives
+    term: '',
+    matches: [],                  // [{seq, count}]
+    occurrences: [],              // [{seq, n}] flattened, in document order
+    matchCursor: -1,
+    lastSeq: 0,
+};
+
+const ROLE_KIND = { user: 'u', assistant: 'a', tools: 't', event: 'e' };
+
+function fmtTokens(n) {
+    if (n == null) return '';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(n);
+}
+function esc(s) { return (s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+function searchText(r) {
+    if (r._search != null) return r._search;
+    let t = '';
+    if (r.role === 'user' || r.role === 'assistant' || r.role === 'event') t = r.text || '';
+    else if (r.role === 'tools') t = (r.tools || []).map(x => {
+        const sub = x.subagent ? (x.subagent.agentType + ' ' + (x.subagent.description || '')) : '';
+        return x.name + ' ' + (x.preview || '') + ' ' + sub;
+    }).join(' ');
+    r._search = t.toLowerCase();
+    return r._search;
+}
+function visibleRecords() { return state.records.filter(r => state.enabledRoles.has(r.role)); }
+function pageCount() { return Math.max(1, Math.ceil(visibleRecords().length / state.pageSize)); }
+function dotKind(r) {
+    if (r.role === 'event') return r.event_type === 'mode-change' ? 'm' : (r.event_type === 'hook-summary' ? 'h' : 'e');
+    return ROLE_KIND[r.role] || 'e';
+}
+function snippet(s) { s = (s || '').replace(/\s+/g, ' ').trim(); return s.length > 72 ? s.slice(0, 71) + '…' : s; }
+function dotTitle(r) {
+    // Hover info for a ribbon dot: who/what the target block is, plus its time.
+    let label;
+    if (r.role === 'user') label = 'You — ' + snippet(r.text);
+    else if (r.role === 'assistant') label = 'Claude — ' + snippet(r.text);
+    else if (r.role === 'tools') {
+        const sub = r.tools.find(t => t.subagent);
+        label = sub
+            ? '↳ ' + (sub.subagent.agentType || 'sub-agent') + ': ' + snippet(sub.subagent.description)
+            : 'tools — ' + r.tools.map(t => t.name).slice(0, 5).join(', ');
+    } else label = snippet(r.text) || 'event';
+    return `#${r.seq}  ·  ${label}` + (r.ts ? `\n${r.ts_full || r.ts}` : '');
+}
+
+// ── Render one record to a row element ──────────────────────────────────────
+function renderRow(r) {
+    const el = document.createElement('div');
+    el.id = 'seq-' + r.seq; el.dataset.seq = r.seq; el.dataset.role = r.role;
+    if (r.role === 'tools' && r.tools.some(t => t.subagent)) {
+        // Sub-agent dispatches render as cards; any ordinary tools in the same
+        // group still need their <ul> wrapper (don't emit bare <li>s).
+        el.className = 'subcard-wrap';
+        const subs = r.tools.filter(t => t.subagent).map(renderTool).join('');
+        const normals = r.tools.filter(t => !t.subagent);
+        const normalHtml = normals.length ? `<ul class="tool-list">${normals.map(renderTool).join('')}</ul>` : '';
+        el.innerHTML = subs + normalHtml;
+    } else {
+        el.className = 'msg ' + r.role + (r.sidechain ? ' sidechain' : '');
+        el.innerHTML = rowHead(r) + rowBody(r);
+        const md = el.querySelector('.content[data-md]');
+        if (md && window.marked) {
+            md.innerHTML = marked.parse(md.getAttribute('data-raw') || '');
+            md.querySelectorAll('pre code').forEach(b => { try { hljs.highlightElement(b); } catch (e) {} });
+        }
+    }
+    if (state.term) highlightEl(el, state.term);
+    wireCard(el);
+    return el;
+}
+function rowHead(r) {
+    const icon = { user: '👤', assistant: '✨', tools: '🔧', event: 'ⓘ' }[r.role] || '•';
+    const name = { user: 'You', assistant: 'Claude' + (r.model ? ' · ' + shortModel(r.model) : ''), tools: 'tools', event: '' }[r.role] || '';
+    let badges = '';
+    if (r.sidechain) badges += '<span class="badge sub">↳ subagent</span>';
+    if (r.role === 'assistant' && r.tokens && r.tokens.out) badges += `<span class="badge tok">↑${fmtTokens(r.tokens.out)}</span>`;
+    const ts = r.ts ? `<span title="${esc(r.ts_full || '')}">${esc(r.ts)}</span>` : '';
+    const copy = (r.role === 'user' || r.role === 'assistant') ? `<button class="copybtn" title="Copy as markdown" aria-label="Copy as markdown">⧉</button>` : '';
+    return `<div class="row-head"><span>${icon}</span><span class="role-name">${esc(name)}</span>${badges}<span class="seq">#${r.seq}</span>${ts}${copy}</div>`;
+}
+function rowBody(r) {
+    if (r.role === 'user' || r.role === 'assistant') {
+        let text = r.text || '', sysrem = '';
+        if (r.system_reminders > 0) {
+            const stripped = text.split(/<system-reminder>[\s\S]*?<\/system-reminder>/).join('').trim();
+            sysrem = `<details class="sysrem"><summary>ⓘ ${r.system_reminders} system-reminder block(s)</summary><pre>${esc(text)}</pre></details>`;
+            text = stripped || '_(only system-reminder content)_';
+        }
+        return `<div class="content" data-md data-raw="${esc(text)}"></div>${sysrem}`;
+    }
+    if (r.role === 'event') {
+        let html = esc(r.text || '');
+        if (r.errors && r.errors.length)
+            html += `<details class="tool-json"><summary>view ${r.errors.length} error(s)</summary><pre>${esc(r.errors.map(e => typeof e === 'string' ? e : JSON.stringify(e)).join('\n'))}</pre></details>`;
+        return `<div class="content">${html}</div>`;
+    }
+    if (r.role === 'tools') return `<div class="content"><ul class="tool-list">${r.tools.map(renderTool).join('')}</ul></div>`;
+    return '';
+}
+function renderTool(t) {
+    if (t.subagent) {
+        const sa = t.subagent, can = sa.exists && sa.agentId;
+        return `<div class="subcard" data-agent="${esc(sa.agentId || '')}" data-can="${can ? '1' : '0'}">
+            <div class="sc-head"><span>↳</span><span class="sc-type">${esc(sa.agentType || 'sub-agent')}</span>
+            <span class="sc-desc">${esc(sa.description || t.preview || '')}</span>
+            ${can ? '<span class="badge sub" style="margin-left:auto">open transcript ▾</span>' : '<span class="seq">(no transcript)</span>'}</div>
+            <div class="sc-panel"></div></div>`;
+    }
+    const head = `<span class="tool-name">${esc(t.name)}</span> <span class="tool-prev">${esc(t.preview || '')}</span>`;
+    return `<li class="tool-item">${head}<div class="tool-body">${toolBody(t)}</div></li>`;
+}
+// A diff-style block: removed lines then added lines, each capped so a huge
+// Write/Edit can't blow up the DOM.
+function diffLines(str, cls, cap) {
+    const lines = (str == null ? '' : String(str)).split('\n');
+    const shown = lines.slice(0, cap).map(l => `<span class="${cls}">${esc(l) || ' '}</span>`).join('');
+    const more = lines.length > cap ? `<div class="more">… ${lines.length - cap} more line(s)</div>` : '';
+    return shown + more;
+}
+function diffBlock(file, oldStr, newStr) {
+    return `<div class="diff"><div class="file">${esc(file || '')}</div><div class="lines">${diffLines(oldStr, 'del', 200)}${diffLines(newStr, 'add', 200)}</div></div>`;
+}
+function rawInput(t) {
+    const paths = (t.paths || []).map(p => `<span class="mono" style="color:var(--accent2)">${esc(p)}</span>`).join(' ');
+    return `${paths ? `<div>${paths}</div>` : ''}<details class="tool-json"><summary>input</summary><pre>${esc(JSON.stringify(t.input, null, 2))}</pre></details>`;
+}
+function toolBody(t) {
+    const inp = t.input || {};
+    if (t.name === 'Edit') return diffBlock(inp.file_path, inp.old_string, inp.new_string);
+    if (t.name === 'MultiEdit') return (inp.edits || []).map(e => diffBlock(inp.file_path, e.old_string, e.new_string)).join('') || rawInput(t);
+    if (t.name === 'Write') return `<div class="diff"><div class="file">＋ ${esc(inp.file_path || '')}</div><div class="lines">${diffLines(inp.content, 'add', 80)}</div></div>`;
+    if (t.name === 'Bash') return `${inp.description ? `<div class="bash-desc">${esc(inp.description)}</div>` : ''}<div class="bash-cmd">${esc(inp.command || '')}</div>`;
+    return rawInput(t);
+}
+function shortModel(m) {
+    m = (m || '').toLowerCase();
+    if (m.includes('opus')) return 'Opus'; if (m.includes('sonnet')) return 'Sonnet';
+    if (m.includes('haiku')) return 'Haiku'; if (m.includes('fable')) return 'Fable';
+    return m;
+}
+// Clipboard that works over plain http too (the phone hits the hub on an
+// insecure origin, where navigator.clipboard is unavailable — fall back to the
+// old hidden-textarea trick there).
+function copyText(s) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(s);
+    return new Promise(res => {
+        const ta = document.createElement('textarea');
+        ta.value = s; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.focus(); ta.select();
+        try { document.execCommand('copy'); } catch (e) {}
+        ta.remove(); res();
+    });
+}
+function wireCard(el) {
+    el.querySelectorAll('.copybtn').forEach(btn => btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const md = el.querySelector('.content[data-md]');
+        const raw = md ? md.getAttribute('data-raw') : (el.innerText || '');
+        copyText(raw).then(() => { btn.textContent = '✓'; setTimeout(() => { btn.textContent = '⧉'; }, 1000); });
+    }));
+    el.querySelectorAll('.subcard[data-can="1"]').forEach(card => {
+        card.querySelector('.sc-head').addEventListener('click', async () => {
+            card.classList.toggle('open');
+            const panel = card.querySelector('.sc-panel');
+            if (card.classList.contains('open') && !panel.dataset.loaded) {
+                panel.dataset.loaded = '1';
+                panel.innerHTML = '<div class="loading">Loading sub-agent…</div>';
+                try {
+                    const data = await (await fetch(API + 'data?agent=' + encodeURIComponent(card.dataset.agent))).json();
+                    panel.innerHTML = '';
+                    data.records.forEach(sr => { sr._search = null; panel.appendChild(renderRow(sr)); });
+                } catch (e) { panel.innerHTML = '<div class="empty">Failed to load sub-agent transcript.</div>'; }
+            }
+        });
+    });
+}
+function highlightEl(el, term) {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+        acceptNode: n => n.parentElement.closest('script,style,mark') ? NodeFilter.FILTER_REJECT
+            : n.nodeValue.toLowerCase().includes(term) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP,
+    });
+    const targets = []; while (walker.nextNode()) targets.push(walker.currentNode);
+    for (const node of targets) {
+        const frag = document.createDocumentFragment(), text = node.nodeValue, low = text.toLowerCase();
+        let i = 0, pos;
+        while ((pos = low.indexOf(term, i)) !== -1) {
+            if (pos > i) frag.appendChild(document.createTextNode(text.slice(i, pos)));
+            const mk = document.createElement('mark'); mk.textContent = text.slice(pos, pos + term.length); frag.appendChild(mk);
+            i = pos + term.length;
+        }
+        if (i < text.length) frag.appendChild(document.createTextNode(text.slice(i)));
+        node.parentNode.replaceChild(frag, node);
+    }
+}
+
+// ── Pagination ──────────────────────────────────────────────────────────────
+const listEl = document.getElementById('list');
+function clampPage() {
+    const pc = pageCount();
+    if (state.page >= pc) state.page = pc - 1;
+    if (state.page < 0) state.page = 0;
+}
+function renderPage() {
+    clampPage();
+    const recs = visibleRecords();
+    listEl.innerHTML = '';
+    if (!recs.length) { listEl.innerHTML = '<div class="empty">No blocks match the current filter.</div>'; renderPager(); renderTimeline(); return; }
+    const start = state.page * state.pageSize, end = Math.min(start + state.pageSize, recs.length);
+    const frag = document.createDocumentFragment();
+    for (let i = start; i < end; i++) frag.appendChild(renderRow(recs[i]));
+    listEl.appendChild(frag);
+    localStorage.setItem(SS.page, String(state.page));
+    renderPager(); renderTimeline(); updateJump();
+}
+function gotoPage(p, scrollTop = true) {
+    state.page = p; clampPage();
+    state.pageWasLast = state.page === pageCount() - 1;
+    renderPage();
+    if (scrollTop) window.scrollTo(0, 0);
+}
+function renderPager() {
+    const recs = visibleRecords(), pc = pageCount();
+    const start = recs.length ? state.page * state.pageSize + 1 : 0;
+    const end = Math.min((state.page + 1) * state.pageSize, recs.length);
+    const html = `
+        <div class="pgroup">
+            <button data-pg="first" title="First page (Home)" ${state.page === 0 ? 'disabled' : ''}>⏮</button>
+            <button data-pg="prev" title="Previous page (← or [)" ${state.page === 0 ? 'disabled' : ''}>◀</button>
+            <span class="range">page <input class="pageinput" type="text" name="page" inputmode="numeric" value="${state.page + 1}" aria-label="Go to page" title="Type a page number, Enter to jump"> / ${pc} &nbsp;·&nbsp; blocks ${start}–${end} of ${recs.length}</span>
+            <button data-pg="next" title="Next page (→ or ])" ${state.page >= pc - 1 ? 'disabled' : ''}>▶</button>
+            <button data-pg="last" title="Last page (End)" ${state.page >= pc - 1 ? 'disabled' : ''}>⏭</button>
+        </div>
+        <label class="psize">per page
+            <select class="sizeSel" name="pagesize" aria-label="Blocks per page">${[25, 50, 100, 200].map(s => `<option value="${s}" ${s === state.pageSize ? 'selected' : ''}>${s}</option>`).join('')}</select>
+        </label>`;
+    for (const id of ['pagerTop', 'pagerBottom']) document.getElementById(id).innerHTML = html;
+    document.querySelectorAll('.pager [data-pg]').forEach(b => b.addEventListener('click', () => {
+        const pc2 = pageCount();
+        gotoPage({ first: 0, prev: state.page - 1, next: state.page + 1, last: pc2 - 1 }[b.dataset.pg]);
+    }));
+    document.querySelectorAll('.sizeSel').forEach(sel => sel.addEventListener('change', e => {
+        state.pageSize = parseInt(e.target.value, 10);
+        localStorage.setItem(SS.size, String(state.pageSize));
+        gotoPage(state.page);
+    }));
+    document.querySelectorAll('.pageinput').forEach(inp => {
+        const jump = () => {
+            const n = parseInt(inp.value, 10);
+            if (!isNaN(n)) gotoPage(Math.min(Math.max(n, 1), pageCount()) - 1);
+            else inp.value = state.page + 1;
+        };
+        inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); jump(); inp.blur(); } });
+        inp.addEventListener('blur', jump);
+    });
+}
+
+// ── Activity ribbon ─────────────────────────────────────────────────────────
+function renderTimeline() {
+    const recs = visibleRecords();
+    document.getElementById('timelineSummary').textContent = `━━ activity (${recs.length} blocks) — click a dot to jump ━━`;
+    const matchSeqs = new Set(state.matches.map(m => m.seq));
+    const start = state.page * state.pageSize, end = start + state.pageSize;
+    const dots = document.getElementById('dots');
+    dots.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    recs.forEach((r, i) => {
+        const b = document.createElement('button');
+        const kind = dotKind(r);
+        b.className = 'dot dot-' + kind + (i >= start && i < end ? ' onpage' : '') + (matchSeqs.has(r.seq) ? ' match' : '');
+        b.title = dotTitle(r);
+        b.addEventListener('click', () => goToSeq(r.seq));
+        frag.appendChild(b);
+    });
+    dots.appendChild(frag);
+    // Keep the current-page (teal) band in view as you page around.
+    const firstOnPage = dots.querySelector('.dot.onpage');
+    if (firstOnPage) dots.scrollTop = Math.max(0, firstOnPage.offsetTop - dots.clientHeight / 2);
+}
+
+// ── Jump to a specific block (flip to its page, scroll, flash) ───────────────
+function goToSeq(seq, flash = true) {
+    const recs = visibleRecords();
+    const idx = recs.findIndex(r => r.seq === seq);
+    if (idx < 0) return;
+    const targetPage = Math.floor(idx / state.pageSize);
+    if (targetPage !== state.page) gotoPage(targetPage, false);
+    const row = document.getElementById('seq-' + seq);
+    if (!row) return;
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (flash) { row.classList.remove('flash'); void row.offsetWidth; row.classList.add('flash'); setTimeout(() => row.classList.remove('flash'), 1200); }
+    return row;
+}
+
+// ── Search across the whole model ───────────────────────────────────────────
+function computeMatches(term) {
+    const matches = [], occurrences = [];
+    if (term) for (const r of visibleRecords()) {
+        const txt = searchText(r); let c = 0, i = 0, pos;
+        while ((pos = txt.indexOf(term, i)) !== -1) { c++; i = pos + term.length; }
+        if (c > 0) { matches.push({ seq: r.seq, count: c }); for (let n = 0; n < c; n++) occurrences.push({ seq: r.seq, n }); }
+    }
+    return { matches, occurrences };
+}
+function runSearch(term) {
+    state.term = term;
+    ({ matches: state.matches, occurrences: state.occurrences } = computeMatches(term));
+    state.matchCursor = state.occurrences.length ? 0 : -1;
+    renderPage();
+    updateMatchNav();
+    if (state.matchCursor >= 0) gotoOccurrence(0);
+}
+// Recompute the match set after live data arrives WITHOUT moving the user's
+// view — keeps the "N / M" counter and ribbon marks honest mid-search.
+function refreshMatches() {
+    if (!state.term) return;
+    ({ matches: state.matches, occurrences: state.occurrences } = computeMatches(state.term));
+    if (state.matchCursor >= state.occurrences.length) state.matchCursor = state.occurrences.length - 1;
+    updateMatchNav();
+    renderTimeline();
+}
+function updateMatchNav() {
+    const nav = document.getElementById('matchnav');
+    nav.textContent = !state.term ? '' : (state.occurrences.length ? `${state.matchCursor + 1} / ${state.occurrences.length}` : 'no matches');
+}
+function gotoOccurrence(idx) {
+    if (!state.occurrences.length) return;
+    state.matchCursor = (idx + state.occurrences.length) % state.occurrences.length;
+    const occ = state.occurrences[state.matchCursor];
+    const row = goToSeq(occ.seq, false);
+    if (row) {
+        document.querySelectorAll('mark.cur').forEach(m => m.classList.remove('cur'));
+        // Raw-text occurrence index can exceed the rendered <mark> count (markdown
+        // changes the text), so fall back to the first mark rather than nothing.
+        const marks = row.querySelectorAll('mark');
+        const mk = marks[occ.n] || marks[0];
+        if (mk) mk.classList.add('cur');
+    }
+    updateMatchNav();
+}
+
+// ── Header stats ────────────────────────────────────────────────────────────
+function paintHeader() {
+    const m = state.meta;
+    document.getElementById('title').firstChild.textContent = (m.ai_title || 'Transcript') + ' ';
+    document.getElementById('sid').textContent = (m.session_id || '').slice(0, 8);
+    document.getElementById('pill-model').innerHTML = '<b>' + shortModel(m.model) + '</b>';
+    if (m.tokens) document.getElementById('pill-tokens').innerHTML =
+        `<b>${fmtTokens(m.tokens.output)}</b> out · ${fmtTokens(m.tokens.input)} in · ${fmtTokens(m.tokens.cache_read)} cache`;
+    document.getElementById('pill-count').innerHTML = `<b>${state.records.length}</b> blocks · ${m.subagent_count || 0} sub-agents`;
+}
+
+// ── Ingest a /data payload ──────────────────────────────────────────────────
+function ingest(data) {
+    state.meta = data.meta;
+    let added = 0, changed = false;
+    for (const r of data.records) {
+        r._search = null;
+        const prev = state.bySeq.get(r.seq);
+        if (prev) {
+            // A trailing record (e.g. a tools group still accumulating calls
+            // while Claude runs) mutates between polls — replace it in place
+            // rather than skip it, or the growing card would never update.
+            const idx = state.records.indexOf(prev);
+            if (idx >= 0) state.records[idx] = r;
+            state.bySeq.set(r.seq, r);
+            changed = true;
+        } else {
+            state.bySeq.set(r.seq, r); state.records.push(r); added++;
+        }
+        state.lastSeq = Math.max(state.lastSeq, r.seq);
+    }
+    if (added) state.records.sort((a, b) => a.seq - b.seq);
+    paintHeader();
+    return { added, changed };
+}
+
+// ── Controls ────────────────────────────────────────────────────────────────
+const q = document.getElementById('q');
+q.value = sessionStorage.getItem(SS.q) || '';
+let searchTimer = null;
+q.addEventListener('input', () => {
+    sessionStorage.setItem(SS.q, q.value);
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => runSearch(q.value.trim().toLowerCase()), 180);
+});
+q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); gotoOccurrence(state.matchCursor + (e.shiftKey ? -1 : 1)); } });
+document.getElementById('nextMatch').addEventListener('click', () => gotoOccurrence(state.matchCursor + 1));
+document.getElementById('prevMatch').addEventListener('click', () => gotoOccurrence(state.matchCursor - 1));
+document.getElementById('chips').querySelectorAll('.chip').forEach(chip => {
+    chip.setAttribute('aria-pressed', state.enabledRoles.has(chip.dataset.role) ? 'true' : 'false');
+    chip.addEventListener('click', () => {
+        const role = chip.dataset.role;
+        state.enabledRoles.has(role) ? state.enabledRoles.delete(role) : state.enabledRoles.add(role);
+        chip.setAttribute('aria-pressed', state.enabledRoles.has(role) ? 'true' : 'false');
+        localStorage.setItem(SS.roles, JSON.stringify([...state.enabledRoles]));
+        if (state.term) runSearch(state.term); else renderPage();
+    });
+});
+
+// ── Keyboard paging (ignored while typing in a field) ───────────────────────
+document.addEventListener('keydown', e => {
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'select' || tag === 'textarea' || e.metaKey || e.ctrlKey) return;
+    const pc = pageCount();
+    if (e.key === 'ArrowLeft' || e.key === '[') { e.preventDefault(); gotoPage(state.page - 1); }
+    else if (e.key === 'ArrowRight' || e.key === ']') { e.preventDefault(); gotoPage(state.page + 1); }
+    else if (e.key === 'Home') { e.preventDefault(); gotoPage(0); }
+    else if (e.key === 'End') { e.preventDefault(); gotoPage(pc - 1); }
+});
+
+// ── Live polling: append only what's new ────────────────────────────────────
+const liveDot = document.getElementById('liveDot'), liveLabel = document.getElementById('liveLabel');
+async function poll(initial) {
+    try {
+        // Re-pull from one before the last seq so a still-growing trailing record
+        // (an unflushed tools group) is re-sent and refreshed, not missed.
+        const since = Math.max(0, state.lastSeq - 1);
+        const res = await fetch(initial ? API + 'data' : API + 'data?since=' + since, { cache: 'no-store' });
+        if (!res.ok) throw new Error(res.status);
+        const data = await res.json();
+        const { added, changed } = ingest(data);
+        if (initial) {
+            state.page = pageCount() - 1;                 // open on newest activity
+            const saved = parseInt(localStorage.getItem(SS.page) || '-1', 10);
+            if (saved >= 0 && saved < pageCount()) state.page = saved;
+            state.pageWasLast = state.page === pageCount() - 1;
+            renderPage();
+            if (q.value) runSearch(q.value.trim().toLowerCase());
+        } else if (added || changed) {
+            if (state.term) {
+                refreshMatches();                         // keep counts honest, don't move the view
+                if (state.pageWasLast) renderPage();      // but do refresh a growing card if it's on screen
+            } else if (state.pageWasLast) {
+                gotoPage(pageCount() - 1, false);
+            } else {
+                renderPager(); renderTimeline();
+            }
+        }
+        liveDot.classList.remove('stale'); liveLabel.textContent = 'live';
+    } catch (e) { liveDot.classList.add('stale'); liveLabel.textContent = 'offline'; }
+}
+
+// ── Jump-to-latest floating button ──────────────────────────────────────────
+// Appears whenever you're not already at the newest block (older page, or
+// scrolled up). One tap returns to the live edge — handy on long transcripts
+// and while live-tailing.
+function atNewest() {
+    if (state.page < pageCount() - 1) return false;
+    return (window.innerHeight + window.scrollY) >= document.documentElement.scrollHeight - 90;
+}
+function updateJump() {
+    document.getElementById('jumpLatest').classList.toggle('show', !atNewest());
+}
+document.getElementById('jumpLatest').addEventListener('click', () => {
+    if (state.page !== pageCount() - 1) gotoPage(pageCount() - 1, false);
+    requestAnimationFrame(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }));
+});
+window.addEventListener('scroll', updateJump, { passive: true });
+
+// On a phone the ribbon would bury the conversation under a wall of dots, so
+// start it collapsed there; its summary still reports the block count, and a
+// tap expands it. Desktop keeps it open.
+if (window.matchMedia('(max-width: 760px)').matches) document.getElementById('timeline').removeAttribute('open');
+
+poll(true);
+setInterval(() => poll(false), 8000);
+</script>
+</body>
+</html>

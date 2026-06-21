@@ -11,7 +11,8 @@ _*.claude.md
 # Debug logs
 *.log
 
-  # Chrome DevTools test screenshots                                          
-                                                                              
-  .tmp-test/                                                                  
+# Chrome DevTools test screenshots + scratch
+.tmp-test/
 
+# Agent session state + scratch research
+.claude/

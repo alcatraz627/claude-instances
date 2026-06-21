@@ -11,7 +11,18 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SOURCE="$SCRIPT_DIR/claude-instances-bar.swift"
+# The bar is split across logical files; swiftc compiles them as one module.
+SOURCES=(
+    "$SCRIPT_DIR/main.swift"
+    "$SCRIPT_DIR/Models.swift"
+    "$SCRIPT_DIR/Palette.swift"
+    "$SCRIPT_DIR/DesignKit.swift"
+    "$SCRIPT_DIR/Actions.swift"
+    "$SCRIPT_DIR/LiveRowView.swift"
+    "$SCRIPT_DIR/Bar.swift"
+    "$SCRIPT_DIR/Dashboard.swift"
+)
+src_hash() { cat "${SOURCES[@]}" 2>/dev/null | md5 | awk '{print substr($NF,1,8)}'; }
 OUTPUT="$SCRIPT_DIR/claude-instances-bar"
 LABEL="dev.claude-instances.menubar"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -45,7 +56,7 @@ case "$MODE" in
       BUILT_COMMIT=$(grep "^commit=" "$BUILD_INFO_FILE" | cut -d= -f2)
       BUILT_HASH=$(grep "^src_hash=" "$BUILD_INFO_FILE" | cut -d= -f2)
       BUILT_AT=$(grep "^built_at=" "$BUILD_INFO_FILE" | cut -d= -f2)
-      CURRENT_HASH=$(md5 "$SOURCE" | awk '{print substr($NF,1,8)}')
+      CURRENT_HASH=$(src_hash)
       echo "  Built:   $BUILT_AT  (commit: $BUILT_COMMIT)"
       if [[ "$CURRENT_HASH" == "$BUILT_HASH" ]]; then
         echo "  Source:  binary matches source (hash: $CURRENT_HASH)"
@@ -91,12 +102,12 @@ done
 
 echo "Generating build-info..."
 COMMIT=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
-SRC_HASH=$(md5 "$SOURCE" | awk '{print substr($NF,1,8)}')
+SRC_HASH=$(src_hash)
 BUILD_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 echo "Compiling..."
 rm -f "$OUTPUT"
-/usr/bin/swiftc -O "$SOURCE" -o "$OUTPUT" 2>&1
+/usr/bin/swiftc -O "${SOURCES[@]}" -o "$OUTPUT" 2>&1
 echo "  Built: $OUTPUT"
 
 # Record build metadata
