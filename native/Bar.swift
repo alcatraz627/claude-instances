@@ -267,20 +267,19 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
         ]))
 
-        // Rate-limit zones: flag the icon when a window crosses warn (orange) or
-        // danger (red). 5h and 7d surface independently.
+        // Rate-limit zone flag — the worst window's usage % in the zone colour.
+        // No ⚠ glyph: the colour (orange warn / red danger) is the signal, the
+        // dropdown carries the per-window detail. Keeps the menu bar clean.
         if let limits = cachedData?.limits {
-            func flag(_ pct: Int) {
-                let color: NSColor? = pct >= dangerThreshold ? .systemRed
-                                    : pct >= warningThreshold ? .systemOrange : nil
-                guard let c = color else { return }
-                title.append(NSAttributedString(string: " ⚠\(pct)%", attributes: [
+            let worst = max(Int(limits.fiveH?.pct ?? 0), Int(limits.week?.pct ?? 0))
+            let zoneCol: NSColor? = worst >= dangerThreshold ? .systemRed
+                                  : worst >= warningThreshold ? .systemOrange : nil
+            if let c = zoneCol {
+                title.append(NSAttributedString(string: " \(worst)%", attributes: [
                     .foregroundColor: c,
-                    .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .bold),
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold),
                 ]))
             }
-            flag(Int(limits.fiveH?.pct ?? 0))
-            flag(Int(limits.week?.pct ?? 0))
         }
 
         btn.attributedTitle = title
