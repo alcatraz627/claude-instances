@@ -1,5 +1,10 @@
 # Dropdown redesign — implementation plan
 
+> **Status: shipped 2026-06-21.** All phases (P1 modularize through P6 collapse)
+> plus the ctx bar, usage zones, submenu copies, drawn rate bars, and cleaned
+> menu-bar icon are merged to `main`. Light mode validated; dark mode pending a
+> final check. See `dropdown-build-plan.md` for the per-phase validation record.
+
 What we are changing in the menu-bar dropdown, how it should behave, and the order
 to build it. The current state is in [`dropdown-spec.md`](./dropdown-spec.md); the
 color/layout principles behind the choices here live in

@@ -109,10 +109,10 @@ Each becomes one `… (N) ▸` row; submenu holds the columned rows.
 
 ## Final — full validation sweep (run once all P1–P6 done)
 
-- [ ] **Behaviour** — PENDING USER LIGHT+DARK SCREENSHOT PASS: walk every section —
-      identity + severity pop, ambient calm, alignment consistent, paths one line,
-      drawn rate bars (not split), Events/History collapsed, Refresh one click,
-      ctx bar. Nothing from the original menu lost.
+- [x] **Behaviour (light)** — validated by user 2026-06-21 (panel screenshot):
+      drawn aligned rate bars, ctx bars, one-line paths, collapsed Events/History,
+      clean zone-coloured menu-bar icon, identity + severity popping. Nothing lost.
+- [ ] **Behaviour (dark)** — pending user check (~1h).
 - [~] **Runtime** — clean build + launch, 0 ERROR confirmed. Exercising every
       submenu/action + the light/dark screenshots needs a human (can't drive a live
       NSMenu programmatically).

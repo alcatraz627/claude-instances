@@ -467,7 +467,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let subMenu = NSMenu()
         let note = NSMenuItem()
         note.attributedTitle = NSAttributedString(
-            string: "  The menu-bar icon flags usage that crosses a zone.\n  Hitting a cap is fine — these are signals, not limits.",
+            string: "  The menu-bar icon flags usage that crosses a zone.\n  Hitting a cap is fine; these are signals, not limits.",
             attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor])
         note.isEnabled = false
         subMenu.addItem(note)
