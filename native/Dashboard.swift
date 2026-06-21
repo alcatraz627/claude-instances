@@ -2420,13 +2420,35 @@ struct RefreshAndWarningsSection: View {
     @State private var cadence: Double
     @State private var paused: Bool
     @State private var threshold: Double
+    @State private var danger: Double
 
     init() {
         let raw = UserDefaults.standard.double(forKey: "scanRefreshInterval")
         _cadence   = State(initialValue: raw > 0 ? raw : 5.0)
         _paused    = State(initialValue: UserDefaults.standard.bool(forKey: "scanRefreshInterval.paused"))
         let thr    = UserDefaults.standard.integer(forKey: "rateLimitWarningThreshold")
-        _threshold = State(initialValue: thr > 0 ? Double(thr) : 80.0)
+        _threshold = State(initialValue: thr > 0 ? Double(thr) : 70.0)
+        let dng    = UserDefaults.standard.integer(forKey: "rateLimitDangerThreshold")
+        _danger    = State(initialValue: dng > 0 ? Double(dng) : 90.0)
+    }
+
+    // One usage-zone slider row, persisting its own UserDefaults key (the same
+    // keys the menu's two-slider control writes — edits flow both ways).
+    @ViewBuilder
+    private func zoneRow(_ label: String, value: Binding<Double>, key: String) -> some View {
+        HStack(spacing: 12) {
+            Text(label).font(.system(size: 13, weight: .medium)).frame(width: 130, alignment: .leading)
+            Slider(value: value, in: 50...100, step: 5) { Text(label) }
+            minimumValueLabel: { Text("50%").font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary) }
+            maximumValueLabel: { Text("100%").font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary) }
+            .frame(maxWidth: 320)
+            .onChange(of: value.wrappedValue) { _, newVal in
+                UserDefaults.standard.set(Int(newVal), forKey: key)
+                NotificationCenter.default.post(name: .menuBehaviorDidChange, object: nil)
+            }
+            Text("\(Int(value.wrappedValue))%").font(.system(size: 13, design: .monospaced)).frame(width: 40, alignment: .leading)
+            Spacer()
+        }
     }
 
     private let presets: [Double] = [1, 2, 5, 10, 30, 60]
@@ -2467,28 +2489,11 @@ struct RefreshAndWarningsSection: View {
                     Spacer()
                 }
                 Divider().opacity(0.4)
-                HStack(spacing: 12) {
-                    Text("Warn at")
-                        .font(.system(size: 13, weight: .medium))
-                        .frame(width: 130, alignment: .leading)
-                    Slider(value: $threshold, in: 50...100, step: 5) {
-                        Text("Rate-limit warn threshold")
-                    } minimumValueLabel: {
-                        Text("50%").font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
-                    } maximumValueLabel: {
-                        Text("100%").font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary)
-                    }
-                    .frame(maxWidth: 320)
-                    .onChange(of: threshold) { _, newVal in
-                        UserDefaults.standard.set(Int(newVal), forKey: "rateLimitWarningThreshold")
-                        NotificationCenter.default.post(name: .menuBehaviorDidChange, object: nil)
-                    }
-                    Text("\(Int(threshold))%")
-                        .font(.system(size: 13, design: .monospaced))
-                        .frame(width: 40, alignment: .leading)
-                    Spacer()
-                }
-                Text("The menu-bar count badge turns orange at this threshold and red at 90% of the 5h or 7d rate-limit window.")
+                Text("Usage zones")
+                    .font(.system(size: 13, weight: .semibold))
+                zoneRow("Warn at", value: $threshold, key: "rateLimitWarningThreshold")
+                zoneRow("Danger at", value: $danger, key: "rateLimitDangerThreshold")
+                Text("When 5h or 7d usage crosses a zone, the menu-bar % turns orange (warn) or red (danger). Hitting a cap is fine; these are signals, not limits.")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .padding(.leading, 130 + 12)
