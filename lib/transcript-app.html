@@ -191,6 +191,20 @@ button.dot.match  { outline: 2px solid var(--mark); outline-offset: 1px; }
     border-radius: 0; padding: 5px 12px; color: var(--dim); font-size: 12.5px; }
 .msg.event.event-err { border-left-color: var(--err); color: var(--err); }
 .msg.sidechain { border-left: 2px solid var(--accent); }
+
+/* Day / idle-gap divider — chunks a long session into readable scenes */
+.daydiv { display: flex; align-items: center; justify-content: center; margin: 20px 0 12px; }
+.daydiv span { font-size: 11px; font-weight: 600; letter-spacing: 0.02em; color: var(--dim);
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 20px; padding: 3px 12px; }
+
+/* Loading skeleton — mirrors the real layout, shimmer left-to-right */
+.skel { max-width: 720px; margin: 0 auto; padding: 18px 16px; }
+.skel-row { height: 13px; border-radius: 6px; margin: 9px 0;
+    background: linear-gradient(90deg, var(--surface) 25%, var(--surface2) 37%, var(--surface) 63%);
+    background-size: 400% 100%; animation: shimmer 1.4s ease infinite; }
+.skel-row.short { width: 35%; } .skel-row.med { width: 70%; } .skel-row.gap { height: 22px; background: none; animation: none; }
+@keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+@media (prefers-reduced-motion: reduce) { .skel-row { animation: none; } }
 .msg.flash { animation: flash 1.2s ease; }
 @keyframes flash { 0%,100% { box-shadow: none; } 30% { box-shadow: 0 0 0 3px var(--accent); } }
 .row-head { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; font-size: 12px; color: var(--dim); }
@@ -336,7 +350,13 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
 </details>
 
 <div class="pager" id="pagerTop"></div>
-<div id="list"><div class="loading">Loading transcript…</div></div>
+<div id="list"><div class="skel" id="skel">
+    <div class="skel-row short"></div><div class="skel-row med"></div><div class="skel-row"></div><div class="skel-row med"></div>
+    <div class="skel-row gap"></div>
+    <div class="skel-row short"></div><div class="skel-row"></div><div class="skel-row med"></div>
+    <div class="skel-row gap"></div>
+    <div class="skel-row short"></div><div class="skel-row med"></div><div class="skel-row"></div>
+</div></div>
 <div class="pager bottom" id="pagerBottom"></div>
 <button class="jumplatest" id="jumpLatest" title="Jump to newest activity">↓ latest</button>
 
@@ -620,10 +640,41 @@ function renderPage() {
     if (!recs.length) { listEl.innerHTML = '<div class="empty">No blocks match the current filter.</div>'; renderPager(); renderTimeline(); return; }
     const start = state.page * state.pageSize, end = Math.min(start + state.pageSize, recs.length);
     const frag = document.createDocumentFragment();
-    for (let i = start; i < end; i++) frag.appendChild(renderRow(recs[i]));
+    let prev = start > 0 ? recs[start - 1] : null;
+    for (let i = start; i < end; i++) {
+        const div = dividerBetween(prev, recs[i]);
+        if (div) frag.appendChild(div);
+        frag.appendChild(renderRow(recs[i]));
+        prev = recs[i];
+    }
     listEl.appendChild(frag);
     localStorage.setItem(SS.page, String(state.page));
     renderPager(); renderTimeline(); updateJump();
+}
+// A date or idle-gap divider before a block — chunks a long session into scenes.
+function fmtDay(d) { return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }); }
+function dividerBetween(prev, cur) {
+    if (!cur || !cur.ts_iso) return null;
+    const cd = new Date(cur.ts_iso); if (isNaN(cd)) return null;
+    let label = null;
+    if (!prev || !prev.ts_iso) {
+        label = fmtDay(cd);
+    } else {
+        const pd = new Date(prev.ts_iso);
+        if (pd.toDateString() !== cd.toDateString()) label = fmtDay(cd);
+        else {
+            const gap = (cd - pd) / 1000;
+            if (gap > 1800) {              // >30 min idle
+                const h = Math.floor(gap / 3600), m = Math.round((gap % 3600) / 60);
+                label = ((h ? h + 'h ' : '') + (m ? m + 'm ' : '')).trim() + ' later';
+            }
+        }
+    }
+    if (!label) return null;
+    const el = document.createElement('div');
+    el.className = 'daydiv';
+    el.innerHTML = `<span>${esc(label)}</span>`;
+    return el;
 }
 function gotoPage(p, scrollTop = true) {
     state.page = p; clampPage();
@@ -764,9 +815,15 @@ function paintHeader() {
     document.getElementById('title').firstChild.textContent = (m.ai_title || 'Transcript') + ' ';
     document.getElementById('sid').textContent = (m.session_id || '').slice(0, 8);
     document.getElementById('pill-model').innerHTML = '<b>' + shortModel(m.model) + '</b>';
-    if (m.tokens) document.getElementById('pill-tokens').innerHTML =
-        `<b>${fmtTokens(m.tokens.output)}</b> out · ${fmtTokens(m.tokens.input)} in · ${fmtTokens(m.tokens.cache_read)} cache`;
-    document.getElementById('pill-count').innerHTML = `<b>${state.records.length}</b> blocks · ${m.subagent_count || 0} sub-agents`;
+    if (m.tokens) {
+        const p = document.getElementById('pill-tokens');
+        p.innerHTML = `↑<b>${fmtTokens(m.tokens.output)}</b>`;
+        p.title = `${fmtTokens(m.tokens.output)} out · ${fmtTokens(m.tokens.input)} in · ${fmtTokens(m.tokens.cache_read)} cache`;
+    }
+    const sub = m.subagent_count ? ` · ${m.subagent_count}↳` : '';
+    const pc = document.getElementById('pill-count');
+    pc.innerHTML = `<b>${state.records.length}</b> blocks`;
+    pc.title = `${state.records.length} blocks${sub ? ' · ' + m.subagent_count + ' sub-agents' : ''}`;
 }
 
 // ── Ingest a /data payload ──────────────────────────────────────────────────
