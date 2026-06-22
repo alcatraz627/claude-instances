@@ -23,18 +23,23 @@
 -->
 <style>
 :root {
-    --bg: #0d1117; --surface: #161b22; --surface2: #1c2333;
-    --text: #e6edf3; --dim: #7d8590; --accent: #58a6ff;
-    --accent2: #3fb950; --warn: #d29922; --err: #f85149;
-    --border: #30363d; --user-bg: #1a2332; --asst-bg: #161b22;
-    --mark: #d29922; --mark-cur: #f85149; --sel: #2dd4bf; --sel-soft: rgba(45,212,191,0.16);
+    /* Soft blue-slate (GitHub-darkness, not near-black) — calmer than #0d1117.
+       Color discipline: --accent = You, --accent2 = Claude (a coordinated pair);
+       green/red (--add/--del/--err) are reserved strictly for diffs + errors. */
+    --bg: #13151c; --surface: #1b1e27; --surface2: #252935;
+    --text: #e9ecf4; --dim: #9499ab; --faint: #646a7e; --accent: #6f86f0;
+    --accent2: #4fb6a6; --warn: #dcb05f; --err: #e07f72;
+    --add: #6fc090; --del: #e07f72; --accent-soft: rgba(111,134,240,.18);
+    --border: rgba(180,190,225,.13); --user-bg: rgba(111,134,240,.09); --asst-bg: transparent;
+    --mark: #dcb05f; --mark-cur: #e07f72; --sel: #4fb6a6; --sel-soft: rgba(79,182,166,0.16);
 }
 :root.light {
-    --bg: #f6f8fa; --surface: #fff; --surface2: #f0f3f6;
-    --text: #1f2328; --dim: #656d76; --accent: #0969da;
-    --accent2: #1a7f37; --warn: #9a6700; --err: #cf222e;
-    --border: #d0d7de; --user-bg: #ddf4ff; --asst-bg: #fff;
-    --mark: #ffd33d; --mark-cur: #ff8c42; --sel: #0d9488; --sel-soft: rgba(13,148,136,0.14);
+    --bg: #f4f6f9; --surface: #fff; --surface2: #e8ebf0;
+    --text: #1b1d23; --dim: #686c75; --faint: #8a8e98; --accent: #4a57c8;
+    --accent2: #2f8e80; --warn: #9c7320; --err: #bb5346;
+    --add: #3f8a59; --del: #bb5346; --accent-soft: rgba(74,87,200,.13);
+    --border: rgba(20,24,40,.13); --user-bg: rgba(74,87,200,.08); --asst-bg: #fff;
+    --mark: #ffd33d; --mark-cur: #ff8c42; --sel: #2f8e80; --sel-soft: rgba(47,142,128,0.14);
 }
 * { box-sizing: border-box; }
 body {
@@ -262,8 +267,10 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
 .tl-row:hover { background: var(--surface2); }
 .tl-ico { width: 22px; height: 22px; flex: none; display: inline-flex; align-items: center;
     justify-content: center; border-radius: 6px; font-size: 12px; background: var(--surface2); color: var(--dim); }
-.tl-ico.tl-edit { color: var(--accent2); } .tl-ico.tl-bash { color: var(--warn); }
-.tl-ico.tl-read { color: var(--accent); }
+/* Color by kind: edits=accent (a write action), reads=dim (passive),
+   shell=warn, agents/MCP=accent2 (Claude's secondary). */
+.tl-ico.tl-edit { color: var(--accent); } .tl-ico.tl-bash { color: var(--warn); }
+.tl-ico.tl-read { color: var(--dim); } .tl-ico.tl-other { color: var(--accent2); }
 .tl-row .tool-prev { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-caret { flex: none; color: var(--dim); font-size: 11px; transition: transform .15s ease; }
 .tl-row[aria-expanded="true"] .tl-caret { transform: rotate(90deg); }
@@ -282,13 +289,13 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
 .diff .file { padding: 4px 8px; background: var(--surface2); color: var(--dim); font: 11.5px ui-monospace, Menlo, monospace; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
 .diff .lines { padding: 5px 0; overflow-x: auto; font: 12px/1.5 ui-monospace, Menlo, monospace; max-height: 360px; overflow-y: auto; }
 .diff .del, .diff .add { display: block; white-space: pre; padding: 0 8px; }
-.diff .del { background: rgba(248,81,73,0.13); color: var(--err); }
-.diff .add { background: rgba(63,185,80,0.15); color: var(--accent2); }
+.diff .del { background: color-mix(in srgb, var(--del) 14%, transparent); color: var(--del); }
+.diff .add { background: color-mix(in srgb, var(--add) 14%, transparent); color: var(--add); }
 .diff .del::before { content: '−\00a0'; opacity: 0.55; }
 .diff .add::before { content: '+\00a0'; opacity: 0.55; }
 .diff .more { padding: 3px 8px; color: var(--dim); font-style: italic; }
 .bash-desc { color: var(--dim); font-size: 12px; margin: 2px 0 4px; }
-.bash-cmd { background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--accent2);
+.bash-cmd { background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--warn);
     border-radius: 6px; padding: 7px 9px; font: 12.5px ui-monospace, Menlo, monospace;
     overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .copybtn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 13px;
