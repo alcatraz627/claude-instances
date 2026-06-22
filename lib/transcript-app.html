@@ -305,6 +305,19 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
 .bash-cmd { background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--warn);
     border-radius: 6px; padding: 7px 9px; font: 12.5px ui-monospace, Menlo, monospace;
     overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* TodoWrite → checkbox list */
+.todo-list { list-style: none; display: flex; flex-direction: column; gap: 3px; margin: 2px 0; }
+.todo-item { display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: var(--text); }
+.todo-item .box { flex: none; width: 13px; text-align: center; font-size: 11px; color: var(--dim); }
+.todo-item.done { color: var(--dim); } .todo-item.done .txt { text-decoration: line-through; }
+.todo-item.done .box { color: var(--add); }
+.todo-item.active { font-weight: 600; } .todo-item.active .box { color: var(--accent); }
+/* Read / Grep / MCP → file paths + capped pretty JSON */
+.json-paths { margin-bottom: 5px; }
+.json-paths .path { color: var(--accent2); font: 12px ui-monospace, Menlo, monospace; margin-right: 8px; overflow-wrap: anywhere; }
+.json-body { background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 7px 9px; font: 12px/1.5 ui-monospace, Menlo, monospace; color: var(--dim);
+    overflow-x: auto; max-height: 320px; overflow-y: auto; white-space: pre; margin: 2px 0; }
 .copybtn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 13px;
     height: 22px; width: 24px; padding: 0; border-radius: 5px; line-height: 1; }
 .copybtn:hover { color: var(--accent); background: var(--surface2); }
@@ -595,17 +608,38 @@ function diffLines(str, cls, cap) {
 function diffBlock(file, oldStr, newStr) {
     return `<div class="diff"><div class="file">${esc(file || '')}</div><div class="lines">${diffLines(oldStr, 'del', 200)}${diffLines(newStr, 'add', 200)}</div></div>`;
 }
-function rawInput(t) {
-    const paths = (t.paths || []).map(p => `<span class="mono" style="color:var(--accent2)">${esc(p)}</span>`).join(' ');
-    return `${paths ? `<div>${paths}</div>` : ''}<details class="tool-json"><summary>input</summary><pre>${esc(JSON.stringify(t.input, null, 2))}</pre></details>`;
+// Reads / Greps / MCP calls etc.: surface any file paths, then the input as a
+// capped pretty-printed JSON block (open, not hidden — you tapped to see it).
+function jsonBody(t) {
+    const paths = (t.paths || []).map(p => `<span class="path">${esc(p)}</span>`).join(' ');
+    const raw = JSON.stringify(t.input || {}, null, 2);
+    const lines = raw.split('\n'), cap = 40;
+    const shown = esc(lines.slice(0, cap).join('\n'));
+    const more = lines.length > cap ? `\n… ${lines.length - cap} more line(s)` : '';
+    return `${paths ? `<div class="json-paths">${paths}</div>` : ''}<pre class="json-body">${shown}${esc(more)}</pre>`;
+}
+// TodoWrite: a real checkbox list — done is struck + green tick, in-progress is
+// an accent caret, so the plan's state reads at a glance.
+function todoBody(inp) {
+    const todos = inp.todos || [];
+    if (!todos.length) return jsonBody({ input: inp, paths: [] });
+    const rows = todos.map(td => {
+        const st = td.status || 'pending';
+        const box = st === 'completed' ? '✔' : st === 'in_progress' ? '▸' : '○';
+        const cls = st === 'completed' ? 'done' : st === 'in_progress' ? 'active' : '';
+        const txt = st === 'in_progress' && td.activeForm ? td.activeForm : (td.content || td.activeForm || '');
+        return `<li class="todo-item ${cls}"><span class="box">${box}</span><span class="txt">${esc(txt)}</span></li>`;
+    }).join('');
+    return `<ul class="todo-list">${rows}</ul>`;
 }
 function toolBody(t) {
     const inp = t.input || {};
     if (t.name === 'Edit') return diffBlock(inp.file_path, inp.old_string, inp.new_string);
-    if (t.name === 'MultiEdit') return (inp.edits || []).map(e => diffBlock(inp.file_path, e.old_string, e.new_string)).join('') || rawInput(t);
+    if (t.name === 'MultiEdit') return (inp.edits || []).map(e => diffBlock(inp.file_path, e.old_string, e.new_string)).join('') || jsonBody(t);
     if (t.name === 'Write') return `<div class="diff"><div class="file">＋ ${esc(inp.file_path || '')}</div><div class="lines">${diffLines(inp.content, 'add', 80)}</div></div>`;
     if (t.name === 'Bash') return `${inp.description ? `<div class="bash-desc">${esc(inp.description)}</div>` : ''}<div class="bash-cmd">${esc(inp.command || '')}</div>`;
-    return rawInput(t);
+    if (t.name === 'TodoWrite') return todoBody(inp);
+    return jsonBody(t);
 }
 function shortModel(m) {
     m = (m || '').toLowerCase();
