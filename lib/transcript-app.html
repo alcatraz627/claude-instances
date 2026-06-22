@@ -350,6 +350,23 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
 .state-sub { font-size: 13px; }
 .list-end { text-align: center; color: var(--faint, var(--dim)); font-size: 11px;
     letter-spacing: .04em; padding: 18px 0 8px; }
+/* Scroll-away masthead — identity, token split-bar, stat tiles */
+.masthead { max-width: 720px; margin: 0 auto; padding: 16px 16px 10px; }
+.mh-id { font-size: 12px; color: var(--dim); margin-bottom: 11px; overflow-wrap: anywhere; }
+.mh-bar { display: flex; height: 8px; border-radius: 5px; overflow: hidden; background: var(--surface2); }
+.mh-seg.in { background: var(--accent); } .mh-seg.out { background: var(--accent2); }
+.mh-seg.cache { background: var(--accent2); opacity: .3; }
+.mh-legend { display: flex; gap: 15px; margin: 8px 0 13px; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.mh-legend .in { color: var(--accent); } .mh-legend .out { color: var(--accent2); }
+.mh-stats { display: flex; gap: 22px; flex-wrap: wrap; }
+.mh-tile { font-size: 12px; color: var(--dim); }
+.mh-tile b { color: var(--text); font-size: 15px; font-weight: 700; margin-right: 4px; font-variant-numeric: tabular-nums; }
+/* Compact density — tightens the whole reading column */
+.compact .content { font-size: 13px; line-height: 1.48; }
+.compact .msg { margin-bottom: 9px; }
+.compact .row-head { margin-bottom: 3px; }
+.compact .tl-row { padding: 4px 8px; }
+.compact .daydiv { margin: 12px 0 8px; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent2); display: inline-block; }
 .live-dot.stale { background: var(--dim); }
 
@@ -383,9 +400,6 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
 <div class="topbar">
     <a class="backbtn" href="/" title="All sessions" aria-label="Back to session index">‹ Sessions</a>
     <span class="title" id="title">Transcript <span class="sid" id="sid"></span></span>
-    <span class="pill" id="pill-model">—</span>
-    <span class="pill" id="pill-tokens">—</span>
-    <span class="pill" id="pill-count">—</span>
     <span class="spacer"></span>
     <div class="searchwrap">
         <span class="searchbox"><input id="q" type="search" placeholder="Search whole transcript…" autocomplete="off"></span>
@@ -401,8 +415,14 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
         <button class="chip" data-role="event" aria-pressed="true">Events</button>
     </div>
     <span class="pill"><span class="live-dot" id="liveDot"></span> <span id="liveLabel">live</span></span>
+    <button id="sizeBtn" title="Text size (cycle)">Aa</button>
+    <button id="densityBtn" title="Toggle density">⇲</button>
     <button id="themeToggle" title="Toggle theme">◐</button>
 </div>
+
+<!-- Scroll-away masthead: the session summary lives in the scroll body and
+     slides out of the way; only the slim topbar persists. -->
+<div class="masthead" id="masthead" hidden></div>
 
 <details class="timeline" id="timeline">
     <summary id="timelineSummary">━━ activity ━━</summary>
@@ -459,6 +479,26 @@ function applyTheme(t) {
 document.getElementById('themeToggle').addEventListener('click', () => {
     const next = document.documentElement.classList.contains('light') ? 'dark' : 'light';
     localStorage.setItem(SS.theme, next); applyTheme(next);
+});
+// ── Density (default | compact) — the useful axis of the handoff's "directions" ─
+const DENS_KEY = 'ct-density';
+function applyDensity(d) { document.documentElement.classList.toggle('compact', d === 'compact'); }
+applyDensity(localStorage.getItem(DENS_KEY) || 'default');
+document.getElementById('densityBtn').addEventListener('click', () => {
+    const d = document.documentElement.classList.contains('compact') ? 'default' : 'compact';
+    localStorage.setItem(DENS_KEY, d); applyDensity(d);
+});
+// ── Text size: zoom the reading surface; the chrome (topbar/pager) stays fixed ─
+const ZOOMS = [0.92, 1, 1.12, 1.28], ZKEY = 'ct-zoom';
+let zoomIdx = Math.min(ZOOMS.length - 1, Math.max(0, parseInt(localStorage.getItem(ZKEY) || '1', 10)));
+function applyZoom() {
+    document.getElementById('list').style.zoom = ZOOMS[zoomIdx];
+    document.getElementById('masthead').style.zoom = ZOOMS[zoomIdx];
+}
+applyZoom();
+document.getElementById('sizeBtn').addEventListener('click', () => {
+    zoomIdx = (zoomIdx + 1) % ZOOMS.length;
+    localStorage.setItem(ZKEY, String(zoomIdx)); applyZoom();
 });
 
 // ── Model + view state ──────────────────────────────────────────────────────
@@ -927,20 +967,38 @@ function gotoOccurrence(idx) {
 }
 
 // ── Header stats ────────────────────────────────────────────────────────────
+function sessionDuration() {
+    const r = state.records;
+    if (r.length < 2 || !r[0].ts_iso || !r[r.length - 1].ts_iso) return '—';
+    const ms = new Date(r[r.length - 1].ts_iso) - new Date(r[0].ts_iso);
+    return ms > 0 ? fmtDur(ms) : '—';
+}
+function totalToolCalls() {
+    return state.records.reduce((s, r) => s + (r.role === 'tools' && r.tools ? r.tools.length : 0), 0);
+}
 function paintHeader() {
     const m = state.meta;
     document.getElementById('title').firstChild.textContent = (m.ai_title || 'Transcript') + ' ';
     document.getElementById('sid').textContent = (m.session_id || '').slice(0, 8);
-    document.getElementById('pill-model').innerHTML = '<b>' + shortModel(m.model) + '</b>';
-    if (m.tokens) {
-        const p = document.getElementById('pill-tokens');
-        p.innerHTML = `↑<b>${fmtTokens(m.tokens.output)}</b>`;
-        p.title = `${fmtTokens(m.tokens.output)} out · ${fmtTokens(m.tokens.input)} in · ${fmtTokens(m.tokens.cache_read)} cache`;
-    }
-    const sub = m.subagent_count ? ` · ${m.subagent_count}↳` : '';
-    const pc = document.getElementById('pill-count');
-    pc.innerHTML = `<b>${state.records.length}</b> blocks`;
-    pc.title = `${state.records.length} blocks${sub ? ' · ' + m.subagent_count + ' sub-agents' : ''}`;
+    const tk = m.tokens || {};
+    // Split the bar on input-vs-output (the meaningful ratio). Cache reads dwarf
+    // both by orders of magnitude, so it would flatten the split — keep it in the
+    // legend, not as a competing segment.
+    const inT = tk.input || 0, outT = tk.output || 0, cacheT = tk.cache_read || 0, split = inT + outT || 1;
+    const idline = [shortModel(m.model), m.git_branch ? 'on ' + m.git_branch : '', m.permission_mode || ''].filter(Boolean).join('  ·  ');
+    document.getElementById('masthead').innerHTML = `
+        <div class="mh-id">${esc(idline)}</div>
+        <div class="mh-bar" title="${fmtTokens(inT)} in · ${fmtTokens(outT)} out · ${fmtTokens(cacheT)} cache read">
+            <span class="mh-seg in" style="width:${inT / split * 100}%"></span>
+            <span class="mh-seg out" style="width:${outT / split * 100}%"></span>
+        </div>
+        <div class="mh-legend"><span class="in">↓ ${fmtTokens(inT)} in</span><span class="out">↑ ${fmtTokens(outT)} out</span><span class="cache">${fmtTokens(cacheT)} cache</span></div>
+        <div class="mh-stats">
+            <span class="mh-tile"><b>${totalToolCalls()}</b> tool calls</span>
+            <span class="mh-tile"><b>${m.subagent_count || 0}</b> sub-agents</span>
+            <span class="mh-tile"><b>${sessionDuration()}</b> active</span>
+        </div>`;
+    document.getElementById('masthead').hidden = false;
 }
 
 // ── Ingest a /data payload ──────────────────────────────────────────────────
