@@ -70,6 +70,10 @@ button:active:not(:disabled), .chip:active, .copybtn:active, .tl-row:active { tr
     display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
 }
 .title { font-weight: 700; font-size: 15px; display: inline-flex; align-items: baseline; gap: 7px; }
+.backbtn { flex: none; display: inline-flex; align-items: center; height: 28px; padding: 0 10px;
+    border-radius: 8px; font-size: 12px; font-weight: 600; color: var(--dim); text-decoration: none;
+    background: var(--surface2); border: 1px solid transparent; white-space: nowrap; }
+.backbtn:hover { color: var(--accent); background: var(--surface); border-color: var(--border); }
 .title .sid { color: var(--dim); font-weight: 400; font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
 .spacer { flex: 1; }
 .pill {
@@ -163,9 +167,12 @@ button.dot.match  { outline: 2px solid var(--mark); outline-offset: 1px; }
 /* Pagination bar */
 #pagerTop { display: none; }   /* one pager, pinned at the bottom */
 .pager {
-    display: flex; gap: 10px; align-items: center; justify-content: center;
-    padding: 10px 16px; font-size: 12px; color: var(--dim); flex-wrap: wrap;
+    display: flex; gap: 8px; align-items: center; justify-content: center;
+    padding: 9px 16px; font-size: 12px; color: var(--dim); flex-wrap: nowrap;
 }
+/* per-page select sits inline with the pager pill, same floating-pill look */
+.pager .sizeSel { height: 32px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface); box-shadow: 0 4px 16px -6px rgba(0,0,0,0.45); flex: none; padding: 0 8px; }
 .pager.bottom {
     position: sticky; bottom: 0; z-index: 25;
     background: linear-gradient(to top, var(--bg) 55%, transparent);
@@ -301,7 +308,7 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
 .copybtn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 13px;
     height: 22px; width: 24px; padding: 0; border-radius: 5px; line-height: 1; }
 .copybtn:hover { color: var(--accent); background: var(--surface2); }
-.jumplatest { position: fixed; right: 16px; bottom: calc(62px + env(safe-area-inset-bottom)); z-index: 40;
+.jumplatest { position: fixed; right: 16px; bottom: calc(78px + env(safe-area-inset-bottom)); z-index: 40;
     display: none; align-items: center; gap: 6px; height: 40px; padding: 0 17px; border-radius: 22px;
     background: var(--accent); color: #fff; border: none; font-size: 13px; font-weight: 600; cursor: pointer;
     box-shadow: 0 4px 16px -4px rgba(0,0,0,0.5); }
@@ -339,6 +346,7 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
 </head>
 <body>
 <div class="topbar">
+    <a class="backbtn" href="/" title="All sessions" aria-label="Back to session index">‹ Sessions</a>
     <span class="title" id="title">Transcript <span class="sid" id="sid"></span></span>
     <span class="pill" id="pill-model">—</span>
     <span class="pill" id="pill-tokens">—</span>
@@ -738,13 +746,11 @@ function renderPager() {
         <div class="pgroup">
             <button data-pg="first" title="First page (Home)" ${state.page === 0 ? 'disabled' : ''}>⏮</button>
             <button data-pg="prev" title="Previous page (← or [)" ${state.page === 0 ? 'disabled' : ''}>◀</button>
-            <span class="range">page <input class="pageinput" type="text" name="page" inputmode="numeric" value="${state.page + 1}" aria-label="Go to page" title="Type a page number, Enter to jump"> / ${pc} &nbsp;·&nbsp; blocks ${start}–${end} of ${recs.length}</span>
+            <span class="range" title="blocks ${start}–${end} of ${recs.length}">page <input class="pageinput" type="text" name="page" inputmode="numeric" value="${state.page + 1}" aria-label="Go to page"> / ${pc}</span>
             <button data-pg="next" title="Next page (→ or ])" ${state.page >= pc - 1 ? 'disabled' : ''}>▶</button>
             <button data-pg="last" title="Last page (End)" ${state.page >= pc - 1 ? 'disabled' : ''}>⏭</button>
         </div>
-        <label class="psize">per page
-            <select class="sizeSel" name="pagesize" aria-label="Blocks per page">${[100, 200, 500].map(s => `<option value="${s}" ${s === state.pageSize ? 'selected' : ''}>${s}</option>`).join('')}</select>
-        </label>`;
+        <select class="sizeSel" name="pagesize" aria-label="Blocks per page" title="Blocks per page">${[100, 200, 500].map(s => `<option value="${s}" ${s === state.pageSize ? 'selected' : ''}>${s}/pg</option>`).join('')}</select>`;
     for (const id of ['pagerTop', 'pagerBottom']) document.getElementById(id).innerHTML = html;
     document.querySelectorAll('.pager [data-pg]').forEach(b => b.addEventListener('click', () => {
         const pc2 = pageCount();
