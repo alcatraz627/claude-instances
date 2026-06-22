@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0d1117">
+<meta name="theme-color" content="#13151c">
 <title>Claude sessions</title>
 <!--
   The session hub's front door. Lists every Claude session running on this Mac
@@ -16,20 +16,22 @@
 -->
 <style>
 :root {
-    --bg: #0d1117; --surface: #161b22; --surface2: #1c2333;
-    --text: #e6edf3; --dim: #7d8590; --faint: #484f58;
-    --accent: #58a6ff; --good: #3fb950; --warn: #d29922; --err: #f85149;
-    --border: #30363d; --card: #161b22;
-    --opus: #f0883e; --sonnet: #58a6ff; --haiku: #56d4bd;
-    --shadow: 0 1px 0 rgba(0,0,0,0.3), 0 6px 18px -10px rgba(0,0,0,0.6);
+    /* Soft blue-slate, matched to the transcript viewer for cross-surface
+       consistency. --good = working, --warn = your-turn, reserved + distinct. */
+    --bg: #13151c; --surface: #1b1e27; --surface2: #252935;
+    --text: #e9ecf4; --dim: #9499ab; --faint: #646a7e;
+    --accent: #6f86f0; --accent2: #4fb6a6; --good: #5cb98a; --warn: #dcb05f; --err: #e07f72;
+    --border: rgba(180,190,225,.13); --card: #1b1e27;
+    --opus: #d8975a; --sonnet: #6f86f0; --haiku: #4fb6a6;
+    --shadow: 0 1px 0 rgba(0,0,0,0.25), 0 8px 22px -12px rgba(0,0,0,0.6);
 }
 :root.light {
-    --bg: #f6f8fa; --surface: #fff; --surface2: #eef1f4;
-    --text: #1f2328; --dim: #59636e; --faint: #afb8c1;
-    --accent: #0969da; --good: #1a7f37; --warn: #9a6700; --err: #cf222e;
-    --border: #d1d9e0; --card: #fff;
-    --opus: #bc4c00; --sonnet: #0969da; --haiku: #137a6e;
-    --shadow: 0 1px 2px rgba(31,35,40,0.07), 0 4px 14px -8px rgba(31,35,40,0.18);
+    --bg: #f4f6f9; --surface: #fff; --surface2: #e8ebf0;
+    --text: #1b1d23; --dim: #686c75; --faint: #8a8e98;
+    --accent: #4a57c8; --accent2: #2f8e80; --good: #2f8a5b; --warn: #9c7320; --err: #bb5346;
+    --border: rgba(20,24,40,.13); --card: #fff;
+    --opus: #bb6037; --sonnet: #4a57c8; --haiku: #2f8e80;
+    --shadow: 0 1px 2px rgba(31,35,40,0.06), 0 6px 16px -8px rgba(31,35,40,0.16);
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -90,43 +92,60 @@ main { padding: 16px 16px 40px; max-width: 1180px; margin: 0 auto; }
 .grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 700px) { .grid { grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); } }
 
-/* ── Live session card ──────────────────────────────────── */
+/* ── Live session card: status-first ────────────────────────── */
 .card {
-    display: block; background: var(--card); border: 1px solid var(--border);
-    border-radius: 13px; padding: 13px 14px; box-shadow: var(--shadow); overflow: hidden;
-    transition: border-color .12s ease, transform .12s ease;
+    display: block; position: relative; background: var(--card); border: 1px solid var(--border);
+    border-left-width: 3px; border-radius: 13px; overflow: hidden; box-shadow: var(--shadow);
+    transition: border-color .14s ease, transform .1s ease, box-shadow .14s ease;
 }
-.card:active { transform: scale(0.99); }
-@media (hover: hover) { .card:hover { border-color: var(--accent); } }
-.c-head { display: flex; align-items: center; gap: 8px; }
-.model { font-weight: 700; font-size: 13px; display: inline-flex; align-items: center; gap: 5px; flex: none; }
-.model .glyph { font-size: 11px; }
+.card:active { transform: scale(0.992); }
+@media (hover: hover) { .card:hover { border-color: var(--accent); box-shadow: 0 1px 0 rgba(0,0,0,.25), 0 14px 28px -14px rgba(0,0,0,.7); } }
+.card.enter { animation: cardIn .22s ease; }
+@keyframes cardIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.card.s-working { border-left-color: var(--good); }
+.card.s-waiting { border-left-color: var(--warn); }
+.c-body { padding: 12px 14px; }
+
+/* status leads the card — the "what needs me" answer */
+.status { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; min-width: 0; }
+.status .sdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
+.s-working .status .label { color: var(--good); } .s-working .sdot { background: var(--good); animation: pulse 1.5s infinite; }
+.s-waiting .status .label { color: var(--warn); } .s-waiting .sdot { background: var(--warn); }
+.status .label { flex: none; }
+.status .detail { color: var(--dim); font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.status .elapsed { margin-left: auto; color: var(--faint); font-weight: 400; font-variant-numeric: tabular-nums; flex: none; padding-left: 8px; }
+
+.c-id { display: flex; align-items: baseline; gap: 8px; margin-top: 9px; min-width: 0; }
+.model { font-weight: 700; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; flex: none; }
+.model .glyph { font-size: 10px; }
 .model.opus { color: var(--opus); } .model.sonnet { color: var(--sonnet); } .model.haiku { color: var(--haiku); }
 .proj { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
-.elapsed { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; flex: none; }
-.state { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--dim); flex: 0 1 auto; min-width: 0; max-width: 11em; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.state .sdot, .state > span:not(.sdot) { overflow: hidden; text-overflow: ellipsis; }
-.state .sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
-.state.active { color: var(--good); }
-.state.active .sdot { background: var(--good); animation: pulse 1.6s infinite; }
+.c-path { margin-top: 2px; font-size: 11.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.c-path { margin-top: 3px; font-size: 11.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-prompt {
+    margin-top: 9px; font-size: 13px; color: var(--dim); line-height: 1.45;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.c-prompt::before { content: '❯ '; color: var(--accent); font-weight: 700; }
 
-.c-metrics { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; font-size: 12.5px; }
-.ctx { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.c-metrics { margin-top: 11px; display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; font-size: 12.5px; }
+.ctx { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; color: var(--dim); }
 .ctx .bar { width: 42px; height: 6px; border-radius: 3px; background: var(--surface2); overflow: hidden; }
 .ctx .bar > i { display: block; height: 100%; border-radius: 3px; }
 .m { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); font-variant-numeric: tabular-nums; }
 .m b { color: var(--text); font-weight: 600; }
-.m.cost b { color: var(--warn); } .m.tok b { color: var(--good); }
-.branch { color: var(--haiku); } .branch::before { content: '⎇ '; opacity: 0.8; }
+.m.cost b { color: var(--warn); } .m.tok b { color: var(--accent2); }
+.branch { color: var(--accent2); } .branch::before { content: '⎇ '; opacity: 0.8; }
+.c-warn { margin: 0 14px 12px; font-size: 12px; color: var(--err); display: flex; align-items: center; gap: 6px; }
 
-.c-prompt {
-    margin-top: 10px; font-size: 13px; color: var(--dim); line-height: 1.45;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+/* "your turn" header chip — amber, mirrors the card status */
+.turnchip {
+    font-size: 12px; font-weight: 600; color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 15%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warn) 38%, transparent);
+    border-radius: 20px; padding: 2px 10px; display: inline-flex; align-items: center; gap: 6px;
 }
-.c-prompt::before { content: '❯ '; color: var(--accent); font-weight: 700; }
-.c-warn { margin-top: 9px; font-size: 12px; color: var(--err); display: flex; align-items: center; gap: 6px; }
+.turnchip .tdot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
 
 /* ── Recent rows ────────────────────────────────────────── */
 .recent { display: flex; flex-direction: column; gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
@@ -148,6 +167,7 @@ main { padding: 16px 16px 40px; max-width: 1180px; margin: 0 auto; }
     <div class="h-top">
         <span class="brand">Claude <span class="host" id="host">sessions</span></span>
         <span class="livechip" id="livechip" hidden><span class="pulse"></span><span id="liveN">0</span> live</span>
+        <span class="turnchip" id="turnchip" hidden><span class="tdot"></span><span id="turnN">0</span> your turn</span>
         <span class="spacer"></span>
         <button class="iconbtn" id="theme" title="Toggle theme" aria-label="Toggle theme">◐</button>
     </div>
@@ -155,7 +175,11 @@ main { padding: 16px 16px 40px; max-width: 1180px; margin: 0 auto; }
 </header>
 
 <main>
-    <div id="liveWrap"></div>
+    <div id="liveWrap">
+        <div class="section-h" id="liveHead" hidden>Live <span class="n" id="liveHeadN"></span></div>
+        <div class="grid" id="liveGrid"></div>
+        <div class="empty" id="liveEmpty" hidden>No sessions running right now.</div>
+    </div>
     <div id="recentWrap"></div>
 </main>
 <div class="offline" id="offline">offline — can't reach the hub</div>
@@ -167,7 +191,7 @@ main { padding: 16px 16px 40px; max-width: 1180px; margin: 0 auto; }
 const root = document.documentElement;
 function applyTheme(t) {
     root.classList.toggle('light', t === 'light');
-    document.querySelector('meta[name=theme-color]').setAttribute('content', t === 'light' ? '#ffffff' : '#0d1117');
+    document.querySelector('meta[name=theme-color]').setAttribute('content', t === 'light' ? '#ffffff' : '#13151c');
 }
 applyTheme(localStorage.getItem('hub-theme') || 'dark');
 document.getElementById('theme').addEventListener('click', () => {
@@ -232,13 +256,20 @@ function renderMeta(d) {
     document.getElementById('meta').innerHTML = html;
 }
 
-function liveCard(s) {
-    const mc = modelClass(s.model);
-    const active = ACTIVE.has(s.state);
-    const rem = parseInt(s.ctx_remaining, 10);
-    const hasCtx = !isNaN(rem);
+// A live session is either WORKING (Claude is generating) or, since the process
+// is up but idle, waiting on YOU. The second case is what needs attention, so it
+// sorts to the top and wears the amber accent.
+function statusOf(s) {
+    if (ACTIVE.has(s.state) || s.state === 'tool_result') {
+        const verb = { thinking: 'thinking', responding: 'writing', tool_use: 'running tools', tool_result: 'working' }[s.state] || 'working';
+        return { kind: 'working', label: 'Working', detail: s.state_detail || verb };
+    }
+    return { kind: 'waiting', label: 'Your turn', detail: '' };
+}
+function liveCardInner(s) {
+    const st = statusOf(s), mc = modelClass(s.model);
+    const rem = parseInt(s.ctx_remaining, 10), hasCtx = !isNaN(rem);
     const proj = esc(s.tab_title || s.cwd_short || s.cwd || '(session)');
-    const stateLabel = active ? (s.state_detail ? esc(s.state.replace('_', ' ') + ': ' + s.state_detail).slice(0, 40) : esc(s.state.replace('_', ' '))) : 'idle';
     const metrics = [
         hasCtx ? `<span class="ctx" title="context remaining"><span class="bar"><i style="width:${Math.min(100, rem)}%;background:${ctxColor(rem)}"></i></span>${rem}%</span>` : '',
         s.output_tokens ? `<span class="m tok">↑<b>${fmtTok(s.output_tokens)}</b></span>` : '',
@@ -247,18 +278,44 @@ function liveCard(s) {
         (+s.subagent_count) ? `<span class="m">↳<b>${s.subagent_count}</b></span>` : '',
         s.git_branch ? `<span class="m branch">${esc(s.git_branch)}${(+s.git_modified) ? ' *' + s.git_modified : ''}</span>` : '',
     ].filter(Boolean).join('');
-    return `<a class="card" href="/s/${encodeURIComponent(s.session_id)}">
-        <div class="c-head">
-            <span class="model ${mc}"><span class="glyph">${modelGlyph(s.model)}</span>${modelName(s.model)}</span>
-            <span class="proj">${proj}</span>
-            <span class="state ${active ? 'active' : ''}"><span class="sdot"></span>${stateLabel}</span>
-            <span class="elapsed">${esc(s.elapsed || '')}</span>
-        </div>
+    return `<div class="c-body">
+        <div class="status"><span class="sdot"></span><span class="label">${st.label}</span>${st.detail ? `<span class="detail">· ${esc(st.detail)}</span>` : ''}<span class="elapsed">${esc(s.elapsed || '')}</span></div>
+        <div class="c-id"><span class="model ${mc}"><span class="glyph">${modelGlyph(s.model)}</span>${modelName(s.model)}</span><span class="proj">${proj}</span></div>
         ${s.cwd_short ? `<div class="c-path">${esc(s.cwd_short)}</div>` : ''}
-        <div class="c-metrics">${metrics}</div>
         ${s.last_prompt ? `<div class="c-prompt">${esc(s.last_prompt)}</div>` : ''}
-        ${s.mcp_down ? `<div class="c-warn">⚠ MCP down: ${esc(s.mcp_down)}</div>` : ''}
-    </a>`;
+        <div class="c-metrics">${metrics}</div>
+    </div>${s.mcp_down ? `<div class="c-warn">⚠ MCP down: ${esc(s.mcp_down)}</div>` : ''}`;
+}
+// Keyed update: cards keep their DOM identity across the 5s poll, so nothing
+// flickers, scroll doesn't jump, and an in-progress tap survives. Only changed
+// cards repaint; gone sessions are removed; order follows the your-turn sort.
+const cardEls = new Map();
+function renderLive(live) {
+    const order = { waiting: 0, working: 1 };
+    const sorted = live.slice().sort((a, b) => order[statusOf(a).kind] - order[statusOf(b).kind]);
+    const grid = document.getElementById('liveGrid'), seen = new Set();
+    sorted.forEach((s, i) => {
+        seen.add(s.session_id);
+        const st = statusOf(s), html = liveCardInner(s);
+        let el = cardEls.get(s.session_id);
+        if (!el) {
+            el = document.createElement('a');
+            el.href = '/s/' + encodeURIComponent(s.session_id);
+            el.className = 'card enter s-' + st.kind;
+            el.innerHTML = html; el._html = html;
+            cardEls.set(s.session_id, el);
+            setTimeout(() => el.classList.remove('enter'), 320);
+        } else {
+            el.className = 'card s-' + st.kind;
+            if (el._html !== html) { el.innerHTML = html; el._html = html; }
+        }
+        if (grid.children[i] !== el) grid.insertBefore(el, grid.children[i] || null);
+    });
+    for (const [id, el] of cardEls) if (!seen.has(id)) { el.remove(); cardEls.delete(id); }
+    document.getElementById('liveHead').hidden = !sorted.length;
+    document.getElementById('liveHeadN').textContent = sorted.length;
+    document.getElementById('liveEmpty').hidden = !!sorted.length;
+    return sorted.filter(s => statusOf(s).kind === 'waiting').length;
 }
 
 function recentRow(r) {
@@ -274,13 +331,13 @@ function recentRow(r) {
 function render(d) {
     document.getElementById('host').textContent = (d.host || '').replace(/\.local$/, '');
     const live = d.live || [], recent = (d.recent || []).filter(r => r.session_id);
+    renderMeta(d);
+    const turnN = renderLive(live);                       // keyed; returns your-turn count
+
     const chip = document.getElementById('livechip');
     chip.hidden = !live.length; document.getElementById('liveN').textContent = live.length;
-    renderMeta(d);
-
-    document.getElementById('liveWrap').innerHTML = live.length
-        ? `<div class="section-h">Live <span class="n">${live.length}</span></div><div class="grid">${live.map(liveCard).join('')}</div>`
-        : `<div class="section-h">Live</div><div class="empty">No sessions running right now.</div>`;
+    const tchip = document.getElementById('turnchip');
+    tchip.hidden = !turnN; document.getElementById('turnN').textContent = turnN;
 
     document.getElementById('recentWrap').innerHTML = recent.length
         ? `<div class="section-h">Recent <span class="n">${recent.length}</span></div><div class="recent">${recent.slice(0, 30).map(recentRow).join('')}</div>`
