@@ -269,6 +269,12 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
 .tl-row[aria-expanded="true"] .tl-caret { transform: rotate(90deg); }
 .tl-body { padding: 2px 6px 8px 39px; }
 .tl-body[hidden] { display: none; }
+/* Work meter above a tool run — quantifies the weight of work in one Claude turn */
+.tl-meter { display: flex; align-items: center; gap: 8px; margin: 1px 0 7px;
+    font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.tl-meter .tl-worked { font-size: 9.5px; font-weight: 700; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--faint, var(--dim)); flex: none; }
+.tl-meter .tl-sep { flex: 1; height: 1px; background: var(--border); }
 
 /* Rich tool bodies: Edit/Write → colored diff; Bash → highlighted command */
 .tool-body { margin-top: 5px; }
@@ -471,7 +477,7 @@ function renderRow(r) {
         const subs = r.tools.filter(t => t.subagent).map(renderTool).join('');
         const normals = r.tools.filter(t => !t.subagent);
         const normalHtml = normals.length ? `<ul class="tool-list">${normals.map(renderTool).join('')}</ul>` : '';
-        el.innerHTML = subs + normalHtml;
+        el.innerHTML = toolMeter(r) + subs + normalHtml;
     } else {
         el.className = 'msg ' + r.role + (r.sidechain ? ' sidechain' : '');
         el.innerHTML = rowHead(r) + rowBody(r);
@@ -513,8 +519,26 @@ function rowBody(r) {
             html += `<details class="tool-json"><summary>view ${r.errors.length} error(s)</summary><pre>${esc(r.errors.map(e => typeof e === 'string' ? e : JSON.stringify(e)).join('\n'))}</pre></details>`;
         return `<div class="content">${html}</div>`;
     }
-    if (r.role === 'tools') return `<div class="content"><ul class="tool-list">${r.tools.map(renderTool).join('')}</ul></div>`;
+    if (r.role === 'tools') return `<div class="content">${toolMeter(r)}<ul class="tool-list">${r.tools.map(renderTool).join('')}</ul></div>`;
     return '';
+}
+// The weight of one Claude turn's work: elapsed (only when the run genuinely
+// spans time, so an idle user gap never inflates it) · tool count · output tokens.
+function fmtDur(ms) {
+    const s = Math.round(ms / 1000);
+    if (s < 60) return s + 's';
+    const m = Math.round(s / 60);
+    if (m < 60) return m + 'm';
+    const h = Math.floor(m / 60); return h + 'h ' + (m % 60) + 'm';
+}
+function toolMeter(r) {
+    const tools = r.tools || [], n = tools.length;
+    const tok = (r.tokens && r.tokens.out) || 0;
+    let span = '';
+    const t0 = tools[0] && tools[0].ts_iso, t1 = tools[n - 1] && tools[n - 1].ts_iso;
+    if (t0 && t1) { const ms = new Date(t1) - new Date(t0); if (ms >= 30000) span = fmtDur(ms) + ' · '; }
+    const stats = `${span}${n} tool${n !== 1 ? 's' : ''}${tok ? ' · ↑' + fmtTokens(tok) : ''}`;
+    return `<div class="tl-meter"><span class="tl-worked">worked</span><span>${stats}</span><span class="tl-sep"></span></div>`;
 }
 function renderTool(t) {
     if (t.subagent) {
