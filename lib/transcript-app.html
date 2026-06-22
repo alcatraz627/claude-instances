@@ -328,6 +328,12 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
 .jumplatest.show { display: inline-flex; }
 .sysrem { margin-top: 6px; }
 .loading, .empty { color: var(--dim); text-align: center; padding: 40px; }
+/* Calm session/state messages + an explicit end-of-list terminus */
+.state-msg { text-align: center; padding: 64px 24px; color: var(--dim); }
+.state-title { font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.state-sub { font-size: 13px; }
+.list-end { text-align: center; color: var(--faint, var(--dim)); font-size: 11px;
+    letter-spacing: .04em; padding: 18px 0 8px; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent2); display: inline-block; }
 .live-dot.stale { background: var(--dim); }
 
@@ -450,6 +456,7 @@ const state = {
     occurrences: [],              // [{seq, n}] flattened, in document order
     matchCursor: -1,
     lastSeq: 0,
+    newCount: 0,                  // blocks arrived while scrolled away → "N new ↓"
 };
 
 const ROLE_KIND = { user: 'u', assistant: 'a', tools: 't', event: 'e' };
@@ -720,7 +727,12 @@ function renderPage() {
     clampPage();
     const recs = visibleRecords();
     listEl.innerHTML = '';
-    if (!recs.length) { listEl.innerHTML = '<div class="empty">No blocks match the current filter.</div>'; renderPager(); renderTimeline(); return; }
+    if (!recs.length) {
+        listEl.innerHTML = state.records.length === 0
+            ? '<div class="state-msg"><div class="state-title">Session is quiet</div><div class="state-sub">Blocks appear here as Claude works.</div></div>'
+            : '<div class="empty">No blocks match the current filter.</div>';
+        renderPager(); renderTimeline(); return;
+    }
     const start = state.page * state.pageSize, end = Math.min(start + state.pageSize, recs.length);
     const frag = document.createDocumentFragment();
     let prev = start > 0 ? recs[start - 1] : null;
@@ -731,6 +743,11 @@ function renderPage() {
         prev = recs[i];
     }
     listEl.appendChild(frag);
+    if (state.page === pageCount() - 1) {                 // explicit terminus on the last page
+        const term = document.createElement('div');
+        term.className = 'list-end'; term.textContent = '— end of transcript —';
+        listEl.appendChild(term);
+    }
     localStorage.setItem(SS.page, String(state.page));
     renderPager(); renderTimeline(); updateJump();
 }
@@ -988,10 +1005,11 @@ async function poll(initial) {
             if (state.term) {
                 refreshMatches();                         // keep counts honest, don't move the view
                 if (state.pageWasLast) renderPage();      // but do refresh a growing card if it's on screen
-            } else if (state.pageWasLast) {
-                gotoPage(pageCount() - 1, false);
+            } else if (atNewest()) {
+                gotoPage(pageCount() - 1, false);         // at the live edge → follow the newest block
             } else {
-                renderPager(); renderTimeline();
+                if (added) state.newCount += added;       // scrolled away → count it, don't yank the view
+                renderPager(); renderTimeline(); updateJump();
             }
         }
         liveDot.classList.remove('stale'); liveLabel.textContent = 'live';
@@ -1007,7 +1025,10 @@ function atNewest() {
     return (window.innerHeight + window.scrollY) >= document.documentElement.scrollHeight - 90;
 }
 function updateJump() {
-    document.getElementById('jumpLatest').classList.toggle('show', !atNewest());
+    const btn = document.getElementById('jumpLatest'), show = !atNewest();
+    if (!show) state.newCount = 0;
+    btn.classList.toggle('show', show);
+    btn.textContent = (show && state.newCount > 0) ? `${state.newCount} new ↓` : '↓ latest';
 }
 document.getElementById('jumpLatest').addEventListener('click', () => {
     if (state.page !== pageCount() - 1) gotoPage(pageCount() - 1, false);
