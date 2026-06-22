@@ -95,7 +95,23 @@ select {
     color: var(--text); border-radius: 8px; padding: 0 6px; font-size: 12px; cursor: pointer;
 }
 select:hover { border-color: var(--border); }
-.searchwrap { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 240px; max-width: 470px; }
+.searchwrap { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 240px; max-width: 470px; position: relative; }
+/* Search jump-palette: a results dropdown — tap a block to jump there. Empty
+   query lists every block, so search doubles as a jump menu. */
+.sresults { position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 60;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 11px;
+    box-shadow: 0 10px 30px -8px rgba(0,0,0,.5); max-height: 62vh; overflow-y: auto; padding: 5px; }
+.sresults[hidden] { display: none; }
+.sr-item { display: flex; align-items: baseline; gap: 9px; width: 100%; text-align: left;
+    background: transparent; border: none; border-radius: 8px; padding: 7px 10px; }
+.sr-item:hover { background: var(--surface2); }
+.sr-role { flex: none; font-size: 10px; font-weight: 700; width: 42px; text-transform: uppercase;
+    letter-spacing: .03em; color: var(--dim); }
+.sr-role.role-user { color: var(--accent); } .sr-role.role-assistant { color: var(--accent2); }
+.sr-snip { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 12.5px; color: var(--text); }
+.sr-ts { flex: none; font-size: 10px; color: var(--faint, var(--dim)); font-variant-numeric: tabular-nums; }
+.sr-empty, .sr-more { padding: 9px 10px; color: var(--dim); font-size: 12px; text-align: center; }
 .searchbox { position: relative; flex: 1; display: flex; }
 .searchbox::before {
     content: '⌕'; position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
@@ -376,6 +392,7 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
         <span class="matchnav" id="matchnav"></span>
         <button id="prevMatch" title="Previous match (Shift+Enter)">↑</button>
         <button id="nextMatch" title="Next match (Enter)">↓</button>
+        <div class="sresults" id="searchResults" hidden></div>
     </div>
     <div class="chips" id="chips">
         <button class="chip" data-role="user" aria-pressed="true">You</button>
@@ -876,7 +893,9 @@ function runSearch(term) {
     state.matchCursor = state.occurrences.length ? 0 : -1;
     renderPage();
     updateMatchNav();
-    if (state.matchCursor >= 0) gotoOccurrence(0);
+    const sp = document.getElementById('searchResults');
+    if (sp && !sp.hidden) buildResults();                  // palette open → refresh the list, don't yank the view
+    else if (state.matchCursor >= 0) gotoOccurrence(0);    // programmatic search → keep the jump-to-first behaviour
 }
 // Recompute the match set after live data arrives WITHOUT moving the user's
 // view — keeps the "N / M" counter and ribbon marks honest mid-search.
@@ -958,7 +977,41 @@ q.addEventListener('input', () => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => runSearch(q.value.trim().toLowerCase()), 180);
 });
-q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); gotoOccurrence(state.matchCursor + (e.shiftKey ? -1 : 1)); } });
+q.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); gotoOccurrence(state.matchCursor + (e.shiftKey ? -1 : 1)); document.getElementById('searchResults').hidden = true; }
+    else if (e.key === 'Escape') { document.getElementById('searchResults').hidden = true; q.blur(); }
+});
+// ── Search jump-palette: tap a block to jump there; empty query lists all ─────
+const srPanel = document.getElementById('searchResults');
+const SR_LABEL = { user: 'You', assistant: 'Claude', tools: 'Tools', event: 'Event' };
+function rawText(r) {
+    if (r.role === 'user' || r.role === 'assistant') return r.text || '';
+    if (r.role === 'tools') return (r.tools || []).map(x => x.name + ' ' + (x.preview || '')).join(' · ');
+    if (r.role === 'event') return r.text || '';
+    return '';
+}
+function resultSnippet(r, term) {
+    const raw = rawText(r);
+    if (!term) return snippet(raw);
+    const i = raw.toLowerCase().indexOf(term);
+    return i < 0 ? snippet(raw) : (i > 20 ? '… ' : '') + snippet(raw.slice(Math.max(0, i - 20)));
+}
+function buildResults() {
+    const recs = state.term
+        ? (s => state.records.filter(r => s.has(r.seq)))(new Set(state.matches.map(m => m.seq)))
+        : state.records;
+    if (!recs.length) { srPanel.innerHTML = `<div class="sr-empty">${state.term ? 'No matches' : 'No blocks yet'}</div>`; return; }
+    const cap = 60;
+    srPanel.innerHTML = recs.slice(0, cap).map(r =>
+        `<button class="sr-item" data-seq="${r.seq}"><span class="sr-role role-${r.role}">${SR_LABEL[r.role] || r.role}</span><span class="sr-snip">${esc(resultSnippet(r, state.term))}</span><span class="sr-ts">${esc(r.ts || '')}</span></button>`
+    ).join('') + (recs.length > cap ? `<div class="sr-more">${recs.length - cap} more — refine your search</div>` : '');
+}
+q.addEventListener('focus', () => { buildResults(); srPanel.hidden = false; });
+q.addEventListener('blur', () => setTimeout(() => { srPanel.hidden = true; }, 200));
+srPanel.addEventListener('click', e => {
+    const it = e.target.closest('.sr-item'); if (!it) return;
+    goToSeq(parseInt(it.dataset.seq, 10)); srPanel.hidden = true;
+});
 document.getElementById('nextMatch').addEventListener('click', () => gotoOccurrence(state.matchCursor + 1));
 document.getElementById('prevMatch').addEventListener('click', () => gotoOccurrence(state.matchCursor - 1));
 document.getElementById('chips').querySelectorAll('.chip').forEach(chip => {
