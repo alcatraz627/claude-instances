@@ -104,6 +104,7 @@ main { padding: 16px 16px 40px; max-width: 1180px; margin: 0 auto; }
 @keyframes cardIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .card.s-working { border-left-color: var(--good); }
 .card.s-waiting { border-left-color: var(--warn); }
+.card.s-unknown { border-left-color: var(--faint); }
 .c-body { padding: 12px 14px; }
 
 /* status leads the card — the "what needs me" answer */
@@ -111,6 +112,7 @@ main { padding: 16px 16px 40px; max-width: 1180px; margin: 0 auto; }
 .status .sdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
 .s-working .status .label { color: var(--good); } .s-working .sdot { background: var(--good); animation: pulse 1.5s infinite; }
 .s-waiting .status .label { color: var(--warn); } .s-waiting .sdot { background: var(--warn); }
+.s-unknown .status .label { color: var(--dim); } .s-unknown .sdot { background: var(--faint); }
 .status .label { flex: none; }
 .status .detail { color: var(--dim); font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .status .elapsed { margin-left: auto; color: var(--faint); font-weight: 400; font-variant-numeric: tabular-nums; flex: none; padding-left: 8px; }
@@ -261,10 +263,13 @@ function renderMeta(d) {
 // sorts to the top and wears the amber accent.
 function statusOf(s) {
     if (ACTIVE.has(s.state) || s.state === 'tool_result') {
-        const verb = { thinking: 'thinking', responding: 'writing', tool_use: 'running tools', tool_result: 'working' }[s.state] || 'working';
+        const verb = { thinking: 'thinking', responding: 'writing', tool_use: 'running tools', tool_result: 'processing' }[s.state] || 'working';
         return { kind: 'working', label: 'Working', detail: s.state_detail || verb };
     }
-    return { kind: 'waiting', label: 'Your turn', detail: '' };
+    if (s.state === 'idle') return { kind: 'waiting', label: 'Your turn', detail: '' };
+    // Unknown / empty / not-yet-emitted state (a booting session, a future server
+    // string) — neutral, NOT counted as your-turn so it can't inflate the chip.
+    return { kind: 'unknown', label: 'Starting', detail: s.state_detail || '' };
 }
 function liveCardInner(s) {
     const st = statusOf(s), mc = modelClass(s.model);
@@ -274,7 +279,7 @@ function liveCardInner(s) {
         hasCtx ? `<span class="ctx" title="context remaining"><span class="bar"><i style="width:${Math.min(100, rem)}%;background:${ctxColor(rem)}"></i></span>${rem}%</span>` : '',
         s.output_tokens ? `<span class="m tok">↑<b>${fmtTok(s.output_tokens)}</b></span>` : '',
         (+s.cost_usd) ? `<span class="m cost"><b>${fmtCost(s.cost_usd)}</b></span>` : '',
-        s.turns ? `<span class="m"><b>${s.turns}</b>t</span>` : '',
+        (+s.turns) ? `<span class="m"><b>${+s.turns}</b>t</span>` : '',
         (+s.subagent_count) ? `<span class="m">↳<b>${s.subagent_count}</b></span>` : '',
         s.git_branch ? `<span class="m branch">${esc(s.git_branch)}${(+s.git_modified) ? ' *' + s.git_modified : ''}</span>` : '',
     ].filter(Boolean).join('');
@@ -291,7 +296,7 @@ function liveCardInner(s) {
 // cards repaint; gone sessions are removed; order follows the your-turn sort.
 const cardEls = new Map();
 function renderLive(live) {
-    const order = { waiting: 0, working: 1 };
+    const order = { waiting: 0, working: 1, unknown: 2 };
     const sorted = live.slice().sort((a, b) => order[statusOf(a).kind] - order[statusOf(b).kind]);
     const grid = document.getElementById('liveGrid'), seen = new Set();
     sorted.forEach((s, i) => {
