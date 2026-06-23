@@ -42,6 +42,9 @@ body {
 }
 code, .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 a { color: inherit; text-decoration: none; }
+/* The `hidden` attribute is overridden by any explicit display (the chips set
+   display:inline-flex), so without this they'd show "0 live" when idle. */
+[hidden] { display: none !important; }
 
 /* ── Header ─────────────────────────────────────────────── */
 header {
