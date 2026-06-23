@@ -424,7 +424,7 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
      slides out of the way; only the slim topbar persists. -->
 <div class="masthead" id="masthead" hidden></div>
 
-<details class="timeline" id="timeline">
+<details class="timeline" id="timeline" open>
     <summary id="timelineSummary">━━ activity ━━</summary>
     <div class="dots" id="dots"></div>
     <div class="legend">
@@ -550,24 +550,40 @@ function dotTitle(r) {
     if (r.role === 'user') label = 'You — ' + snippet(r.text);
     else if (r.role === 'assistant') label = 'Claude — ' + snippet(r.text);
     else if (r.role === 'tools') {
-        const sub = r.tools.find(t => t.subagent);
+        const tools = r.tools || [];
+        const sub = tools.find(t => t.subagent);
         label = sub
             ? '↳ ' + (sub.subagent.agentType || 'sub-agent') + ': ' + snippet(sub.subagent.description)
-            : 'tools — ' + r.tools.map(t => t.name).slice(0, 5).join(', ');
+            : 'tools — ' + tools.map(t => t.name).slice(0, 5).join(', ');
     } else label = snippet(r.text) || 'event';
     return `#${r.seq}  ·  ${label}` + (r.ts ? `\n${r.ts_full || r.ts}` : '');
 }
 
+// marked passes raw HTML in the source straight through, and the transcript text
+// is attacker-influenceable (a prompt or tool output can contain `<img onerror>`).
+// Dep-free scrub: drop active elements, on*-handlers, and javascript: URIs.
+function sanitizeHTML(html) {
+    const t = document.createElement('template');
+    t.innerHTML = html;
+    t.content.querySelectorAll('script,iframe,object,embed,link,meta,style,form,base').forEach(n => n.remove());
+    t.content.querySelectorAll('*').forEach(n => {
+        for (const a of Array.from(n.attributes)) {
+            const nm = a.name.toLowerCase();
+            if (nm.startsWith('on') || (/^(href|src|xlink:href)$/.test(nm) && /^\s*javascript:/i.test(a.value))) n.removeAttribute(a.name);
+        }
+    });
+    return t.innerHTML;
+}
 // ── Render one record to a row element ──────────────────────────────────────
 function renderRow(r) {
     const el = document.createElement('div');
     el.id = 'seq-' + r.seq; el.dataset.seq = r.seq; el.dataset.role = r.role;
-    if (r.role === 'tools' && r.tools.some(t => t.subagent)) {
+    if (r.role === 'tools' && (r.tools || []).some(t => t.subagent)) {
         // Sub-agent dispatches render as cards; any ordinary tools in the same
         // group still need their <ul> wrapper (don't emit bare <li>s).
         el.className = 'subcard-wrap';
-        const subs = r.tools.filter(t => t.subagent).map(renderTool).join('');
-        const normals = r.tools.filter(t => !t.subagent);
+        const subs = (r.tools || []).filter(t => t.subagent).map(renderTool).join('');
+        const normals = (r.tools || []).filter(t => !t.subagent);
         const normalHtml = normals.length ? `<ul class="tool-list">${normals.map(renderTool).join('')}</ul>` : '';
         el.innerHTML = toolMeter(r) + subs + normalHtml;
     } else {
@@ -575,7 +591,7 @@ function renderRow(r) {
         el.innerHTML = rowHead(r) + rowBody(r);
         const md = el.querySelector('.content[data-md]');
         if (md && window.marked) {
-            md.innerHTML = marked.parse(md.getAttribute('data-raw') || '');
+            md.innerHTML = sanitizeHTML(marked.parse(md.getAttribute('data-raw') || ''));
             md.querySelectorAll('pre code').forEach(b => { try { hljs.highlightElement(b); } catch (e) {} });
         }
     }
@@ -611,7 +627,7 @@ function rowBody(r) {
             html += `<details class="tool-json"><summary>view ${r.errors.length} error(s)</summary><pre>${esc(r.errors.map(e => typeof e === 'string' ? e : JSON.stringify(e)).join('\n'))}</pre></details>`;
         return `<div class="content">${html}</div>`;
     }
-    if (r.role === 'tools') return `<div class="content">${toolMeter(r)}<ul class="tool-list">${r.tools.map(renderTool).join('')}</ul></div>`;
+    if (r.role === 'tools') return `<div class="content">${toolMeter(r)}<ul class="tool-list">${(r.tools || []).map(renderTool).join('')}</ul></div>`;
     return '';
 }
 // The weight of one Claude turn's work: elapsed (only when the run genuinely
@@ -783,28 +799,39 @@ function clampPage() {
 function renderPage() {
     clampPage();
     const recs = visibleRecords();
-    listEl.innerHTML = '';
     if (!recs.length) {
         listEl.innerHTML = state.records.length === 0
             ? '<div class="state-msg"><div class="state-title">Session is quiet</div><div class="state-sub">Blocks appear here as Claude works.</div></div>'
             : '<div class="empty">No blocks match the current filter.</div>';
         renderPager(); renderTimeline(); return;
     }
+    // Keyed reuse: keep the existing row node (and its expanded tool body /
+    // sub-agent panel) whenever the underlying record object is unchanged, so a
+    // live poll never collapses what you opened. Only new or mutated records
+    // (ingest swaps the object) re-render. Skip reuse while searching — the
+    // highlight is baked into the node, so a term change must re-render.
+    const reuse = !state.term;
+    const existing = new Map();
+    if (reuse) for (const el of Array.from(listEl.children)) if (el.dataset && el.dataset.seq != null) existing.set(el.dataset.seq, el);
     const start = state.page * state.pageSize, end = Math.min(start + state.pageSize, recs.length);
     const frag = document.createDocumentFragment();
     let prev = start > 0 ? recs[start - 1] : null;
     for (let i = start; i < end; i++) {
-        const div = dividerBetween(prev, recs[i]);
+        const r = recs[i];
+        const div = dividerBetween(prev, r);
         if (div) frag.appendChild(div);
-        frag.appendChild(renderRow(recs[i]));
-        prev = recs[i];
+        let el = reuse ? existing.get(String(r.seq)) : null;
+        if (el && el._rec === r) frag.appendChild(el);       // reuse — preserves expanded state
+        else { el = renderRow(r); el._rec = r; frag.appendChild(el); }
+        prev = r;
     }
-    listEl.appendChild(frag);
-    if (state.page === pageCount() - 1) {                 // explicit terminus on the last page
+    if (state.page === pageCount() - 1) {                     // explicit terminus on the last page
         const term = document.createElement('div');
         term.className = 'list-end'; term.textContent = '— end of transcript —';
-        listEl.appendChild(term);
+        frag.appendChild(term);
     }
+    listEl.textContent = '';                                  // clear leftover nodes; reused ones live in frag
+    listEl.appendChild(frag);
     localStorage.setItem(SS.page, String(state.page));
     renderPager(); renderTimeline(); updateJump();
 }
@@ -1115,9 +1142,18 @@ async function poll(initial) {
         } else if (added || changed) {
             if (state.term) {
                 refreshMatches();                         // keep counts honest, don't move the view
-                if (state.pageWasLast) renderPage();      // but do refresh a growing card if it's on screen
-            } else if (atNewest()) {
-                gotoPage(pageCount() - 1, false);         // at the live edge → follow the newest block
+                if (state.page === pageCount() - 1) renderPage();
+            } else if (state.page === pageCount() - 1) {
+                // On the live-edge page: render the new blocks (keyed, so any
+                // expanded tool body and the scroll position survive). Auto-follow
+                // the bottom only when you're already there.
+                const follow = atBottomOfScroll();
+                if (added && !follow) state.newCount += added;
+                renderPage();
+                if (follow) requestAnimationFrame(() => window.scrollTo({ top: document.documentElement.scrollHeight }));
+                updateJump();
+            } else if (state.pageWasLast && atBottomOfScroll()) {
+                gotoPage(pageCount() - 1, false);         // followed the edge onto a freshly-formed page
             } else {
                 if (added) state.newCount += added;       // scrolled away → count it, don't yank the view
                 renderPager(); renderTimeline(); updateJump();
@@ -1131,9 +1167,11 @@ async function poll(initial) {
 // Appears whenever you're not already at the newest block (older page, or
 // scrolled up). One tap returns to the live edge — handy on long transcripts
 // and while live-tailing.
-function atNewest() {
-    if (state.page < pageCount() - 1) return false;
+function atBottomOfScroll() {
     return (window.innerHeight + window.scrollY) >= document.documentElement.scrollHeight - 90;
+}
+function atNewest() {
+    return state.page === pageCount() - 1 && atBottomOfScroll();
 }
 function updateJump() {
     const btn = document.getElementById('jumpLatest'), show = !atNewest();
