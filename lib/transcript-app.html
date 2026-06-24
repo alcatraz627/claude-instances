@@ -32,7 +32,11 @@
     --add: #6fc090; --del: #e07f72; --accent-soft: rgba(111,134,240,.18);
     --border: rgba(180,190,225,.13); --user-bg: rgba(111,134,240,.09); --asst-bg: transparent;
     --mark: #dcb05f; --mark-cur: #e07f72; --sel: #4fb6a6; --sel-soft: rgba(79,182,166,0.16);
+    /* One reading-width var the message column AND the activity ribbon both key
+       off, so they're always the same width. The ⇲ control toggles .wide. */
+    --measure: 760px;
 }
+:root.wide { --measure: 1080px; }
 :root.light {
     --bg: #f4f6f9; --surface: #fff; --surface2: #e8ebf0;
     --text: #1b1d23; --dim: #686c75; --faint: #8a8e98; --accent: #4a57c8;
@@ -90,6 +94,10 @@ button {
 }
 button:hover:not(:disabled) { background: var(--surface); border-color: var(--border); }
 button:disabled { opacity: 0.35; cursor: default; }
+/* Square icon buttons (Aa / width / theme) — equal footprint, lit when active */
+.iconbtn { width: 32px; padding: 0; font-size: 13px; color: var(--dim); }
+.iconbtn:hover:not(:disabled) { color: var(--text); }
+.iconbtn[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
 select {
     height: 30px; background: var(--surface2); border: 1px solid transparent;
     color: var(--text); border-radius: 8px; padding: 0 6px; font-size: 12px; cursor: pointer;
@@ -113,33 +121,35 @@ select:hover { border-color: var(--border); }
 .sr-ts { flex: none; font-size: 10px; color: var(--faint, var(--dim)); font-variant-numeric: tabular-nums; }
 .sr-empty, .sr-more { padding: 9px 10px; color: var(--dim); font-size: 12px; text-align: center; }
 .searchbox { position: relative; flex: 1; display: flex; }
-.searchbox::before {
-    content: '⌕'; position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
-    color: var(--dim); font-size: 17px; line-height: 1; pointer-events: none;
-}
 #q {
     width: 100%; height: 32px; background: var(--surface2); border: 1px solid var(--border);
-    color: var(--text); border-radius: 9px; padding: 0 12px 0 31px; font-size: 13.5px;
+    color: var(--text); border-radius: 9px; padding: 0 12px 0 32px; font-size: 13.5px;
+    background-repeat: no-repeat; background-position: 10px center; background-size: 15px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239499ab' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'/%3E%3C/svg%3E");
 }
+:root.light #q { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23686c75' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'/%3E%3C/svg%3E"); }
 #q::placeholder { color: var(--dim); }
-#q:focus { outline: none; border-color: var(--accent); background: var(--bg);
+#q:focus { outline: none; border-color: var(--accent); background-color: var(--bg);
     box-shadow: 0 0 0 3px var(--sel-soft); }
 .matchnav { font-size: 12px; color: var(--dim); min-width: 64px; text-align: center; }
-/* role filter chips — segmented, each carrying its ribbon colour swatch */
-.chips { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+/* Role filter chips — a segmented group; an active chip lights in its own role
+   colour (soft tint + coloured text + swatch), inactive recedes to grey. */
+.chips { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface2); }
 .chip {
     height: 28px; display: inline-flex; align-items: center; gap: 6px;
     border: none; border-left: 1px solid var(--border); border-radius: 0;
-    background: var(--surface2); padding: 0 11px; color: var(--text);
+    background: transparent; padding: 0 11px; color: var(--dim); font-weight: 600; font-size: 12px;
 }
 .chip:first-child { border-left: none; }
-.chip::before { content: ''; width: 8px; height: 8px; border-radius: 2px; background: var(--chip-c, var(--dim)); }
+.chip::before { content: ''; width: 7px; height: 7px; border-radius: 2px; background: var(--chip-c, var(--dim)); }
 .chip[data-role="user"]      { --chip-c: var(--accent); }
 .chip[data-role="assistant"] { --chip-c: var(--accent2); }
 .chip[data-role="tools"]     { --chip-c: var(--warn); }
 .chip[data-role="event"]     { --chip-c: var(--dim); }
-.chip[aria-pressed="false"] { color: var(--dim); opacity: 0.5; }
-.chip[aria-pressed="false"]::before { filter: grayscale(1); }
+.chip[aria-pressed="true"] { color: var(--chip-c); background: color-mix(in srgb, var(--chip-c) 15%, transparent); }
+.chip[aria-pressed="false"] { opacity: 0.6; }
+.chip[aria-pressed="false"]::before { background: var(--faint); }
+.chip:hover { color: var(--text); }
 
 /* Activity ribbon (restored): one dot per block, click to jump. */
 .section-title {
@@ -147,6 +157,9 @@ select:hover { border-color: var(--border); }
     letter-spacing: 0.06em; color: var(--dim); margin-bottom: 6px;
 }
 .timeline { padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
+/* Ribbon content tracks the same reading width as the message column below it,
+   so the two read as one column instead of a full-width band over a narrow list. */
+.timeline > * { max-width: var(--measure); margin-left: auto; margin-right: auto; }
 .timeline > summary {
     font-family: ui-monospace, Menlo, monospace; color: var(--dim);
     font-size: 12px; cursor: pointer; margin-bottom: 6px; list-style: none;
@@ -158,17 +171,18 @@ select:hover { border-color: var(--border); }
 }
 button.dot {
     width: 100%; height: 16px; border-radius: 3px; border: 1px solid transparent;
-    padding: 0; margin: 0; cursor: pointer;
-    transition: transform 0.08s ease, box-shadow 0.08s ease, filter 0.08s ease;
+    padding: 0; margin: 0; cursor: pointer; opacity: 0.32;
+    transition: transform 0.08s ease, box-shadow 0.08s ease, opacity 0.15s ease;
 }
 button.dot:hover {
-    transform: scale(1.18); filter: brightness(1.2);
+    transform: scale(1.18); opacity: 1;
     box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px currentColor; z-index: 5;
 }
-/* current page = a teal highlight that PRESERVES each dot's role colour: the
-   role colour stays the fill; teal rings the dots so the run reads as a band. */
-button.dot.onpage { box-shadow: 0 0 0 4px var(--sel); border-radius: 2px; z-index: 1; }
-button.dot.match  { outline: 2px solid var(--mark); outline-offset: 1px; }
+/* Current page is a *highlight by contrast*: its dots stay full-strength while
+   the rest recede. No saturated ring (the old teal one matched the Claude dots
+   and swallowed them). A hairline rail under the run marks the band edge. */
+button.dot.onpage { opacity: 1; }
+button.dot.match  { outline: 2px solid var(--mark); outline-offset: 1px; opacity: 1; }
 .dot { display: inline-block; vertical-align: middle; }
 .legend .dot { width: 10px; height: 10px; border-radius: 2px; flex: none; }
 .dot-u { background: var(--accent);  color: var(--accent); }
@@ -216,7 +230,7 @@ button.dot.match  { outline: 2px solid var(--mark); outline-offset: 1px; }
 .pageinput:focus { outline: none; border-color: var(--accent); }
 
 /* Message list — capped reading measure, document-like turns (not boxed cards) */
-#list { padding: 6px 16px 42vh; max-width: 720px; margin: 0 auto; }
+#list { padding: 6px 16px 42vh; max-width: var(--measure); margin: 0 auto; transition: max-width .2s ease; }
 .msg {
     border: none; border-radius: 12px; margin: 2px 0;
     padding: 12px 14px; background: transparent;
@@ -235,7 +249,7 @@ button.dot.match  { outline: 2px solid var(--mark); outline-offset: 1px; }
     background: var(--surface2); border: 1px solid var(--border); border-radius: 20px; padding: 3px 12px; }
 
 /* Loading skeleton — mirrors the real layout, shimmer left-to-right */
-.skel { max-width: 720px; margin: 0 auto; padding: 18px 16px; }
+.skel { max-width: var(--measure); margin: 0 auto; padding: 18px 16px; }
 .skel-row { height: 13px; border-radius: 6px; margin: 9px 0;
     background: linear-gradient(90deg, var(--surface) 25%, var(--surface2) 37%, var(--surface) 63%);
     background-size: 400% 100%; animation: shimmer 1.4s ease infinite; }
@@ -342,6 +356,10 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
     background: var(--accent); color: #fff; border: none; font-size: 13px; font-weight: 600; cursor: pointer;
     box-shadow: 0 4px 16px -4px rgba(0,0,0,0.5); }
 .jumplatest.show { display: inline-flex; }
+/* Keep the accent fill on hover — the generic button:hover would flip it to
+   --surface (full white in light mode). Darken slightly + lift instead. */
+.jumplatest:hover { background: color-mix(in srgb, var(--accent) 88%, #000); border: none;
+    box-shadow: 0 6px 20px -4px rgba(0,0,0,0.55); transform: translateY(-1px); }
 .sysrem { margin-top: 6px; }
 .loading, .empty { color: var(--dim); text-align: center; padding: 40px; }
 /* Calm session/state messages + an explicit end-of-list terminus */
@@ -362,11 +380,6 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
 .mh-tile { font-size: 12px; color: var(--dim); }
 .mh-tile b { color: var(--text); font-size: 15px; font-weight: 700; margin-right: 4px; font-variant-numeric: tabular-nums; }
 /* Compact density — tightens the whole reading column */
-.compact .content { font-size: 13px; line-height: 1.48; }
-.compact .msg { margin-bottom: 9px; }
-.compact .row-head { margin-bottom: 3px; }
-.compact .tl-row { padding: 4px 8px; }
-.compact .daydiv { margin: 12px 0 8px; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent2); display: inline-block; }
 .live-dot.stale { background: var(--dim); }
 
@@ -402,22 +415,22 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
     <span class="title" id="title">Transcript <span class="sid" id="sid"></span></span>
     <span class="spacer"></span>
     <div class="searchwrap">
-        <span class="searchbox"><input id="q" type="search" placeholder="Search whole transcript…" autocomplete="off"></span>
+        <span class="searchbox"><input id="q" type="search" placeholder="Search…" title="Search the whole transcript — also a jump menu" autocomplete="off"></span>
         <span class="matchnav" id="matchnav"></span>
-        <button id="prevMatch" title="Previous match (Shift+Enter)">↑</button>
-        <button id="nextMatch" title="Next match (Enter)">↓</button>
+        <button id="prevMatch" title="Previous match (Shift+Enter)" aria-label="Previous match">↑</button>
+        <button id="nextMatch" title="Next match (Enter)" aria-label="Next match">↓</button>
         <div class="sresults" id="searchResults" hidden></div>
     </div>
-    <div class="chips" id="chips">
-        <button class="chip" data-role="user" aria-pressed="true">You</button>
-        <button class="chip" data-role="assistant" aria-pressed="true">Claude</button>
-        <button class="chip" data-role="tools" aria-pressed="true">Tools</button>
-        <button class="chip" data-role="event" aria-pressed="true">Events</button>
+    <div class="chips" id="chips" title="Filter which kinds of blocks are shown">
+        <button class="chip" data-role="user" aria-pressed="true" title="Show your messages">You</button>
+        <button class="chip" data-role="assistant" aria-pressed="true" title="Show Claude's replies">Claude</button>
+        <button class="chip" data-role="tools" aria-pressed="true" title="Show tool calls">Tools</button>
+        <button class="chip" data-role="event" aria-pressed="true" title="Show events (mode changes, hooks)">Events</button>
     </div>
-    <span class="pill"><span class="live-dot" id="liveDot"></span> <span id="liveLabel">live</span></span>
-    <button id="sizeBtn" title="Text size (cycle)">Aa</button>
-    <button id="densityBtn" title="Toggle density">⇲</button>
-    <button id="themeToggle" title="Toggle theme">◐</button>
+    <span class="pill" id="livePill" title="Live — following this session as it runs"><span class="live-dot" id="liveDot"></span> <span id="liveLabel">live</span></span>
+    <button id="sizeBtn" class="iconbtn" title="Text size — cycle smaller / larger" aria-label="Text size">Aa</button>
+    <button id="widthBtn" class="iconbtn" title="Reading width — narrow / wide column" aria-label="Reading width">⇆</button>
+    <button id="themeToggle" class="iconbtn" title="Theme — dark / light" aria-label="Toggle theme">◐</button>
 </div>
 
 <!-- Scroll-away masthead: the session summary lives in the scroll body and
@@ -480,13 +493,18 @@ document.getElementById('themeToggle').addEventListener('click', () => {
     const next = document.documentElement.classList.contains('light') ? 'dark' : 'light';
     localStorage.setItem(SS.theme, next); applyTheme(next);
 });
-// ── Density (default | compact) — the useful axis of the handoff's "directions" ─
-const DENS_KEY = 'ct-density';
-function applyDensity(d) { document.documentElement.classList.toggle('compact', d === 'compact'); }
-applyDensity(localStorage.getItem(DENS_KEY) || 'default');
-document.getElementById('densityBtn').addEventListener('click', () => {
-    const d = document.documentElement.classList.contains('compact') ? 'default' : 'compact';
-    localStorage.setItem(DENS_KEY, d); applyDensity(d);
+// ── Reading width (narrow | wide) — toggles --measure; the message column AND
+//    the activity ribbon both track it, so they widen/narrow together. ──────────
+const WIDTH_KEY = 'ct-width';
+function applyWidth(w) {
+    document.documentElement.classList.toggle('wide', w === 'wide');
+    const b = document.getElementById('widthBtn');
+    if (b) b.setAttribute('aria-pressed', w === 'wide' ? 'true' : 'false');
+}
+applyWidth(localStorage.getItem(WIDTH_KEY) || 'narrow');
+document.getElementById('widthBtn').addEventListener('click', () => {
+    const w = document.documentElement.classList.contains('wide') ? 'narrow' : 'wide';
+    localStorage.setItem(WIDTH_KEY, w); applyWidth(w);
 });
 // ── Text size: zoom the reading surface; the chrome (topbar/pager) stays fixed ─
 const ZOOMS = [0.92, 1, 1.12, 1.28], ZKEY = 'ct-zoom';
