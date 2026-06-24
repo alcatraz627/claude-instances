@@ -231,15 +231,19 @@ button.dot.match  { outline: 2px solid var(--mark); outline-offset: 1px; opacity
 
 /* Message list — capped reading measure, document-like turns (not boxed cards) */
 #list { padding: 6px 16px 42vh; max-width: var(--measure); margin: 0 auto; transition: max-width .2s ease; }
+/* Vertical rhythm: a turn (Claude message + its tool group) hugs together; a new
+   turn gets clear air above. One consistent gap, not per-block guesses. */
 .msg {
-    border: none; border-radius: 12px; margin: 2px 0;
-    padding: 12px 14px; background: transparent;
+    border: none; border-radius: 12px; margin: 0; padding: 10px 14px; background: transparent;
 }
-.msg.user { background: var(--user-bg); margin: 12px 0; }
-.msg.assistant { background: transparent; }
-.msg.tools { background: transparent; padding: 2px 14px; }
+.msg.user { background: var(--user-bg); margin-top: 18px; padding: 12px 14px; }
+.msg.assistant { background: transparent; margin-top: 18px; }
+.msg.tools { background: transparent; margin-top: 2px; padding: 2px 14px; }
+#list > .msg:first-child, #list > .subcard-wrap:first-child { margin-top: 4px; }
 .msg.event { background: transparent; border: none; border-left: 2px solid var(--border);
-    border-radius: 0; padding: 5px 12px; color: var(--dim); font-size: 12.5px; }
+    border-radius: 0; padding: 4px 12px; margin-top: 6px; color: var(--dim); font-size: 12.5px; }
+.msg.event + .msg.event { margin-top: 1px; }   /* consecutive events stack tight */
+.subcard-wrap { margin-top: 4px; }
 .msg.event.event-err { border-left-color: var(--err); color: var(--err); }
 .msg.sidechain { border-left: 2px solid var(--accent); }
 
@@ -264,15 +268,16 @@ button.dot.match  { outline: 2px solid var(--mark); outline-offset: 1px; opacity
 .role-dot.role-user { background: var(--accent); }
 .role-dot.role-assistant { background: var(--accent2); }
 .hgap { flex: 1; }
-.row-head .ts { color: var(--dim); opacity: 0.6; font-variant-numeric: tabular-nums; font-size: 11.5px; }
+.row-head .ts { color: var(--faint); font-variant-numeric: tabular-nums; font-size: 11.5px; }
 .badge { font-size: 10.5px; font-weight: 600; padding: 1.5px 7px; border-radius: 6px;
     border: none; background: var(--surface2); color: var(--dim); letter-spacing: 0.01em; }
 .badge.sub { color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }
 .badge.tok { color: var(--accent2); background: color-mix(in srgb, var(--accent2) 15%, transparent); }
-.copybtn { height: 22px; width: 24px; padding: 0; border: none; background: transparent;
-    color: var(--dim); border-radius: 5px; font-size: 13px; }
-.copybtn:hover { color: var(--accent); background: var(--surface2); }
-@media (hover: hover) { .copybtn { opacity: 0; } .msg:hover .copybtn, .msg:focus-within .copybtn { opacity: 1; } }
+.copybtn { height: 26px; width: 28px; padding: 0; border: none; background: transparent;
+    color: var(--faint); border-radius: 6px; font-size: 14px; opacity: 0.55; }
+.copybtn:hover { color: var(--accent); background: var(--surface2); opacity: 1; }
+/* Always faintly present (was hover-only + tiny); lifts on row hover. */
+@media (hover: hover) { .msg:hover .copybtn, .msg:focus-within .copybtn { opacity: 1; color: var(--dim); } }
 .content { overflow-wrap: anywhere; line-height: 1.6; font-size: 14.5px; }
 .content p { margin: 0.5em 0; }
 .content p:first-child { margin-top: 0; }
@@ -663,6 +668,10 @@ function toolMeter(r) {
     let span = '';
     const t0 = tools[0] && tools[0].ts_iso, t1 = tools[n - 1] && tools[n - 1].ts_iso;
     if (t0 && t1) { const ms = new Date(t1) - new Date(t0); if (ms >= 30000) span = fmtDur(ms) + ' · '; }
+    // Skip the meter on a single-tool group with no elapsed: "1 tool" is obvious
+    // from the one row, and its token count already shows in the Claude header
+    // above. The meter earns its place only on multi-tool or time-spanning turns.
+    if (n <= 1 && !span) return '';
     const stats = `${span}${n} tool${n !== 1 ? 's' : ''}${tok ? ' · ↑' + fmtTokens(tok) : ''}`;
     return `<div class="tl-meter"><span class="tl-worked">worked</span><span>${stats}</span><span class="tl-sep"></span></div>`;
 }
