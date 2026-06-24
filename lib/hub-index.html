@@ -75,8 +75,11 @@ header {
 .meta { margin-top: 11px; display: grid; gap: 7px; }
 .rl { display: flex; align-items: center; gap: 9px; font-size: 12px; }
 .rl .lbl { width: 26px; color: var(--dim); font-weight: 600; flex: none; }
-.rl .track { flex: 1; height: 7px; border-radius: 4px; background: var(--surface2); overflow: hidden; }
-.rl .fill { height: 100%; border-radius: 4px; transition: width .4s ease; }
+.rl .track { flex: 1; height: 7px; border-radius: 4px; background: var(--surface2);
+    overflow: hidden; box-shadow: inset 0 0 0 1px var(--border); }
+/* min-width so genuinely low usage (e.g. 8%) still reads as a real bar, not an
+   empty/broken track. */
+.rl .fill { height: 100%; min-width: 5px; border-radius: 4px; transition: width .4s ease; }
 .rl .pct { width: 38px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; flex: none; }
 .rl .reset { color: var(--dim); width: 92px; text-align: right; flex: none; font-variant-numeric: tabular-nums; }
 .today { font-size: 12px; color: var(--dim); display: flex; flex-wrap: wrap; gap: 4px 12px; }
@@ -139,8 +142,10 @@ main { padding: 16px 16px 40px; max-width: 1180px; margin: 0 auto; }
 .ctx .bar > i { display: block; height: 100%; border-radius: 3px; }
 .m { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); font-variant-numeric: tabular-nums; }
 .m b { color: var(--text); font-weight: 600; }
+/* Colour discipline: tokens (a glance-value) keep teal; cost keeps amber; the
+   branch is ambient metadata, so it recedes to grey rather than competing. */
 .m.cost b { color: var(--warn); } .m.tok b { color: var(--accent2); }
-.branch { color: var(--accent2); } .branch::before { content: '⎇ '; opacity: 0.8; }
+.branch { color: var(--dim); } .branch::before { content: '⎇ '; opacity: 0.7; }
 .c-warn { margin: 0 14px 12px; font-size: 12px; color: var(--err); display: flex; align-items: center; gap: 6px; }
 
 /* "your turn" header chip — amber, mirrors the card status */
@@ -165,6 +170,17 @@ main { padding: 16px 16px 40px; max-width: 1180px; margin: 0 auto; }
 .empty { color: var(--dim); text-align: center; padding: 30px; font-size: 14px; }
 .offline { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); background: var(--err); color: #fff; padding: 7px 16px; border-radius: 20px; font-size: 13px; box-shadow: var(--shadow); display: none; z-index: 20; }
 .offline.show { display: block; }
+
+/* Loading skeleton — shape of the real cards/bars, shimmer until the first poll */
+@keyframes skshimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+.skcard { height: 132px; border-radius: 13px; border: 1px solid var(--border);
+    background: linear-gradient(90deg, var(--surface) 25%, var(--surface2) 37%, var(--surface) 63%);
+    background-size: 400% 100%; animation: skshimmer 1.5s ease infinite; }
+.rl.sk .skbar { height: 9px; border-radius: 4px;
+    background: linear-gradient(90deg, var(--surface) 25%, var(--surface2) 37%, var(--surface) 63%);
+    background-size: 400% 100%; animation: skshimmer 1.5s ease infinite; }
+.rl.sk .track { box-shadow: none; }
+@media (prefers-reduced-motion: reduce) { .skcard, .rl.sk .skbar { animation: none; } }
 </style>
 </head>
 <body>
@@ -176,13 +192,18 @@ main { padding: 16px 16px 40px; max-width: 1180px; margin: 0 auto; }
         <span class="spacer"></span>
         <button class="iconbtn" id="theme" title="Toggle theme" aria-label="Toggle theme">◐</button>
     </div>
-    <div class="meta" id="meta"></div>
+    <div class="meta" id="meta">
+        <div class="rl sk"><span class="skbar" style="width:26px"></span><span class="track"></span><span class="skbar" style="width:34px"></span></div>
+        <div class="rl sk"><span class="skbar" style="width:26px"></span><span class="track"></span><span class="skbar" style="width:34px"></span></div>
+    </div>
 </header>
 
 <main>
     <div id="liveWrap">
         <div class="section-h" id="liveHead" hidden>Live <span class="n" id="liveHeadN"></span></div>
-        <div class="grid" id="liveGrid"></div>
+        <div class="grid" id="liveGrid">
+            <div class="skcard"></div><div class="skcard"></div><div class="skcard"></div>
+        </div>
         <div class="empty" id="liveEmpty" hidden>No sessions running right now.</div>
     </div>
     <div id="recentWrap"></div>
@@ -274,10 +295,16 @@ function statusOf(s) {
     // string) — neutral, NOT counted as your-turn so it can't inflate the chip.
     return { kind: 'unknown', label: 'Starting', detail: s.state_detail || '' };
 }
+function baseName(p) { p = (p || '').replace(/\/+$/, ''); const i = p.lastIndexOf('/'); return i >= 0 ? p.slice(i + 1) : p; }
 function liveCardInner(s) {
     const st = statusOf(s), mc = modelClass(s.model);
     const rem = parseInt(s.ctx_remaining, 10), hasCtx = !isNaN(rem);
-    const proj = esc(s.tab_title || s.cwd_short || s.cwd || '(session)');
+    const path = s.cwd_short || s.cwd || '';
+    // Title is the tab title or the project folder name; show the full path below
+    // only when it adds something (otherwise the two lines just repeat each other).
+    const titleText = s.tab_title || baseName(path) || '(session)';
+    const proj = esc(titleText);
+    const showPath = path && path !== titleText;
     const metrics = [
         hasCtx ? `<span class="ctx" title="context remaining"><span class="bar"><i style="width:${Math.min(100, rem)}%;background:${ctxColor(rem)}"></i></span>${rem}%</span>` : '',
         s.output_tokens ? `<span class="m tok">↑<b>${fmtTok(s.output_tokens)}</b></span>` : '',
@@ -289,7 +316,7 @@ function liveCardInner(s) {
     return `<div class="c-body">
         <div class="status"><span class="sdot"></span><span class="label">${st.label}</span>${st.detail ? `<span class="detail">· ${esc(st.detail)}</span>` : ''}<span class="elapsed">${esc(s.elapsed || '')}</span></div>
         <div class="c-id"><span class="model ${mc}"><span class="glyph">${modelGlyph(s.model)}</span>${modelName(s.model)}</span><span class="proj">${proj}</span></div>
-        ${s.cwd_short ? `<div class="c-path">${esc(s.cwd_short)}</div>` : ''}
+        ${showPath ? `<div class="c-path">${esc(path)}</div>` : ''}
         ${s.last_prompt ? `<div class="c-prompt">${esc(s.last_prompt)}</div>` : ''}
         <div class="c-metrics">${metrics}</div>
     </div>${s.mcp_down ? `<div class="c-warn">⚠ MCP down: ${esc(s.mcp_down)}</div>` : ''}`;
@@ -302,6 +329,7 @@ function renderLive(live) {
     const order = { waiting: 0, working: 1, unknown: 2 };
     const sorted = live.slice().sort((a, b) => order[statusOf(a).kind] - order[statusOf(b).kind]);
     const grid = document.getElementById('liveGrid'), seen = new Set();
+    grid.querySelectorAll('.skcard').forEach(el => el.remove());   // clear loading skeleton
     sorted.forEach((s, i) => {
         seen.add(s.session_id);
         const st = statusOf(s), html = liveCardInner(s);
