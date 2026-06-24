@@ -62,6 +62,11 @@ header {
     border-radius: 20px; padding: 2px 10px; display: inline-flex; align-items: center; gap: 6px;
 }
 .livechip .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--good); animation: pulse 2s infinite; }
+/* Refreshing spinner — shows only while a background fetch is in flight >250ms */
+.refresh-spin { display: inline-block; width: 14px; height: 14px; border-radius: 50%; flex: none;
+    border: 2px solid var(--border); border-top-color: var(--accent); animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .refresh-spin { animation: none; } }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
 .spacer { flex: 1; }
 .iconbtn {
@@ -187,6 +192,7 @@ main { padding: 16px 16px 40px; max-width: 1180px; margin: 0 auto; }
 <header>
     <div class="h-top">
         <span class="brand">Claude <span class="host" id="host">sessions</span></span>
+        <span class="refresh-spin" id="refreshSpin" title="Refreshing…" hidden></span>
         <span class="livechip" id="livechip" hidden><span class="pulse"></span><span id="liveN">0</span> live</span>
         <span class="turnchip" id="turnchip" hidden><span class="tdot"></span><span id="turnN">0</span> your turn</span>
         <span class="spacer"></span>
@@ -380,16 +386,33 @@ function render(d) {
         : '';
 }
 
-// ── Poll ─────────────────────────────────────────────────────────────────────
+// ── Poll, with stale-while-revalidate ────────────────────────────────────────
+// The last payload is cached so reopening the page paints INSTANTLY from cache
+// (no skeleton flash) — then a live fetch always runs and replaces it, so this
+// never trades freshness: the cache is a placeholder, not a TTL bet (it always
+// revalidates). A spinner shows while a fetch is in flight, gated by a short
+// delay so fast localhost polls don't flicker it.
 const offline = document.getElementById('offline');
+const spin = document.getElementById('refreshSpin');
+const CACHE_KEY = 'hub-cache-v1';
+function setRefreshing(on) { if (spin) spin.hidden = !on; }
 async function poll() {
+    const t = setTimeout(() => setRefreshing(true), 250);
     try {
         const r = await fetch('/api/sessions', { cache: 'no-store' });
         if (!r.ok) throw new Error(r.status);
-        render(await r.json());
+        const data = await r.json();
+        render(data);
+        try { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch (e) {}
         offline.classList.remove('show');
     } catch (e) { offline.classList.add('show'); }
+    finally { clearTimeout(t); setRefreshing(false); }
 }
+// Paint cached data immediately (clears the skeleton) before the first fetch.
+try {
+    const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
+    if (cached && (cached.live || cached.recent)) render(cached);
+} catch (e) {}
 poll();
 setInterval(poll, 5000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
