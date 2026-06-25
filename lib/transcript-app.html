@@ -93,7 +93,7 @@ button:active:not(:disabled), .chip:active, .copybtn:active, .tl-row:active { tr
 .title .sid { color: var(--dim); font-weight: 400; font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
 .spacer { flex: 1; }
 /* hairline cluster separator */
-.navdiv { width: 1px; height: 18px; align-self: center; background: var(--border); margin: 0 3px; flex: none; }
+.navdiv { width: 1px; height: 18px; align-self: center; background: color-mix(in srgb, var(--dim) 45%, transparent); margin: 0 4px; flex: none; }
 
 /* base button = flat toolbar toggle: no resting fill, lifts on hover */
 button {
@@ -345,9 +345,16 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
     justify-content: center; border-radius: 6px; font-size: 12px; background: var(--surface2); color: var(--dim); }
 /* Color by kind: edits=accent (a write action), reads=dim (passive),
    shell=warn, agents/MCP=accent2 (Claude's secondary). */
-.tl-ico.tl-edit { color: var(--accent); } .tl-ico.tl-bash { color: var(--warn); }
+/* tint the icon chip bg by kind too, so Read vs Edit rows have distinct
+   silhouettes at a glance (was: same grey chip, only the glyph colour differed). */
+.tl-ico.tl-edit { color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, var(--surface2)); }
+.tl-ico.tl-bash { color: var(--warn); background: color-mix(in srgb, var(--warn) 13%, var(--surface2)); }
+.tl-ico.tl-other { background: color-mix(in srgb, var(--accent2) 13%, var(--surface2)); }
 .tl-ico.tl-read { color: var(--dim); } .tl-ico.tl-other { color: var(--accent2); }
-.tl-row .tool-prev { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Pack the row contents left so the caret stays next to the preview instead of
+   floating to the far edge on a short row (orphaned-glyph fix). */
+.tl-row .tool-prev { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-row .tl-caret { margin-left: 4px; }
 /* Expand affordance: a clearer caret + it lights on row hover, so collapsed
    tool rows visibly read as openable (was a near-invisible dim ▸). */
 .tl-caret { flex: none; color: var(--dim); font-size: 13px; opacity: 0.85; transition: transform .15s ease, color .12s ease; }
@@ -374,8 +381,14 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
 .diff .add::before { content: '+\00a0'; opacity: 0.8; }
 .newfile { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; color: var(--add);
     background: color-mix(in srgb, var(--add) 16%, transparent); padding: 1px 5px; border-radius: 4px; margin-right: 2px; }
-.newfile-body { margin: 0; padding: 7px 9px; background: var(--bg); font: 12.5px ui-monospace, Menlo, monospace;
+.newfile-body { margin: 0; padding: 7px 9px; background: var(--bg); border-left: 3px solid var(--add);
+    font: 12.5px ui-monospace, Menlo, monospace;
     overflow-x: auto; max-height: 360px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+/* Markdown tables — were bare UA defaults (the least-polished body surface). */
+.content table { border-collapse: collapse; margin: 0.6em 0; font-size: 13px; display: block; overflow-x: auto; }
+.content th, .content td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; }
+.content th { background: var(--surface2); font-weight: 600; }
+.content tr:nth-child(even) td { background: color-mix(in srgb, var(--surface2) 45%, transparent); }
 .diff .more { padding: 3px 8px; color: var(--dim); font-style: italic; }
 .bash-desc { color: var(--dim); font-size: 12px; margin: 2px 0 4px; }
 .bash-cmd { background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--warn);
@@ -415,10 +428,14 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
 .list-end { text-align: center; color: var(--faint, var(--dim)); font-size: 11px;
     letter-spacing: .04em; padding: 18px 0 8px; }
 /* Scroll-away masthead — identity, token split-bar, stat tiles */
-.masthead { max-width: var(--measure); margin: 0 auto; padding: 16px 16px 10px; transition: max-width .2s ease; }
+.masthead { max-width: var(--measure); margin: 0 auto; padding: 16px 16px 12px;
+    border-bottom: 1px solid var(--border); transition: max-width .2s ease; }   /* divider from the ribbon below */
 .mh-id { font-size: 12px; color: var(--dim); margin-bottom: 11px; overflow-wrap: anywhere; }
 .mh-bar { display: flex; height: 8px; border-radius: 5px; overflow: hidden; background: var(--surface2); }
-.mh-seg.in { background: var(--accent); } .mh-seg.out { background: var(--accent2); }
+/* min-width + a hairline seam so a tiny input share (~8%) still reads as its own
+   segment instead of fusing the whole bar into one colour. */
+.mh-seg { min-width: 3px; }
+.mh-seg.in { background: var(--accent); box-shadow: inset -1px 0 0 var(--surface); } .mh-seg.out { background: var(--accent2); }
 .mh-legend { display: flex; gap: 15px; margin: 8px 0 13px; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
 .mh-legend .in { color: var(--accent); } .mh-legend .out { color: var(--accent2); }
 .mh-stats { display: flex; gap: 22px; flex-wrap: wrap; }
@@ -434,7 +451,7 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
    full-width row; the pager stops floating and grows to finger-sized hits. */
 @media (max-width: 760px) {
     /* Touch ergonomics: every control grows to a ≥40px tap target on a phone. */
-    :root { --ctl-h: 40px; }
+    :root { --ctl-h: 40px; --ctl-h-lg: 44px; }   /* pager segments also reach target */
     .topbar { padding: 8px 10px; gap: 6px; }
     .title { font-size: 14px; }
     .pill { font-size: 12px; padding: 0 8px; }
@@ -1104,7 +1121,7 @@ function paintHeader() {
         <div class="mh-stats">
             <span class="mh-tile"><b>${totalToolCalls()}</b> tool calls</span>
             <span class="mh-tile"><b>${m.subagent_count || 0}</b> sub-agents</span>
-            <span class="mh-tile"><b>${sessionDuration()}</b> active</span>
+            ${sessionDuration() !== '—' ? `<span class="mh-tile"><b>${sessionDuration()}</b> active</span>` : ''}
         </div>`;
     document.getElementById('masthead').hidden = false;
 }
