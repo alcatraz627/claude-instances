@@ -19,18 +19,18 @@
     /* Soft blue-slate, matched to the transcript viewer for cross-surface
        consistency. --good = working, --warn = your-turn, reserved + distinct. */
     --bg: #13151c; --surface: #1b1e27; --surface2: #252935;
-    --text: #e9ecf4; --dim: #9499ab; --faint: #646a7e;
-    --accent: #6f86f0; --accent2: #4fb6a6; --good: #5cb98a; --warn: #dcb05f; --err: #e07f72;
+    --text: #e9ecf4; --dim: #9499ab; --faint: #7b8295;   /* unified with transcript (was #646a7e) */
+    --accent: oklch(0.70 0.14 272); --accent2: oklch(0.70 0.14 182); --good: #5cb98a; --warn: #dcb05f; --err: #e07f72;
     --border: rgba(180,190,225,.13); --card: #1b1e27;
-    --opus: #d8975a; --sonnet: #6f86f0; --haiku: #4fb6a6;
+    --opus: #d8975a; --sonnet: var(--accent); --haiku: var(--accent2);
     --shadow: 0 1px 0 rgba(0,0,0,0.25), 0 8px 22px -12px rgba(0,0,0,0.6);
 }
 :root.light {
     --bg: #f4f6f9; --surface: #fff; --surface2: #e8ebf0;
     --text: #1b1d23; --dim: #686c75; --faint: #6e727c;
-    --accent: #4a57c8; --accent2: #2f8e80; --good: #2f8a5b; --warn: #9c7320; --err: #bb5346;
+    --accent: oklch(0.52 0.15 272); --accent2: oklch(0.52 0.15 182); --good: #2f8a5b; --warn: #9c7320; --err: #bb5346;
     --border: rgba(20,24,40,.13); --card: #fff;
-    --opus: #bb6037; --sonnet: #4a57c8; --haiku: #2f8e80;
+    --opus: #bb6037; --sonnet: var(--accent); --haiku: var(--accent2);
     --shadow: 0 1px 2px rgba(31,35,40,0.06), 0 6px 16px -8px rgba(31,35,40,0.16);
 }
 * { box-sizing: border-box; }

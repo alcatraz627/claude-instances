@@ -27,10 +27,14 @@
        Color discipline: --accent = You, --accent2 = Claude (a coordinated pair);
        green/red (--add/--del/--err) are reserved strictly for diffs + errors. */
     --bg: #13151c; --surface: #1b1e27; --surface2: #252935;
-    --text: #e9ecf4; --dim: #9499ab; --faint: #7b8295; --accent: #6f86f0;
-    --accent2: #4fb6a6; --warn: #dcb05f; --err: #e07f72;
-    --add: #6fc090; --del: #e07f72; --accent-soft: rgba(111,134,240,.18);
-    --border: rgba(180,190,225,.13); --user-bg: rgba(111,134,240,.09); --asst-bg: transparent;
+    --text: #e9ecf4; --dim: #9499ab; --faint: #7b8295;
+    /* Identity pair: SAME L+C, differ only in hue (balanced peers, per
+       visual-design.md). --add nudged to ~H142 to clear Claude-teal (was 25° → 40°). */
+    --accent: oklch(0.70 0.14 272); --accent2: oklch(0.70 0.14 182);
+    --warn: #dcb05f; --err: #e07f72;
+    --add: oklch(0.74 0.12 142); --del: #e07f72;
+    --accent-soft: color-mix(in srgb, var(--accent) 18%, transparent);
+    --border: rgba(180,190,225,.13); --user-bg: color-mix(in srgb, var(--accent) 9%, transparent); --asst-bg: transparent;
     /* search-match (amber); current-match is amber-orange so it doesn't read as
        --err red. --sel-soft drives focus rings → keep it on the accent (blue). */
     --mark: #dcb05f; --mark-cur: #e8923f; --sel: #4fb6a6; --sel-soft: rgba(111,134,240,0.22);
@@ -47,11 +51,13 @@
 :root.wide { --measure: 1080px; }
 :root.light {
     --bg: #f4f6f9; --surface: #fff; --surface2: #e8ebf0;
-    --text: #1b1d23; --dim: #686c75; --faint: #6e727c; --accent: #4a57c8;
-    --accent2: #2f8e80; --warn: #9c7320; --err: #bb5346;
-    --add: #3f8a59; --del: #bb5346; --accent-soft: rgba(74,87,200,.13);
-    --border: rgba(20,24,40,.13); --user-bg: rgba(74,87,200,.08); --asst-bg: #fff;
-    --mark: #ffd33d; --mark-cur: #ff8c42; --sel: #2f8e80; --sel-soft: rgba(47,142,128,0.14);
+    --text: #1b1d23; --dim: #686c75; --faint: #6e727c;
+    --accent: oklch(0.52 0.15 272); --accent2: oklch(0.52 0.15 182);
+    --warn: #9c7320; --err: #bb5346;
+    --add: oklch(0.54 0.13 142); --del: #bb5346;
+    --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+    --border: rgba(20,24,40,.13); --user-bg: color-mix(in srgb, var(--accent) 8%, transparent); --asst-bg: #fff;
+    --mark: #ffd33d; --mark-cur: #ff8c42; --sel: #2f8e80; --sel-soft: rgba(74,87,200,0.18);
 }
 * { box-sizing: border-box; }
 body {
@@ -185,34 +191,44 @@ select:hover { background: var(--surface); color: var(--text); }
 .timeline > summary {
     font-family: ui-monospace, Menlo, monospace; color: var(--dim);
     font-size: 12px; cursor: pointer; margin-bottom: 6px; list-style: none;
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: var(--r-md);
+    max-width: var(--measure); margin-left: auto; margin-right: auto; width: max-content;
+    border: 1px solid var(--border); background: var(--surface2);
 }
+.timeline > summary:hover { color: var(--text); border-color: var(--accent); }
+.timeline > summary::before { content: '▸'; font-size: 10px; transition: transform .15s ease; }
+.timeline[open] > summary::before { transform: rotate(90deg); }
 .timeline > summary::-webkit-details-marker { display: none; }
 .timeline .dots {
     display: grid; grid-template-columns: repeat(20, 1fr); gap: 4px; padding: 4px 2px;
     max-height: 260px; overflow-y: auto;
 }
+/* Ribbon dots: grey-tinted role-colour carries DENSITY calmly by default (a low-
+   chroma map, not a saturated mosaic); full hue returns only on the current page
+   and on hover. Fixes the squint-test finding that the saturated map out-weighed
+   the conversation. */
 button.dot {
     width: 100%; height: 16px; border-radius: 3px; border: 1px solid transparent;
-    padding: 0; margin: 0; cursor: pointer; opacity: 0.5;
-    transition: transform 0.08s ease, box-shadow 0.08s ease, opacity 0.15s ease;
+    padding: 0; margin: 0; cursor: pointer; opacity: 0.85;
+    background: color-mix(in srgb, var(--role-c, var(--dim)) 34%, var(--surface2));
+    color: var(--role-c, var(--dim));
+    transition: transform 0.08s ease, box-shadow 0.08s ease, background 0.12s ease;
 }
 button.dot:hover {
-    transform: scale(1.18); opacity: 1;
+    transform: scale(1.18); background: var(--role-c, var(--dim));
     box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px currentColor; z-index: 5;
 }
-/* Current page is a *highlight by contrast*: its dots stay full-strength while
-   the rest recede. No saturated ring (the old teal one matched the Claude dots
-   and swallowed them). A hairline rail under the run marks the band edge. */
-button.dot.onpage { opacity: 1; }
-button.dot.match  { outline: 2px solid var(--mark); outline-offset: 1px; opacity: 1; }
+/* Current page = full saturation; the rest stay calmly desaturated. */
+button.dot.onpage { background: var(--role-c, var(--dim)); }
+button.dot.match  { outline: 2px solid var(--mark); outline-offset: 1px; background: var(--role-c, var(--dim)); }
 .dot { display: inline-block; vertical-align: middle; }
-.legend .dot { width: 10px; height: 10px; border-radius: 2px; flex: none; }
-.dot-u { background: var(--accent);  color: var(--accent); }
-.dot-a { background: var(--accent2); color: var(--accent2); }
-.dot-t { background: var(--warn);    color: var(--warn); }
-.dot-h { background: #a78bfa;        color: #a78bfa; }
-.dot-m { background: var(--err);     color: var(--err); }
-.dot-e { background: var(--dim);     color: var(--dim); }
+.legend .dot { width: 10px; height: 10px; border-radius: 2px; flex: none; background: var(--role-c, var(--dim)); }
+.dot-u { --role-c: var(--accent); }
+.dot-a { --role-c: var(--accent2); }
+.dot-t { --role-c: var(--warn); }
+.dot-h { --role-c: #a78bfa; }
+.dot-m { --role-c: var(--err); }
+.dot-e { --role-c: var(--dim); }
 .legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px; font-size: 11px; color: var(--dim); font-family: ui-monospace, monospace; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 
@@ -506,7 +522,7 @@ details.tool-json summary, details.sysrem summary { cursor: pointer; color: var(
      slides out of the way; only the slim topbar persists. -->
 <div class="masthead" id="masthead" hidden></div>
 
-<details class="timeline" id="timeline" open>
+<details class="timeline" id="timeline">
     <summary id="timelineSummary">━━ activity ━━</summary>
     <div class="dots" id="dots"></div>
     <div class="legend">
@@ -1294,7 +1310,8 @@ window.addEventListener('scroll', () => topbarEl.classList.toggle('scrolled', wi
 // On a phone the ribbon would bury the conversation under a wall of dots, so
 // start it collapsed there; its summary still reports the block count, and a
 // tap expands it. Desktop keeps it open.
-if (window.matchMedia('(max-width: 760px)').matches) document.getElementById('timeline').removeAttribute('open');
+/* Ribbon defaults CLOSED so the page opens content-first (the squint-verified
+   reading state); the disclosure summary keeps it one click away on every size. */
 
 poll(true);
 setInterval(() => poll(false), 8000);
