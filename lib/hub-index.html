@@ -175,7 +175,15 @@ main { padding: 16px 16px 40px; max-width: 1180px; margin: 0 auto; }
 .rrow .rmeta { color: var(--dim); font-size: 12px; flex: none; font-variant-numeric: tabular-nums; }
 .rrow .chev { color: var(--faint); flex: none; }
 
-.empty { color: var(--dim); text-align: center; padding: 30px; font-size: 14px; }
+/* Empty state: a calm centred panel (was a bare line in a vast void). */
+.empty { display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; min-height: 48vh; gap: 10px; color: var(--dim); }
+.empty-icon { width: 44px; height: 44px; border-radius: 50%; border: 2px solid var(--border);
+    position: relative; opacity: 0.7; }
+.empty-icon::after { content: ''; position: absolute; inset: 0; margin: auto; width: 9px; height: 9px;
+    border-radius: 50%; background: var(--faint); }
+.empty-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.empty-sub { font-size: 13px; line-height: 1.55; color: var(--dim); max-width: 340px; }
 .offline { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); background: var(--err); color: #fff; padding: 7px 16px; border-radius: 20px; font-size: 13px; box-shadow: var(--shadow); display: none; z-index: 20; }
 .offline.show { display: block; }
 
@@ -213,7 +221,11 @@ main { padding: 16px 16px 40px; max-width: 1180px; margin: 0 auto; }
         <div class="grid" id="liveGrid">
             <div class="skcard"></div><div class="skcard"></div><div class="skcard"></div>
         </div>
-        <div class="empty" id="liveEmpty" hidden>No sessions running right now.</div>
+        <div class="empty" id="liveEmpty" hidden>
+            <div class="empty-icon" aria-hidden="true"></div>
+            <div class="empty-title">No sessions running</div>
+            <div class="empty-sub">Live Claude Code sessions on this machine show up here.<br>Start one in a terminal and it'll appear within a few seconds.</div>
+        </div>
     </div>
     <div id="recentWrap"></div>
 </main>
