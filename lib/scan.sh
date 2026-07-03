@@ -750,7 +750,11 @@ def get_session_history(max_sessions=20):
                             model = m
                             break
                     elif msg_type == 'result':
-                        m = obj.get('model', '') or obj.get('result', {}).get('model', '')
+                        # obj['result'] is usually the result TEXT (a str), not a
+                        # dict — guard before .get() or it throws AttributeError
+                        # and kills the whole full scan.
+                        res = obj.get('result')
+                        m = obj.get('model', '') or (res.get('model', '') if isinstance(res, dict) else '')
                         if m:
                             model = m
                             break

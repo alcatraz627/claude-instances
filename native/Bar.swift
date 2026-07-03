@@ -35,6 +35,16 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         get { UserDefaults.standard.integer(forKey: dangerKey) }
         set { UserDefaults.standard.set(newValue, forKey: dangerKey) }
     }
+    /// A limit whose window resets within this many minutes lights a small
+    /// light-blue "resets soon" dot on its badge row. Default 30 (Settings-tunable).
+    private let resetSoonKey = "rateLimitResetSoonMinutes"
+    private var resetSoonMinutes: Int {
+        get { let v = UserDefaults.standard.integer(forKey: resetSoonKey); return v > 0 ? v : 30 }
+        set { UserDefaults.standard.set(newValue, forKey: resetSoonKey) }
+    }
+    /// Claude logo, loaded once and drawn into the composited badge image each
+    /// tick (avoids re-reading the file on every updateButton()).
+    private var barIcon: NSImage?
     /// The severity colour for a usage percentage, by zone (warn / danger).
     private func zoneColor(forUsage pct: Int) -> NSColor {
         if pct >= dangerThreshold  { return PaletteStore.shared.color(for: .warnHigh) }
@@ -75,7 +85,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dlog("pid=\(myPID) macOS=\(osVer) log=\(debugLog)")
 
         // Register UserDefaults defaults (doesn't write — just provides fallbacks)
-        UserDefaults.standard.register(defaults: [thresholdKey: 70, dangerKey: 90])
+        UserDefaults.standard.register(defaults: [thresholdKey: 70, dangerKey: 90, resetSoonKey: 30])
 
         // Apply persisted appearance preference (System / Light / Dark).
         // Affects the dashboard window's chrome. Menu material adapts via OS.
@@ -232,57 +242,133 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // ── Menu bar button ──────────────────────────────────────────────────────
 
+    /// One badge row = a limit's identity letter + its usage % + a "resets
+    /// soon" flag. Letter colour is the limit's fixed identity (W red, 5
+    /// orange, F teal); the % is severity-tinted by the same zones the
+    /// dropdown bars use, so a glance reads *which* limit and *how bad* at once.
+    private struct BadgeRow {
+        let letter: String
+        let identity: NSColor
+        let pct: Int
+        let resetsSoon: Bool
+    }
+
+    /// True iff this window's reset countdown is within the user's threshold.
+    private func resetsSoon(_ resetsAt: String?) -> Bool {
+        guard let secs = rateLimitResetSeconds(resetsAt) else { return false }
+        return secs <= Double(resetSoonMinutes * 60)
+    }
+
     private func updateButton() {
         guard let btn = statusItem.button else { return }
 
         let liveCount = cachedData?.liveCount ?? 0
-
-        // Static Claude logo from PNG
-        if btn.image == nil || btn.image?.name() != "claude-bar-icon" {
-            if let img = NSImage(contentsOfFile: iconPath) {
-                img.size = NSSize(width: 18, height: 18)
-                img.isTemplate = false
-                img.setName("claude-bar-icon")
-                btn.image = img
-                btn.imagePosition = .imageLeft
-            }
-        }
-
-        // Dim when idle, full opacity when active
-        btn.image?.isTemplate = false
-        btn.alphaValue = liveCount == 0 ? 0.5 : 1.0
-
-        // Count label
         let hasPerm = cachedData?.recentEvents?.suffix(3).contains { $0.event == "PermissionRequest" } ?? false
         let countText = hasPerm ? "⚠ \(liveCount)" : (liveCount > 0 ? "\(liveCount)" : "–")
 
-        // Text color: standard label (white on dark bar, black on light bar)
-        var textColor: NSColor = .labelColor
-        if liveCount == 0 { textColor = .tertiaryLabelColor }
-
-        // Build attributed string with count + optional rate limit warnings
-        let title = NSMutableAttributedString()
-        title.append(NSAttributedString(string: " \(countText)", attributes: [
-            .foregroundColor: textColor,
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
-        ]))
-
-        // Rate-limit zone flag — the worst window's usage % in the zone colour.
-        // No ⚠ glyph: the colour (orange warn / red danger) is the signal, the
-        // dropdown carries the per-window detail. Keeps the menu bar clean.
+        // One row per limit window we actually have data for. Order W → 5
+        // (Fable would slot in first as F, teal, once it exists in the feed).
+        var rows: [BadgeRow] = []
         if let limits = cachedData?.limits {
-            let worst = max(Int(limits.fiveH?.pct ?? 0), Int(limits.week?.pct ?? 0))
-            let zoneCol: NSColor? = worst >= dangerThreshold ? .systemRed
-                                  : worst >= warningThreshold ? .systemOrange : nil
-            if let c = zoneCol {
-                title.append(NSAttributedString(string: " \(worst)%", attributes: [
-                    .foregroundColor: c,
-                    .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold),
-                ]))
+            if let w = limits.week {
+                rows.append(BadgeRow(letter: "W", identity: .systemRed,
+                                     pct: Int(w.pct), resetsSoon: resetsSoon(limits.resetsAtWeekly)))
+            }
+            if let f = limits.fiveH {
+                rows.append(BadgeRow(letter: "5", identity: .systemOrange,
+                                     pct: Int(f.pct), resetsSoon: resetsSoon(limits.resetsAt)))
             }
         }
 
-        btn.attributedTitle = title
+        // Status items are single-line, so the whole badge is drawn as one
+        // multi-colour NSImage (isTemplate=false keeps the per-letter hues).
+        btn.image = composeBadgeImage(count: countText, rows: rows)
+        btn.imagePosition = .imageOnly
+        btn.title = ""
+        btn.attributedTitle = NSAttributedString(string: "")
+        btn.alphaValue = liveCount == 0 ? 0.5 : 1.0   // dim when idle
+    }
+
+    /// Draw the claude icon + live count + up-to-3 stacked limit rows into a
+    /// single NSImage sized to the menu-bar height. Rows auto-fit vertically so
+    /// 2 rows read comfortably now and a 3rd (Fable) fits without changes.
+    private func composeBadgeImage(count: String, rows: [BadgeRow]) -> NSImage {
+        let barH = NSStatusBar.system.thickness            // ~22pt
+        let iconSize: CGFloat = 16
+
+        if barIcon == nil, let img = NSImage(contentsOfFile: iconPath) {
+            img.size = NSSize(width: iconSize, height: iconSize)
+            img.isTemplate = false
+            barIcon = img
+        }
+        let icon = barIcon
+
+        let countFont = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
+        let countStr = NSAttributedString(string: count, attributes: [
+            .font: countFont, .foregroundColor: NSColor.labelColor,
+        ])
+        let countW = ceil(countStr.size().width)
+
+        // Row metrics auto-fit the row count into the bar height.
+        let n = max(rows.count, 1)
+        let lineH = min(11, (barH - 3) / CGFloat(n))
+        let rowFontSize = max(6, lineH - 1.8)
+        let letterFont = NSFont.monospacedDigitSystemFont(ofSize: rowFontSize, weight: .bold)
+        let pctFont    = NSFont.monospacedDigitSystemFont(ofSize: rowFontSize, weight: .semibold)
+        let dotDia: CGFloat = 4
+
+        // Pre-build each row's attributed string + measure the widest.
+        var rowStrings: [(str: NSAttributedString, dot: Bool)] = []
+        var rowsW: CGFloat = 0
+        for r in rows {
+            let s = NSMutableAttributedString()
+            s.append(NSAttributedString(string: r.letter, attributes: [
+                .font: letterFont, .foregroundColor: r.identity]))
+            s.append(NSAttributedString(string: " \(r.pct)%", attributes: [
+                .font: pctFont, .foregroundColor: zoneColor(forUsage: r.pct)]))
+            var w = ceil(s.size().width)
+            if r.resetsSoon { w += dotDia + 2 }
+            rowsW = max(rowsW, w)
+            rowStrings.append((s, r.resetsSoon))
+        }
+
+        let padL: CGFloat = 2, gapIcon: CGFloat = 3, gapRows: CGFloat = 6, padR: CGFloat = 3
+        let iconW: CGFloat = icon != nil ? iconSize : 0
+        let totalW = padL + iconW + (iconW > 0 ? gapIcon : 0) + countW
+                   + (rows.isEmpty ? 0 : gapRows + rowsW) + padR
+        let dotColor = NSColor(calibratedRed: 0.35, green: 0.70, blue: 1.0, alpha: 1)
+
+        let img = NSImage(size: NSSize(width: totalW, height: barH), flipped: false) { _ in
+            var x = padL
+            if let icon = icon {
+                icon.draw(in: NSRect(x: x, y: (barH - iconSize) / 2, width: iconSize, height: iconSize))
+                x += iconW + gapIcon
+            }
+            // Count, vertically centred.
+            countStr.draw(at: NSPoint(x: x, y: (barH - countStr.size().height) / 2))
+            x += countW
+
+            if !rowStrings.isEmpty {
+                x += gapRows
+                let blockH = CGFloat(rowStrings.count) * lineH
+                let startY = (barH - blockH) / 2
+                for (i, row) in rowStrings.enumerated() {
+                    // Row 0 on top → highest y (origin is bottom-left).
+                    let rowY = startY + CGFloat(rowStrings.count - 1 - i) * lineH
+                    row.str.draw(at: NSPoint(x: x, y: rowY + (lineH - row.str.size().height) / 2))
+                    if row.dot {
+                        let sw = ceil(row.str.size().width)
+                        let d = NSRect(x: x + sw + 2, y: rowY + (lineH - dotDia) / 2,
+                                       width: dotDia, height: dotDia)
+                        dotColor.setFill()
+                        NSBezierPath(ovalIn: d).fill()
+                    }
+                }
+            }
+            return true
+        }
+        img.isTemplate = false
+        return img
     }
 
     // ── NSMenuDelegate ───────────────────────────────────────────────────────

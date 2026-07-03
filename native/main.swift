@@ -175,6 +175,25 @@ func rateLimitCountdown(_ resetsAt: String?) -> String? {
     return "\(m)m"
 }
 
+/// Seconds until a rate-limit window resets, or nil if unknown / already past.
+/// rateLimitCountdown() gives a human string; the badge's "resets soon" dot
+/// needs the raw number to compare against the threshold. Accepts the same
+/// epoch-seconds-or-ISO8601 string the model carries.
+func rateLimitResetSeconds(_ resetsAt: String?) -> TimeInterval? {
+    guard let str = resetsAt, !str.isEmpty else { return nil }
+    var resetDate: Date?
+    if let epoch = Double(str) {
+        resetDate = Date(timeIntervalSince1970: epoch)
+    } else {
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        resetDate = fmt.date(from: str) ?? ISO8601DateFormatter().date(from: str)
+    }
+    guard let rd = resetDate else { return nil }
+    let secs = rd.timeIntervalSinceNow
+    return secs > 0 ? secs : nil
+}
+
 // ─── String helpers ──────────────────────────────────────────────────────────
 
 
