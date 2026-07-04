@@ -101,6 +101,15 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         theMenu.delegate         = self
         statusItem.menu          = theMenu
 
+        // Hover detection for the usage-preview popover. A tracking area on the
+        // status button doesn't deliver to a non-view owner, and global
+        // mouse-moved monitors are flaky over the menu bar — so poll the cursor
+        // against the status item's screen frame a few times a second. The test
+        // is trivial (a frame contains-point), so 5 Hz is negligible.
+        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            self?.checkHover()
+        }
+
         // Initial scan
         refreshData()
 
@@ -381,6 +390,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         menuIsOpen = true
+        hideUsagePopover()   // the dropdown supersedes the hover preview
         // First scan tick after open is the next scheduled fire — kick one
         // off immediately so the user sees freshest possible data without
         // waiting up to `refreshInterval` seconds.
@@ -488,6 +498,140 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         addActionsSection(menu, data)
     }
 
+    // ── Shared usage-bar row (dropdown AND hover popover use this) ───────────
+
+    /// One usage bar row: label + track/fill bar + percent + reset countdown, on
+    /// fixed 326×20 frames so 5h/7d columns align. Pure view construction with no
+    /// menu coupling, so the hover popover reuses it verbatim (one source of truth).
+    private func makeBarRow(_ label: String, pct: Int, color: NSColor, countdown: String?) -> NSView {
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 326, height: 20))
+        func text(_ s: String, _ font: NSFont, _ c: NSColor, _ x: CGFloat, _ w: CGFloat) {
+            let t = NSTextField(labelWithString: s)
+            t.font = font; t.textColor = c
+            t.frame = NSRect(x: x, y: 2, width: w, height: 15)
+            v.addSubview(t)
+        }
+        text(label, BarFont.monoBody, .secondaryLabelColor, 14, 44)
+        let trackW: CGFloat = 96
+        let track = NSView(frame: NSRect(x: 60, y: 7, width: trackW, height: 6))
+        track.wantsLayer = true
+        track.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.45).cgColor
+        track.layer?.cornerRadius = 3
+        let f = CGFloat(min(100, max(0, pct))) / 100.0
+        let fill = NSView(frame: NSRect(x: 0, y: 0, width: max(3, trackW * f), height: 6))
+        fill.wantsLayer = true
+        fill.layer?.backgroundColor = color.cgColor
+        fill.layer?.cornerRadius = 3
+        track.addSubview(fill)
+        v.addSubview(track)
+        text("\(pct)%", BarFont.monoBody, color, 166, 42)
+        if let cd = countdown {
+            text("resets ~\(cd)", BarFont.monoCaption, .tertiaryLabelColor, 214, 108)
+        }
+        return v
+    }
+
+    // ── Hover usage popover (ask #2) ─────────────────────────────────────────
+    //
+    // A non-clickable, translucent preview of the top usage section — the same
+    // bar rows as the dropdown, plus the read-only "Usage zones" line — shown
+    // when the mouse hovers the menu-bar icon (and the menu itself isn't open).
+    // Duplicates the menu's material via an NSVisualEffectView(.menu).
+
+    private var usagePopover: NSPopover?
+    private var hoverCloseWork: DispatchWorkItem?
+    private var hoverTimer: Timer?
+    private var hoverInside = false
+
+    /// Builds the popover content: the shared bar rows stacked over the zones
+    /// line, inside a menu-material vibrancy view. Returns nil when there's no
+    /// limit data (nothing to preview).
+    private func makeUsagePopoverController() -> NSViewController? {
+        guard let limits = cachedData?.limits,
+              limits.fiveH != nil || limits.week != nil else { return nil }
+
+        let rowW: CGFloat = 326, padX: CGFloat = 12, padTop: CGFloat = 10, padBot: CGFloat = 8
+        let rowH: CGFloat = 20, gap: CGFloat = 2, zonesH: CGFloat = 16, zonesGap: CGFloat = 4
+
+        var rows: [NSView] = []       // [5h, 7d] in dropdown order (5h on top)
+        if let five = limits.fiveH {
+            let p = Int(five.pct)
+            rows.append(makeBarRow("⏱ 5h", pct: p, color: zoneColor(forUsage: p),
+                                   countdown: rateLimitCountdown(limits.resetsAt)))
+        }
+        if let week = limits.week {
+            let p = Int(week.pct)
+            rows.append(makeBarRow("📅 7d", pct: p, color: zoneColor(forUsage: p),
+                                   countdown: rateLimitCountdown(limits.resetsAtWeekly)))
+        }
+
+        let zones = NSTextField(labelWithString:
+            " ⚙ Usage zones · warn ≥\(warningThreshold)% · danger ≥\(dangerThreshold)%")
+        zones.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        zones.textColor = .secondaryLabelColor
+
+        let contentW = rowW + padX * 2
+        let contentH = padTop + CGFloat(rows.count) * (rowH + gap) + zonesGap + zonesH + padBot
+
+        let fx = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: contentW, height: contentH))
+        fx.material = .menu
+        fx.blendingMode = .behindWindow
+        fx.state = .active
+
+        // Bottom-up frames (non-flipped): zones at the bottom, rows above it with
+        // 5h on top. Reversed so rows[0] (5h) lands at the highest y.
+        var y = padBot
+        zones.frame = NSRect(x: padX + 14, y: y, width: rowW - 14, height: zonesH)
+        fx.addSubview(zones)
+        y += zonesH + zonesGap
+        for row in rows.reversed() {
+            row.setFrameOrigin(NSPoint(x: padX, y: y))
+            fx.addSubview(row)
+            y += rowH + gap
+        }
+
+        let vc = NSViewController()
+        vc.view = fx
+        return vc
+    }
+
+    /// Called on every mouse-moved event. Shows the popover when the cursor
+    /// enters the status item's screen rect, hides it (after a short grace
+    /// delay) when it leaves. Cheap frame test; no per-event allocation.
+    private func checkHover() {
+        guard let btn = statusItem.button, let win = btn.window else { return }
+        let screenRect = win.convertToScreen(btn.convert(btn.bounds, to: nil))
+        let inside = screenRect.contains(NSEvent.mouseLocation)
+        if inside && !hoverInside {
+            hoverInside = true
+            hoverCloseWork?.cancel(); hoverCloseWork = nil
+            if !menuIsOpen { showUsagePopover() }
+        } else if !inside && hoverInside {
+            hoverInside = false
+            let work = DispatchWorkItem { [weak self] in self?.hideUsagePopover() }
+            hoverCloseWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        }
+    }
+
+    private func showUsagePopover() {
+        guard let btn = statusItem.button, let vc = makeUsagePopoverController() else { return }
+        let pop = usagePopover ?? NSPopover()
+        pop.contentViewController = vc
+        pop.contentSize = vc.view.frame.size
+        pop.behavior = .applicationDefined   // dismissal is hover-driven, not click
+        pop.animates = false
+        usagePopover = pop
+        if !pop.isShown {
+            pop.show(relativeTo: btn.bounds, of: btn, preferredEdge: .maxY)
+        }
+    }
+
+    private func hideUsagePopover() {
+        usagePopover?.performClose(nil)
+        usagePopover = nil
+    }
+
     // ── Section: Rate Limits ─────────────────────────────────────────────────
 
     private func addRateLimitsSection(_ menu: NSMenu, _ data: ScanResult) {
@@ -503,31 +647,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // the bars and the menu-bar icon flag the same thresholds.
         func addBarItem(_ label: String, pct: Int, color: NSColor, countdown: String?) {
             let item = NSMenuItem()
-            let v = NSView(frame: NSRect(x: 0, y: 0, width: 326, height: 20))
-            func text(_ s: String, _ font: NSFont, _ c: NSColor, _ x: CGFloat, _ w: CGFloat) {
-                let t = NSTextField(labelWithString: s)
-                t.font = font; t.textColor = c
-                t.frame = NSRect(x: x, y: 2, width: w, height: 15)
-                v.addSubview(t)
-            }
-            text(label, BarFont.monoBody, .secondaryLabelColor, 14, 44)
-            let trackW: CGFloat = 96
-            let track = NSView(frame: NSRect(x: 60, y: 7, width: trackW, height: 6))
-            track.wantsLayer = true
-            track.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.45).cgColor
-            track.layer?.cornerRadius = 3
-            let f = CGFloat(min(100, max(0, pct))) / 100.0
-            let fill = NSView(frame: NSRect(x: 0, y: 0, width: max(3, trackW * f), height: 6))
-            fill.wantsLayer = true
-            fill.layer?.backgroundColor = color.cgColor
-            fill.layer?.cornerRadius = 3
-            track.addSubview(fill)
-            v.addSubview(track)
-            text("\(pct)%", BarFont.monoBody, color, 166, 42)
-            if let cd = countdown {
-                text("resets ~\(cd)", BarFont.monoCaption, .tertiaryLabelColor, 214, 108)
-            }
-            item.view = v
+            item.view = self.makeBarRow(label, pct: pct, color: color, countdown: countdown)
             menu.addItem(item)
         }
 
