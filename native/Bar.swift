@@ -15,6 +15,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastScanError = false
     private var theMenu: NSMenu!
     private var dashboardController: DashboardController?
+    private var settingsController: SettingsWindowController?
 
     /// Tick counter for quick/full scan alternation.
     /// Quick scan (~90ms) runs every 5s. Full scan (~185ms) runs every 6th tick (30s).
@@ -271,14 +272,22 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateButton() {
         guard let btn = statusItem.button else { return }
 
+        // Badge composition is user-configurable (Settings → Menu Bar Badge).
+        let showCount    = UserDefaults.standard.object(forKey: "ui.badge.showCount")    as? Bool ?? true
+        let showRows     = UserDefaults.standard.object(forKey: "ui.badge.showRows")     as? Bool ?? true
+        let showPermWarn = UserDefaults.standard.object(forKey: "ui.badge.showPermWarn") as? Bool ?? true
+
         let liveCount = cachedData?.liveCount ?? 0
-        let hasPerm = cachedData?.recentEvents?.suffix(3).contains { $0.event == "PermissionRequest" } ?? false
-        let countText = hasPerm ? "⚠ \(liveCount)" : (liveCount > 0 ? "\(liveCount)" : "–")
+        let hasPerm = showPermWarn && (cachedData?.recentEvents?.suffix(3).contains { $0.event == "PermissionRequest" } ?? false)
+        let countText: String = {
+            if !showCount { return hasPerm ? "⚠" : "" }
+            return hasPerm ? "⚠ \(liveCount)" : (liveCount > 0 ? "\(liveCount)" : "–")
+        }()
 
         // One row per limit window we actually have data for. Order W → 5
         // (Fable would slot in first as F, teal, once it exists in the feed).
         var rows: [BadgeRow] = []
-        if let limits = cachedData?.limits {
+        if showRows, let limits = cachedData?.limits {
             if let w = limits.week {
                 rows.append(BadgeRow(letter: "W", identity: .systemRed,
                                      pct: Int(w.pct), resetsSoon: resetsSoon(limits.resetsAtWeekly)))
@@ -1058,6 +1067,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func addActionsSection(_ menu: NSMenu, _ data: ScanResult) {
         addAction(menu, "New Session", #selector(newSession), icon: "plus.circle", key: "n")
         addAction(menu, "Dashboard", #selector(openDashboard), icon: "rectangle.3.group", key: "d")
+        addAction(menu, "Settings…", #selector(openSettings), icon: "gearshape", key: ",")
         addAction(menu, "Sessions (phone)", #selector(openHubIndex), icon: "iphone")
         addRefreshMenu(menu)
 
@@ -1282,6 +1292,17 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             dashboardController = DashboardController()
         }
         dashboardController?.showOrFront(data: cachedData, barDelegate: self)
+    }
+
+    @objc private func openSettings() {
+        dlog("opening settings window")
+        if settingsController == nil {
+            settingsController = SettingsWindowController(onWillOpen: { [weak self] in
+                self?.theMenu.cancelTracking()
+                self?.hideUsagePopover()
+            })
+        }
+        settingsController?.show()
     }
 
     @objc private func newSession() {

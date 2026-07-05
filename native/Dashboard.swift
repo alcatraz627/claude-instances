@@ -2163,6 +2163,12 @@ struct SettingsTabView: View {
                 MenuBehaviorSection()
                     .padding(.horizontal, 24)
 
+                DisplaySizingSection()
+                    .padding(.horizontal, 24)
+
+                MenuBarBadgeSection()
+                    .padding(.horizontal, 24)
+
                 RefreshAndWarningsSection()
                     .padding(.horizontal, 24)
 
@@ -2300,6 +2306,88 @@ func loadAppearancePref() -> AppearancePref {
 }
 func applyAppearancePref(_ pref: AppearancePref) {
     NSApp.appearance = pref.nsAppearance
+}
+
+/// Settings → Display Sizing. A UI font-scale multiplier applied across the
+/// menu's live-instance rows and the menu-bar chrome. Written to `ui.fontScale`;
+/// BarFont + LiveRowView read it at render time, and `.menuBehaviorDidChange`
+/// re-renders the open rows.
+struct DisplaySizingSection: View {
+    @AppStorage("ui.fontScale") private var fontScale: Double = 1.0
+
+    private func postChange() {
+        NotificationCenter.default.post(name: .menuBehaviorDidChange, object: nil)
+    }
+
+    var body: some View {
+        OverviewSection(title: "Display Sizing",
+                        icon: "textformat.size",
+                        iconColor: .indigo) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    Text("Font size")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 130, alignment: .leading)
+                    Slider(value: $fontScale, in: 0.85...1.3, step: 0.05)
+                        .frame(maxWidth: 220)
+                        .onChange(of: fontScale) { _, _ in postChange() }
+                    Text("\(Int(fontScale * 100))%")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .frame(width: 44, alignment: .trailing)
+                    Spacer()
+                }
+                Text("Scales text across the menu's live-instance rows and the menu-bar chrome.")
+                    .font(.system(size: 11)).foregroundColor(.secondary)
+            }
+            .padding(.vertical, 4)
+        }
+    }
+}
+
+/// Settings → Menu Bar Badge. What the menu-bar icon shows — the live session
+/// count, the per-limit usage rows (5h / weekly), the permission-request marker,
+/// and the "resets soon" dot threshold. Read live by `updateButton()`.
+struct MenuBarBadgeSection: View {
+    @AppStorage("ui.badge.showCount")     private var showCount = true
+    @AppStorage("ui.badge.showRows")      private var showRows = true
+    @AppStorage("ui.badge.showPermWarn")  private var showPermWarn = true
+    @AppStorage("rateLimitResetSoonMinutes") private var resetSoon = 30
+
+    private func postChange() {
+        NotificationCenter.default.post(name: .menuBehaviorDidChange, object: nil)
+    }
+
+    var body: some View {
+        OverviewSection(title: "Menu Bar Badge",
+                        icon: "menubar.rectangle",
+                        iconColor: .orange) {
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle("Show live session count", isOn: $showCount)
+                    .toggleStyle(.checkbox).onChange(of: showCount) { _, _ in postChange() }
+                Toggle("Show per-limit usage rows (5h / weekly)", isOn: $showRows)
+                    .toggleStyle(.checkbox).onChange(of: showRows) { _, _ in postChange() }
+                Toggle("Show permission-request marker (⚠)", isOn: $showPermWarn)
+                    .toggleStyle(.checkbox).onChange(of: showPermWarn) { _, _ in postChange() }
+                Divider()
+                HStack(spacing: 12) {
+                    Text("Resets-soon dot")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 130, alignment: .leading)
+                    Stepper(value: $resetSoon, in: 5...240, step: 5) {
+                        Text("Within \(resetSoon) min")
+                            .font(.system(size: 12, design: .monospaced))
+                    }
+                    .frame(maxWidth: 200)
+                    .onChange(of: resetSoon) { _, _ in postChange() }
+                    Text("A light-blue dot appears on a limit's row when its window resets within this time.")
+                        .font(.system(size: 11)).foregroundColor(.secondary).lineLimit(2)
+                    Spacer()
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
 }
 
 struct AppearanceSection: View {

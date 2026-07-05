@@ -133,7 +133,7 @@ final class LiveRowView: NSView {
         let headerRow = makeInlineRow()
         // 1. Model badge (the diamond/dot/circle glyph) — taggable per model
         appendChip(to: headerRow, text: m.badge, token: modelToken, attrs: [
-            .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .bold),
+            .font: NSFont.monospacedSystemFont(ofSize: BarFont.scaled(13), weight: .bold),
             .foregroundColor: m.color,
         ])
         // State icon — shown alongside the badge when not idle. Now renders
@@ -154,11 +154,11 @@ final class LiveRowView: NSView {
         //    structural). Bundled into a single label so spacing is tight.
         let leafElapsed = NSMutableAttributedString()
         leafElapsed.append(NSAttributedString(string: leaf, attributes: [
-            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+            .font: NSFont.systemFont(ofSize: BarFont.scaled(13), weight: .medium),
             .foregroundColor: NSColor.labelColor,
         ]))
         leafElapsed.append(NSAttributedString(string: "  \(elapsed)", attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+            .font: NSFont.monospacedSystemFont(ofSize: BarFont.scaled(11), weight: .regular),
             .foregroundColor: NSColor.tertiaryLabelColor,
         ]))
         appendChip(to: headerRow, attr: leafElapsed, token: nil)
@@ -166,7 +166,7 @@ final class LiveRowView: NSView {
         // 3. Subagent badge ↳N
         if let subs = inst.subagentCount, subs > 0 {
             appendChip(to: headerRow, text: "↳\(subs)", token: .accentSubagent, attrs: [
-                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                .font: NSFont.monospacedSystemFont(ofSize: BarFont.scaled(11), weight: .medium),
                 .foregroundColor: subagentColor,
             ])
         }
@@ -187,7 +187,7 @@ final class LiveRowView: NSView {
             }
             if let l = permLetter, let t = permTok {
                 appendChip(to: headerRow, text: l, token: t, attrs: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .bold),
+                    .font: NSFont.monospacedSystemFont(ofSize: BarFont.scaled(11), weight: .bold),
                     .foregroundColor: PaletteStore.shared.color(for: t),
                 ])
             }
@@ -196,7 +196,7 @@ final class LiveRowView: NSView {
         // 4. Branch badge ⎇<name>
         if let br = inst.gitBranch, !br.isEmpty {
             appendChip(to: headerRow, text: "⎇\(br)", token: .accentBranch, attrs: [
-                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                .font: NSFont.monospacedSystemFont(ofSize: BarFont.scaled(11), weight: .medium),
                 .foregroundColor: menuTeal,
             ])
             // 5. Modified file count *N — token depends on severity (warnMid <20 / warnHigh ≥20)
@@ -204,7 +204,7 @@ final class LiveRowView: NSView {
                 let modToken: PaletteToken = mod >= 20 ? .warnHigh : .warnMid
                 let mc: NSColor = mod >= 20 ? menuRed : menuYellow
                 appendChip(to: headerRow, text: "*\(mod)", token: modToken, attrs: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                    .font: NSFont.monospacedSystemFont(ofSize: BarFont.scaled(11), weight: .medium),
                     .foregroundColor: mc,
                 ])
             }
@@ -215,7 +215,7 @@ final class LiveRowView: NSView {
         // counts as part of the "identity" cluster for hover purposes.
         if rowShows(.tabTitle), let tab = inst.tabTitle, !tab.isEmpty, tab != leaf {
             addLine(NSAttributedString(string: "⌥ \(tab)", attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                .font: NSFont.monospacedSystemFont(ofSize: BarFont.scaled(11), weight: .regular),
                 .foregroundColor: NSColor.secondaryLabelColor,
             ]), token: modelToken)
         }
@@ -225,7 +225,7 @@ final class LiveRowView: NSView {
         // Tagged with accentBranch (path + branch are the "location" cluster).
         if rowShows(.fullPath), let path = fullPath, path != leaf {
             addLine(NSAttributedString(string: middleTruncate(path, 46), attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                .font: NSFont.monospacedSystemFont(ofSize: BarFont.scaled(11), weight: .regular),
                 .foregroundColor: NSColor.tertiaryLabelColor,
             ]), token: .accentBranch, tooltip: path)
         }
@@ -234,7 +234,7 @@ final class LiveRowView: NSView {
         // already carries the one tinted SF-Symbol state glyph (unified).
         if rowShows(.stateDetail), stateStr != "idle", !stateDetail.isEmpty {
             addLine(NSAttributedString(string: "\(stateStr): \(stateDetail)", attributes: [
-                .font: NSFont.systemFont(ofSize: 11),
+                .font: NSFont.systemFont(ofSize: BarFont.scaled(11)),
                 .foregroundColor: menuTeal,
             ]), token: .stateActive)
         }
@@ -242,7 +242,7 @@ final class LiveRowView: NSView {
         // Last user prompt — tagged with stateActive (it's a recency signal)
         if rowShows(.lastPrompt), let lp = inst.lastPrompt, !lp.isEmpty {
             addLine(NSAttributedString(string: "❯ \(lp)", attributes: [
-                .font: NSFont.systemFont(ofSize: 11),
+                .font: NSFont.systemFont(ofSize: BarFont.scaled(11)),
                 .foregroundColor: NSColor.secondaryLabelColor,
             ]), token: .stateActive)
         }
@@ -270,7 +270,7 @@ final class LiveRowView: NSView {
                     : "last: \(lt.name) \(targetStr) · \(agoStr) ago"
                 // Tagged with stateActive (recency hint, like last prompt).
                 addLine(NSAttributedString(string: line, attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                    .font: NSFont.monospacedSystemFont(ofSize: BarFont.scaled(11), weight: .regular),
                     .foregroundColor: NSColor.tertiaryLabelColor,
                 ]), token: .stateActive)
             }
@@ -278,7 +278,7 @@ final class LiveRowView: NSView {
 
         // Metrics row — per-token labels in a horizontal stack so each
         // value chunk gets individual hover coverage.
-        let metFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let metFont = NSFont.monospacedSystemFont(ofSize: BarFont.scaled(12), weight: .regular)
         let metricsRow = makeInlineRow()
 
         // ctx % — value-stepped color; token mirrors the severity bucket so
@@ -294,7 +294,7 @@ final class LiveRowView: NSView {
             // the top rate bars — so context budget reads at a glance.
             appendBar(to: metricsRow, fraction: CGFloat(n) / 100.0, color: c)
             appendChip(to: metricsRow, text: "ctx \(ctx)%", token: ctxToken, attrs: [
-                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium),
+                .font: NSFont.monospacedSystemFont(ofSize: BarFont.scaled(12), weight: .medium),
                 .foregroundColor: c,
             ])
         }
@@ -340,7 +340,7 @@ final class LiveRowView: NSView {
            let ctxStr = inst.statusline?.ctxRemaining,
            let n = Int(ctxStr), n > 0 && n < 15 {
             addLine(NSAttributedString(string: "⚠ Context low (\(n)%) — compaction imminent", attributes: [
-                .font: NSFont.systemFont(ofSize: 11),
+                .font: NSFont.systemFont(ofSize: BarFont.scaled(11)),
                 .foregroundColor: menuRed,
             ]), token: .warnHigh)
         }
@@ -352,7 +352,7 @@ final class LiveRowView: NSView {
             if let cwd = inst.cwd, !cwd.isEmpty { disp = disp.replacingOccurrences(of: cwd, with: ".") }
             disp = disp.replacingOccurrences(of: home, with: "~")
             addLine(NSAttributedString(string: "📄 \(middleTruncate(disp, 46))", attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                .font: NSFont.monospacedSystemFont(ofSize: BarFont.scaled(11), weight: .regular),
                 .foregroundColor: NSColor.tertiaryLabelColor,
             ]), token: .stateActive, tooltip: disp)
         }
@@ -360,7 +360,7 @@ final class LiveRowView: NSView {
         // MCP-down warning (soft red)
         if rowShows(.mcpDown), let mcp = inst.statusline?.mcpDown, !mcp.isEmpty {
             addLine(NSAttributedString(string: "⚠ MCP down: \(mcp)", attributes: [
-                .font: NSFont.systemFont(ofSize: 11),
+                .font: NSFont.systemFont(ofSize: BarFont.scaled(11)),
                 .foregroundColor: menuRed,
             ]), token: .warnHigh)
         }

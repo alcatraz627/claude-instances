@@ -12,12 +12,23 @@ import Foundation
 // font; columnar / numeric content uses the monospaced one so digits line up.
 
 enum BarFont {
-    static let title        = NSFont.systemFont(ofSize: 13, weight: .semibold)   // identity
-    static let body         = NSFont.systemFont(ofSize: 12, weight: .regular)    // values, prose
-    static let caption      = NSFont.systemFont(ofSize: 11, weight: .regular)    // detail, prose
-    static let monoBody     = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-    static let monoCaption  = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-    static let sectionLabel = NSFont.systemFont(ofSize: 10, weight: .semibold)   // tracked header
+    /// User font-size multiplier (Settings → Display Sizing, key `ui.fontScale`,
+    /// default 1.0). Read at render time so a change re-renders on the next
+    /// refreshLiveRows(); clamped to a sane range.
+    static var scale: CGFloat {
+        let s = UserDefaults.standard.double(forKey: "ui.fontScale")
+        return s > 0 ? min(1.6, max(0.7, CGFloat(s))) : 1.0
+    }
+    /// Scale an arbitrary point size by the user multiplier — for the ad-hoc
+    /// sizes in LiveRowView that don't map to a named role.
+    static func scaled(_ pt: CGFloat) -> CGFloat { pt * scale }
+
+    static var title:        NSFont { .systemFont(ofSize: 13 * scale, weight: .semibold) }   // identity
+    static var body:         NSFont { .systemFont(ofSize: 12 * scale, weight: .regular) }     // values, prose
+    static var caption:      NSFont { .systemFont(ofSize: 11 * scale, weight: .regular) }     // detail, prose
+    static var monoBody:     NSFont { .monospacedSystemFont(ofSize: 12 * scale, weight: .regular) }
+    static var monoCaption:  NSFont { .monospacedSystemFont(ofSize: 11 * scale, weight: .regular) }
+    static var sectionLabel: NSFont { .systemFont(ofSize: 10 * scale, weight: .semibold) }    // tracked header
 }
 
 // ── Segment builder ──────────────────────────────────────────────────────────
