@@ -493,8 +493,13 @@ def get_live_instances():
     """Find running claude processes and extract metadata."""
     instances = []
     try:
+        # Enumerate with `ps`, NOT `pgrep -f`: the compiled (Bun) claude binary's
+        # argv is not readable through pgrep / KERN_PROCARGS on this machine, so a
+        # `pgrep -fl claude` scan silently returns ZERO live sessions (verified
+        # 2026-07-06 — `pgrep -f` matched none of a live session's tokens while
+        # `ps -o args` showed them). ps reads the accounting args reliably.
         result = subprocess.run(
-            ['pgrep', '-fl', 'claude'],
+            ['ps', '-Ao', 'pid=,args='],
             capture_output=True, text=True, timeout=3
         )
         if result.returncode != 0:
@@ -503,14 +508,17 @@ def get_live_instances():
         for line in result.stdout.strip().split('\n'):
             if not line.strip():
                 continue
-            parts = line.split(None, 1)
+            parts = line.strip().split(None, 1)
             if len(parts) < 2:
                 continue
             pid_str = parts[0]
             cmdline = parts[1]
 
-            # Only match main claude CLI invocations
-            if not (cmdline.startswith('claude ') or cmdline == 'claude'):
+            # Main claude CLI only: argv[0]'s basename is exactly 'claude', whether
+            # invoked bare (`claude …`) or by absolute path (`/…/.local/bin/claude …`,
+            # which is how the gcc-schedule launcher execs it). Basename-matching
+            # excludes claude-ipc / claude-instances-bar / other `claude-*` helpers.
+            if os.path.basename(cmdline.split(None, 1)[0]) != 'claude':
                 continue
             if any(skip in cmdline for skip in ['emit-event', 'hook', 'esbuild', 'server.js']):
                 continue
