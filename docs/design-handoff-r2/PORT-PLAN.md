@@ -111,6 +111,19 @@ adapter; no transcript.py changes required to start.
   one scan cycle (watch; scan.sh is provider-work territory) · boot-only 404
   noise priming foreign-provider recents whose transcripts the hub can't
   resolve. Then P3 phone pass.
+- 2026-07-13 (whole-transcript query, `fb10560`): hub free text now falls
+  through attrs → streamed tails → an on-demand full-transcript index
+  (in-memory per session; one bare /data per page load, then ?since=
+  incremental for live sessions at most once per query string; pool of 4;
+  never on boot — phone data stays user-initiated). Hits carry seq into the
+  existing deep-link machinery; qstat + empty card show a scanning state
+  while fetches run; endcap now reads "attributes + full transcripts".
+  Verified live in both themes: 7/13 match on an early-seq term with
+  per-session seqs, visible-record highlight, collapsed-record chapter
+  fallback, zero boot fetches, no refetch loops (foreign 404 marked failed
+  once). Remaining P2 item: limit-meter reset countdowns (owner taste call).
+  Noted for P3: a hit's <mark> can clip at narrow pane edges (pre-existing
+  .p-hit one-liner).
 - 2026-07-13 (night, feedback round two, `7635f33`): hub query history (last
   10, chips) · transcript-hit deep links (`#r<seq>&q=<term>`) · block
   permalinks ('#' on hover, all directions, `.linked` border on the target,
