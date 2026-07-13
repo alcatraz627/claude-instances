@@ -3,465 +3,864 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#13151c">
-<title>Claude sessions</title>
-<!--
-  The session hub's front door. Lists every Claude session running on this Mac
-  (and recent ones), reachable from any device on the tailnet. Each card links
-  into that session's live transcript at /s/<id>.
-
-  Holds no data of its own: on load and every few seconds it fetches
-  /api/sessions (the menu bar's own scan output, reshaped by hub-server.py) and
-  re-renders. Mobile-first — this is what you open on your phone.
--->
+<title>Session Index — handoff reference</title>
 <style>
+/* V6 "FLEET" index — the merged board. V3's state-grouped spine (Needs you →
+   Working → Ended), V5's query grammar + live peek panes, V1's table density,
+   keyboard cursor + hover preview, and explicit sort. Two densities:
+   peeks (panes with live tails) and table (k9s rows, preview on hover/cursor). */
 :root {
-    /* Soft blue-slate, matched to the transcript viewer for cross-surface
-       consistency. --good = working, --warn = your-turn, reserved + distinct. */
-    --bg: #13151c; --surface: #1b1e27; --surface2: #252935;
-    --text: #e9ecf4; --dim: #9499ab; --faint: #7b8295;   /* unified with transcript (was #646a7e) */
-    --accent: oklch(0.70 0.14 272); --accent2: oklch(0.70 0.14 182); --good: #5cb98a; --warn: #dcb05f; --err: #e07f72;
-    --border: rgba(180,190,225,.13); --card: #1b1e27;
-    --opus: #d8975a; --sonnet: var(--accent); --haiku: var(--accent2);
-    --shadow: 0 1px 0 rgba(0,0,0,0.25), 0 8px 22px -12px rgba(0,0,0,0.6);
+    color-scheme: dark;
+    --bg: #171922; --panel: #1d2029; --well: #1a1d25; --sel: #2a2e3a;
+    --edge: rgba(195,203,228,.13); --edge2: rgba(195,203,228,.25);
+    --text: #eceef5; --dim: #a0a6b9; --faint: #656c81;
+    --you: oklch(0.76 0.15 268); --claude: oklch(0.76 0.14 180);
+    --tool: #e2b05b; --err: #ea8578; --add: oklch(0.75 0.14 142);
+    --meta: oklch(0.74 0.11 305);
+    --you-soft: color-mix(in srgb, var(--you) 10%, transparent);
+    --err-soft: color-mix(in srgb, var(--err) 10%, transparent);
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --r: 10px; --tb-h: 44px;
+    --ease: cubic-bezier(.2,0,0,1); --t-fast: 130ms; --t-slow: 260ms;
+    --shadow: 0 10px 32px -12px rgba(0,0,0,.6);
 }
 :root.light {
-    --bg: #f4f6f9; --surface: #fff; --surface2: #e8ebf0;
-    --text: #1b1d23; --dim: #686c75; --faint: #6e727c;
-    --accent: oklch(0.52 0.15 272); --accent2: oklch(0.52 0.15 182); --good: #2f8a5b; --warn: #9c7320; --err: #bb5346;
-    --border: rgba(20,24,40,.13); --card: #fff;
-    --opus: #bb6037; --sonnet: var(--accent); --haiku: var(--accent2);
-    --shadow: 0 1px 2px rgba(31,35,40,0.06), 0 6px 16px -8px rgba(31,35,40,0.16);
+    color-scheme: light;
+    --bg: #f2f3f7; --panel: #fafbfd; --well: #ffffff; --sel: #e5e8f0;
+    --edge: rgba(25,30,48,.13); --edge2: rgba(25,30,48,.26);
+    --text: #1a1c23; --dim: #545a6b; --faint: #8b91a2;
+    --you: oklch(0.46 0.16 268); --claude: oklch(0.46 0.15 180);
+    --tool: #7e5d0e; --err: #b23f33; --add: oklch(0.46 0.14 142);
+    --meta: oklch(0.46 0.13 305);
+    --shadow: 0 10px 32px -12px rgba(30,40,70,.24);
 }
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
-body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
-    padding-bottom: env(safe-area-inset-bottom);
+body { margin: 0; background: var(--bg); color: var(--text); font: 14.5px/1.55 var(--sans); }
+button, select { font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+:focus:not(:focus-visible) { outline: none; }
+.icon { width: 15px; height: 15px; stroke: currentColor; stroke-width: 1.75;
+    stroke-linecap: round; stroke-linejoin: round; fill: none; flex: none; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+.topbar { position: fixed; top: 0; left: 0; right: 0; height: var(--tb-h); z-index: 60;
+    display: flex; align-items: center; gap: 10px; padding: 0 14px;
+    background: color-mix(in srgb, var(--bg) 90%, transparent); backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--edge); }
+.tb-brand { font: 650 14px var(--sans); }
+.tb-host { font: 11px var(--mono); color: var(--faint); }
+.tb-sp { flex: 1; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px;
+    border-radius: 999px; font: 700 11px var(--mono); }
+.chip .pulse { width: 7px; height: 7px; border-radius: 50%; background: currentColor; position: relative; }
+.chip.live { color: var(--claude); background: color-mix(in srgb, var(--claude) 12%, transparent); }
+.chip.live .pulse::after { content: ''; position: absolute; inset: -4px; border-radius: 50%;
+    border: 1.5px solid currentColor; opacity: 0; animation: pulse 2s var(--ease) infinite; }
+@keyframes pulse { 0% { transform: scale(.4); opacity: .8; } 70%,100% { transform: scale(1.1); opacity: 0; } }
+.chip.turn { color: var(--you); background: var(--you-soft); }
+.tbtn { height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 11px;
+    border: 1px solid var(--edge); border-radius: 999px; background: transparent; color: var(--dim);
+    font: 600 12px var(--sans); transition: all var(--t-fast) var(--ease); }
+.tbtn:hover { background: var(--sel); color: var(--text); border-color: var(--edge2); }
+select.tbtn { appearance: none; padding-right: 22px;
+    background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position: calc(100% - 14px) 55%, calc(100% - 10px) 55%; background-size: 4px 4px; background-repeat: no-repeat; }
+
+main { max-width: 1120px; margin: 0 auto; padding: calc(var(--tb-h) + 22px) 18px 70px; }
+.mh-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 22px; }
+h1 { font: 650 21px/1.2 var(--sans); letter-spacing: -.014em; margin: 0; }
+.mh-line { font: 12px var(--mono); color: var(--dim); display: flex; flex-wrap: wrap; gap: 4px 18px;
+    font-variant-numeric: tabular-nums; align-items: center; }
+.mh-line b { color: var(--text); font-weight: 700; }
+.meter { display: inline-flex; align-items: center; gap: 7px; }
+.meter .bar { width: 64px; height: 5px; border-radius: 999px; border: 1px solid var(--edge);
+    background: var(--sel); overflow: hidden; }
+.meter .bar i { display: block; height: 100%; border-radius: 999px; background: var(--dim); }
+.meter.warn .bar i { background: var(--tool); } .meter.warn b { color: var(--tool); }
+.meter.hot .bar i { background: var(--err); } .meter.hot b { color: var(--err); }
+
+/* query bar */
+.qbar { position: relative; margin-top: 16px; }
+.qbar > .icon { position: absolute; left: 12px; top: 50%; translate: 0 -50%; color: var(--faint); }
+#fq { width: 100%; height: 36px; background: var(--well); border: 1px solid var(--edge);
+    color: var(--text); border-radius: 999px; padding: 0 96px 0 36px; font: 13px var(--sans); }
+#fq::placeholder { color: var(--faint); }
+#fq:focus { outline: none; border-color: var(--you); box-shadow: 0 0 0 3px var(--you-soft); }
+.qstat { position: absolute; right: 14px; top: 50%; translate: 0 -50%; font: 10.5px var(--mono);
+    color: var(--faint); pointer-events: none; font-variant-numeric: tabular-nums; }
+.qhint { margin-top: 6px; font: 10.5px var(--mono); color: var(--faint); }
+.qhint code { background: var(--sel); border-radius: 4px; padding: 1px 6px; cursor: pointer; }
+.qhint code:hover { color: var(--text); }
+.p-hit { margin: 0 13px 9px; padding: 4px 10px; border-radius: 6px;
+    background: color-mix(in srgb, var(--tool) 10%, transparent);
+    font: 11px var(--mono); color: var(--dim); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; width: fit-content; max-width: calc(100% - 26px); }
+.p-hit mark { background: rgba(226,176,91,.3); color: var(--text); border-radius: 2px; }
+
+/* ---------------- peeks density (V5) ---------------- */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; margin-top: 18px; }
+.pane { display: flex; flex-direction: column; text-decoration: none; color: inherit;
+    background: var(--panel); border: 1px solid var(--edge); border-radius: var(--r); overflow: hidden;
+    transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease); }
+.pane:hover { border-color: var(--edge2); box-shadow: var(--shadow); }
+.pane.cur { outline: 2px solid var(--you); outline-offset: 2px; }
+.pane.turn { border-color: color-mix(in srgb, var(--you) 35%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--you) 22%, transparent); }
+.p-head { display: flex; align-items: baseline; gap: 9px; padding: 9px 13px;
+    border-bottom: 1px solid var(--edge); background: var(--well); }
+.p-st { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; align-self: center; position: relative; }
+.pane.turn .p-st { background: var(--you); }
+.pane.working .p-st { background: var(--claude); }
+.pane.working .p-st::after { content: ''; position: absolute; inset: -4px; border-radius: 50%;
+    border: 1.5px solid var(--claude); opacity: 0; animation: pulse 2s var(--ease) infinite; }
+.p-title { font: 650 14.5px var(--sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.p-model { flex: none; font: 700 10px var(--mono); letter-spacing: .06em; text-transform: uppercase;
+    color: var(--claude); border: 1px solid color-mix(in srgb, var(--claude) 30%, transparent);
+    border-radius: 4px; padding: 1px 6px; }
+.p-state { flex: none; font: 600 11.5px var(--sans); }
+.pane.turn .p-state { color: var(--you); }
+.pane.working .p-state { color: var(--claude); }
+.pane.ended .p-st { background: var(--faint); }
+.pane.ended .p-state { color: var(--faint); font-weight: 600; }
+.pane.ended .p-tail { opacity: .8; min-height: 0; }
+.p-el { flex: none; margin-left: auto; font: 10.5px var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+.p-tail { flex: 1; padding: 8px 13px 10px; font: 11.5px/1.65 var(--mono); min-height: 108px;
+    display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; position: relative; }
+.pane.turn .p-tail { min-height: 0; }
+.p-tail::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 26px;
+    background: linear-gradient(var(--panel), transparent); pointer-events: none; z-index: 1; }
+.p-line { display: flex; gap: 8px; color: var(--dim); white-space: nowrap; overflow: hidden; }
+.p-line .g { flex: none; width: 2ch; text-align: center; }
+.p-line .g.u { color: var(--you); font-weight: 700; }
+.p-line .g.a { color: var(--claude); }
+.p-line .g.t { color: var(--tool); }
+.p-line .g.e { color: var(--faint); }
+.p-line .tx { overflow: hidden; text-overflow: ellipsis; }
+.p-line .tx b { color: var(--tool); font-weight: 700; }
+.p-line.fresh { animation: fresh var(--t-slow) var(--ease); }
+@keyframes fresh { from { opacity: 0; translate: 0 5px; } }
+.p-line.cursorline .tx::after { content: '▋'; color: var(--claude); animation: blink 1.1s steps(1) infinite; margin-left: 2px; }
+@keyframes blink { 50% { opacity: 0; } }
+.p-wait { color: var(--faint); font-style: italic; }
+.p-wait b { color: var(--you); font-style: normal; font-weight: 700; }
+.p-alert { display: flex; align-items: center; gap: 7px; margin: 0 13px 9px; padding: 4px 10px;
+    border-radius: 6px; background: var(--err-soft); color: var(--err); font: 600 11.5px var(--sans); width: max-content; }
+.p-alert .icon { width: 13px; height: 13px; }
+.p-foot { display: flex; flex-wrap: wrap; gap: 3px 14px; padding: 8px 13px;
+    border-top: 1px solid var(--edge); background: var(--well);
+    font: 10.5px var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+.p-foot .ctx { display: inline-flex; align-items: center; gap: 5px; }
+.p-foot .ctx .bar { width: 36px; height: 4px; border-radius: 999px; background: var(--sel); overflow: hidden; }
+.p-foot .ctx .bar i { display: block; height: 100%; border-radius: 999px; background: var(--dim); }
+.p-foot .ctx.warn, .p-foot .ctx.warn b { color: var(--tool); } .p-foot .ctx.warn .bar i { background: var(--tool); }
+.p-foot .ctx.hot { color: var(--err); } .p-foot .ctx.hot .bar i { background: var(--err); }
+.p-foot .branch { color: color-mix(in srgb, var(--meta) 40%, var(--faint)); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.p-foot .mod { color: var(--tool); }
+
+/* ---------------- table density (V1) ---------------- */
+.tbl { border: 1px solid var(--edge); border-radius: 8px; overflow: hidden; background: var(--panel); margin-top: 10px; }
+.thead, .trow { display: grid; align-items: center; gap: 10px; padding: 0 12px;
+    grid-template-columns: 14px minmax(120px,1.1fr) 52px minmax(180px,2fr) 88px 56px 62px minmax(110px,1fr) 64px; }
+.thead { height: 28px; font: 700 10.5px var(--mono); letter-spacing: .07em; text-transform: uppercase;
+    color: var(--faint); border-bottom: 1px solid var(--edge); background: var(--well); }
+.trow { min-height: 44px; text-decoration: none; border-top: 1px solid var(--edge);
+    font: 12.5px var(--mono); font-variant-numeric: tabular-nums; color: var(--dim);
+    transition: background var(--t-fast) var(--ease); position: relative; }
+.trow:first-of-type { border-top: none; }
+.trow:hover, .trow.cur { background: var(--well); }
+.trow.turn { box-shadow: inset 2px 0 0 var(--you); }
+.trow.working { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--claude) 55%, transparent); }
+.st { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); position: relative; }
+.trow.turn .st { background: var(--you); }
+.trow.working .st { background: var(--claude); }
+.trow.working .st::after { content: ''; position: absolute; inset: -4px; border-radius: 50%;
+    border: 1.5px solid var(--claude); opacity: 0; animation: pulse 2s var(--ease) infinite; }
+.c-dir { font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-model { color: var(--dim); text-transform: lowercase; }
+.c-state { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-state b { font-weight: 700; }
+.trow.turn .c-state b { color: var(--you); } .trow.working .c-state b { color: var(--claude); }
+.c-state .doing { color: var(--faint); }
+.c-ctx { display: inline-flex; align-items: center; gap: 6px; }
+.c-ctx .gauge { width: 40px; height: 4px; border-radius: 2px; background: var(--sel); overflow: hidden; }
+.c-ctx .gauge i { display: block; height: 100%; background: var(--dim); }
+.c-ctx.warn { color: var(--tool); } .c-ctx.warn .gauge i { background: var(--tool); }
+.c-ctx.hot { color: var(--err); } .c-ctx.hot .gauge i { background: var(--err); }
+.c-branch { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); }
+.c-branch .mod { color: var(--tool); }
+.c-el { text-align: right; color: var(--faint); white-space: nowrap; }
+.t-hit { grid-column: 2 / -1; margin: 0 0 8px; }
+.t-hit .p-hit { margin: 0; }
+.mcp { grid-column: 2 / -1; display: flex; align-items: center; gap: 6px; padding: 0 0 8px;
+    color: var(--err); font: 600 11px var(--sans); }
+.mcp .icon { width: 12px; height: 12px; }
+/* hover/cursor preview — the V1 inspector idea: peek without opening */
+.hpk { position: fixed; z-index: 70; width: 380px; max-width: calc(100vw - 24px); display: none;
+    background: var(--panel); border: 1px solid var(--edge2); border-radius: var(--r);
+    box-shadow: var(--shadow); overflow: hidden; pointer-events: none; }
+.hpk.on { display: block; }
+.hpk .p-tail { min-height: 0; }
+.hpk .hd { display: flex; gap: 8px; align-items: baseline; padding: 7px 13px; background: var(--well);
+    border-bottom: 1px solid var(--edge); font: 700 11px var(--mono); color: var(--dim); }
+.hpk .hd b { color: var(--text); }
+@media (max-width: 1020px) {
+    .thead, .trow { grid-template-columns: 14px minmax(110px,1.1fr) minmax(170px,2fr) 88px minmax(100px,1fr) 64px; }
+    .c-model, .c-cost, .c-turns, .thead span:nth-child(3), .thead span:nth-child(7) { display: none; }
+    .hpk { display: none !important; }
 }
-code, .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
-a { color: inherit; text-decoration: none; }
-/* The `hidden` attribute is overridden by any explicit display (the chips set
-   display:inline-flex), so without this they'd show "0 live" when idle. */
-[hidden] { display: none !important; }
-
-/* ── Header ─────────────────────────────────────────────── */
-header {
-    position: sticky; top: 0; z-index: 10; background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    padding: max(10px, env(safe-area-inset-top)) 16px 12px;
+@media (max-width: 720px) {
+    .thead { display: none; }
+    .trow { grid-template-columns: 14px 1fr auto; grid-template-rows: auto auto; row-gap: 2px; padding: 9px 12px; }
+    .st { grid-row: 1; }
+    .c-dir { grid-row: 1; grid-column: 2; }
+    .c-el { grid-row: 1; grid-column: 3; }
+    .c-ctx, .c-cost, .c-model, .c-turns { display: none; }
+    .c-state { grid-row: 2; grid-column: 2 / -1; }
+    .c-branch { display: none; }
 }
-.h-top { display: flex; align-items: center; gap: 10px; }
-.brand { font-weight: 700; font-size: 17px; display: inline-flex; align-items: baseline; gap: 8px; }
-.brand .host { color: var(--dim); font-weight: 400; font-size: 13px; }
-.livechip {
-    font-size: 12px; font-weight: 600; color: var(--good);
-    background: color-mix(in srgb, var(--good) 14%, transparent);
-    border: 1px solid color-mix(in srgb, var(--good) 35%, transparent);
-    border-radius: 20px; padding: 2px 10px; display: inline-flex; align-items: center; gap: 6px;
-}
-.livechip .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--good); animation: pulse 2s infinite; }
-/* Refreshing spinner — shows only while a background fetch is in flight >250ms */
-.refresh-spin { display: inline-block; width: 14px; height: 14px; border-radius: 50%; flex: none;
-    border: 2px solid var(--border); border-top-color: var(--accent); animation: spin .7s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .refresh-spin { animation: none; } }
-@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
-.spacer { flex: 1; }
-.iconbtn {
-    width: 38px; height: 38px; border-radius: 9px; border: 1px solid var(--border);
-    background: var(--surface2); color: var(--text); font-size: 16px; cursor: pointer;
-    display: inline-flex; align-items: center; justify-content: center;
-}
-.iconbtn:active { transform: scale(0.94); }
 
-/* rate-limit bars + today line */
-.meta { margin-top: 11px; display: grid; gap: 7px; }
-.rl { display: flex; align-items: center; gap: 9px; font-size: 12px; }
-.rl .lbl { width: 26px; color: var(--dim); font-weight: 600; flex: none; }
-/* Track uses --bg (a clear step darker than the --surface header) so the empty
-   channel reads distinctly and the fill pops, even at low % (was --surface2,
-   nearly invisible against the header). */
-.rl .track { flex: 1; height: 7px; border-radius: 4px; background: var(--bg);
-    overflow: hidden; box-shadow: inset 0 0 0 1px var(--border); }
-/* min-width so genuinely low usage (e.g. 8%) still reads as a real bar, not an
-   empty/broken track. */
-.rl .fill { height: 100%; min-width: 5px; border-radius: 4px; transition: width .4s ease; }
-.rl .pct { width: 38px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; flex: none; }
-.rl .reset { color: var(--dim); width: 92px; text-align: right; flex: none; font-variant-numeric: tabular-nums; }
-.today { font-size: 12px; color: var(--dim); display: flex; flex-wrap: wrap; gap: 4px 12px; }
-.today b { color: var(--text); font-weight: 600; }
+.sec { display: flex; align-items: center; gap: 8px; margin: 26px 0 8px;
+    font: 700 10.5px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--faint); }
+.sec.you { color: var(--you); }
+.sec.cl { color: var(--claude); }
+.sec .n { background: var(--sel); color: var(--dim); border-radius: 999px; padding: 1px 7px; }
+.sec::after { content: ''; flex: 1; height: 1px; background: var(--edge); }
+.endcap { text-align: center; font: 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase;
+    color: var(--faint); margin: 32px 0 0; }
+.hint { text-align: center; font: 10.5px var(--mono); color: var(--faint); margin-top: 10px; }
+.hint .kbd { font: 10px var(--mono); border: 1px solid var(--edge); border-radius: 3px; padding: 1px 4px; background: var(--panel); }
 
-/* ── Layout ─────────────────────────────────────────────── */
-main { padding: 16px 16px 40px; max-width: 1180px; margin: 0 auto; }
-.section-h {
-    font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
-    color: var(--dim); margin: 22px 2px 10px; display: flex; align-items: center; gap: 8px;
-}
-.section-h:first-child { margin-top: 4px; }
-.section-h .n { color: var(--text); background: var(--surface2); border-radius: 10px; padding: 0 8px; font-size: 11px; }
-/* minmax(0,…) (not the implicit minmax(auto,…)) lets a column shrink below a
-   card's min-content — without it a long nowrap path forces horizontal scroll. */
-.grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
-@media (min-width: 700px) { .grid { grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); } }
+/* states */
+.sk { border-radius: var(--r); background: linear-gradient(90deg, var(--well) 25%, var(--sel) 40%, var(--well) 60%);
+    background-size: 200% 100%; animation: shimmer 1.4s linear infinite; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+.errbanner { display: flex; align-items: center; gap: 12px; margin: 26px 0; padding: 13px 15px;
+    border: 1px solid color-mix(in srgb, var(--err) 40%, transparent); border-left: 3px solid var(--err);
+    border-radius: var(--r); background: var(--err-soft); }
+.errbanner .icon { color: var(--err); width: 17px; height: 17px; }
+.errbanner .t b { display: block; font-weight: 650; }
+.errbanner .t span { color: var(--dim); font-size: 12.5px; }
+.errbanner button { margin-left: auto; height: 32px; padding: 0 14px; border-radius: 999px;
+    border: 1px solid var(--edge2); background: var(--panel); color: var(--text); font: 600 12.5px var(--sans); }
+.emptycard { margin: 15vh auto; text-align: center; color: var(--dim); }
+.emptycard .pane-ghost { width: 260px; height: 90px; margin: 0 auto; border: 1px dashed var(--edge2);
+    border-radius: var(--r); display: flex; align-items: center; justify-content: center;
+    font: 12px var(--mono); color: var(--faint); }
+.emptycard h2 { font: 650 18px var(--sans); color: var(--text); margin: 14px 0 5px; }
+.emptycard p { font-size: 13px; margin: 0 auto; max-width: 360px; }
 
-/* ── Live session card: status-first ────────────────────────── */
-.card {
-    display: block; position: relative; background: var(--card); border: 1px solid var(--border);
-    border-left-width: 3px; border-radius: 13px; overflow: hidden; box-shadow: var(--shadow);
-    transition: border-color .14s ease, transform .1s ease, box-shadow .14s ease;
-}
-.card:active { transform: scale(0.992); }
-@media (hover: hover) { .card:hover { border-color: var(--accent); box-shadow: 0 1px 0 rgba(0,0,0,.25), 0 14px 28px -14px rgba(0,0,0,.7); } }
-.card.enter { animation: cardIn .22s ease; }
-@keyframes cardIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-.card.s-working { border-left-color: var(--good); }
-.card.s-waiting { border-left-color: var(--warn); }
-.card.s-unknown { border-left-color: var(--faint); }
-.c-body { padding: 12px 14px; }
+.demo { position: fixed; left: 12px; bottom: 12px; z-index: 90; font: 10.5px var(--mono); }
+.demo summary { list-style: none; cursor: pointer; color: var(--faint); background: var(--panel);
+    border: 1px dashed var(--edge2); border-radius: 999px; padding: 3px 10px; }
+.demo-body { position: absolute; bottom: 28px; left: 0; width: 150px; background: var(--panel);
+    border: 1px dashed var(--edge2); border-radius: 8px; padding: 8px 10px;
+    display: flex; flex-direction: column; gap: 5px; box-shadow: var(--shadow); color: var(--dim); }
+.demo-body label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+/* ===== handoff: palette skins (color-only; includes --panel for card surfaces) ===== */
+:root[data-skin="tty"] { color-scheme: dark;
+    --bg: #14161e; --panel: #1d212c; --well: #191c26; --sel: #2a2f3d;
+    --edge: rgba(190,200,235,.17); --edge2: rgba(190,200,235,.3);
+    --text: #eef1f9; --dim: #aeb7cc; --faint: #6f7994;
+    --you: oklch(0.76 0.155 268); --claude: oklch(0.76 0.145 180); --tool: #e2b05b;
+    --err: #ea8578; --add: oklch(0.75 0.14 142); --meta: oklch(0.74 0.11 305); }
+:root[data-skin="tty"].light { color-scheme: light;
+    --bg: #f6f6f7; --panel: #ecedef; --well: #f0f0f2; --sel: #e2e4e8;
+    --edge: rgba(30,34,48,.16); --edge2: rgba(30,34,48,.3);
+    --text: #1e2027; --dim: #545866; --faint: #82879a;
+    --you: oklch(0.46 0.16 268); --claude: oklch(0.46 0.15 180); --tool: #8a6410;
+    --err: #b23f33; --add: oklch(0.46 0.14 142); --meta: oklch(0.46 0.13 305); }
+:root[data-skin="editorial"] { color-scheme: dark;
+    --bg: #191a21; --panel: #21232c; --well: #1d1f27; --sel: #2b2d38;
+    --edge: rgba(200,205,225,.13); --edge2: rgba(200,205,225,.24);
+    --text: #edeef4; --dim: #a2a7b8; --faint: #676d80;
+    --you: oklch(0.76 0.15 268); --claude: oklch(0.76 0.14 180); --tool: #e2b05b;
+    --err: #ea8578; --add: oklch(0.75 0.14 142); --meta: oklch(0.74 0.11 305); }
+:root[data-skin="editorial"].light { color-scheme: light;
+    --bg: #faf9f6; --panel: #f1efe9; --well: #f4f2ed; --sel: #e8e5dd;
+    --edge: rgba(35,32,24,.13); --edge2: rgba(35,32,24,.26);
+    --text: #1e1f24; --dim: #565b68; --faint: #8e93a1;
+    --you: oklch(0.46 0.16 268); --claude: oklch(0.46 0.15 180); --tool: #7e5d0e;
+    --err: #b23f33; --add: oklch(0.46 0.14 142); --meta: oklch(0.46 0.13 305); }
+:root[data-skin="product"] { color-scheme: dark;
+    --bg: #171923; --panel: #1f222c; --well: #1c1f28; --sel: #2a2e3a;
+    --edge: rgba(178,190,225,.12); --edge2: rgba(178,190,225,.22);
+    --text: #e8ebf3; --dim: #99a0b4; --faint: #6d7488;
+    --you: oklch(0.72 0.13 268); --claude: oklch(0.72 0.13 180); --tool: #d9ab55;
+    --err: #e07f72; --add: oklch(0.74 0.12 142); --meta: oklch(0.72 0.1 305); }
+:root[data-skin="product"].light { color-scheme: light;
+    --bg: #f2f4f8; --panel: #fff; --well: #eceef4; --sel: #e7eaf1;
+    --edge: rgba(22,28,45,.13); --edge2: rgba(22,28,45,.24);
+    --text: #1a1c23; --dim: #5f6575; --faint: #8a90a0;
+    --you: oklch(0.50 0.15 268); --claude: oklch(0.50 0.15 180); --tool: #8a6614;
+    --err: #b8483b; --add: oklch(0.50 0.13 142); --meta: oklch(0.50 0.13 305); }
 
-/* status leads the card — the "what needs me" answer */
-.status { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; min-width: 0; }
-.status .sdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
-.s-working .status .label { color: var(--good); } .s-working .sdot { background: var(--good); animation: pulse 1.5s infinite; }
-.s-waiting .status .label { color: var(--warn); } .s-waiting .sdot { background: var(--warn); }
-.s-unknown .status .label { color: var(--dim); } .s-unknown .sdot { background: var(--faint); }
-.status .label { flex: none; }
-.status .detail { color: var(--dim); font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.status .elapsed { margin-left: auto; color: var(--dim); font-weight: 400; font-variant-numeric: tabular-nums; flex: none; padding-left: 8px; }
+/* ===== handoff: text-size = UI scale on the board (dashboard, not prose) ===== */
+#main { zoom: var(--zoom, 1); }
 
-.c-id { display: flex; align-items: baseline; gap: 8px; margin-top: 9px; min-width: 0; }
-.model { font-weight: 700; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; flex: none; }
-.model .glyph { font-size: 10px; }
-.model.opus { color: var(--opus); } .model.sonnet { color: var(--sonnet); } .model.haiku { color: var(--haiku); }
-.proj { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
-.c-path { margin-top: 2px; font-size: 11.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.c-prompt {
-    margin-top: 9px; font-size: 13px; color: var(--dim); line-height: 1.45;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-}
-.c-prompt::before { content: '❯ '; color: var(--accent); font-weight: 700; }
-
-.c-metrics { margin-top: 11px; display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; font-size: 12.5px; }
-.ctx { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; color: var(--dim); }
-.ctx .bar { width: 42px; height: 6px; border-radius: 3px; background: var(--bg); box-shadow: inset 0 0 0 1px var(--border); overflow: hidden; }
-.ctx .bar > i { display: block; height: 100%; border-radius: 3px; }
-.m { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); font-variant-numeric: tabular-nums; }
-.m b { color: var(--text); font-weight: 600; }
-/* Colour discipline: tokens (a glance-value) keep teal; cost keeps amber; the
-   branch is ambient metadata, so it recedes to grey rather than competing. */
-.m.cost b { color: var(--warn); } .m.tok b { color: var(--accent2); }
-
-/* Weight tiles (design handoff §7): the same stat-tile idiom as the transcript
-   viewer's masthead so the two surfaces read as one system. The handoff's token
-   split-bar was tried and cut: the scan's input_tokens is non-cache input,
-   which caching keeps at ~0.2% of output, so the bar renders as a constant
-   single-colour stripe — decoration, not information. */
-.tiles { display: flex; gap: 18px; margin-top: 11px; }
-.tile { font-size: 11px; color: var(--dim); }
-.tile b { color: var(--text); font-size: 14px; font-weight: 700; margin-right: 4px; font-variant-numeric: tabular-nums; }
-.tile.out b { color: var(--accent2); }
-.branch { color: var(--dim); } .branch::before { content: '⎇ '; opacity: 0.7; }
-.c-warn { margin: 0 14px 12px; font-size: 12px; color: var(--err); display: flex; align-items: center; gap: 6px; }
-
-/* "your turn" header chip — amber, mirrors the card status */
-.turnchip {
-    font-size: 12px; font-weight: 600; color: var(--warn);
-    background: color-mix(in srgb, var(--warn) 15%, transparent);
-    border: 1px solid color-mix(in srgb, var(--warn) 38%, transparent);
-    border-radius: 20px; padding: 2px 10px; display: inline-flex; align-items: center; gap: 6px;
-}
-.turnchip .tdot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
-
-/* ── Recent rows ────────────────────────────────────────── */
-.recent { display: flex; flex-direction: column; gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-.rrow { display: flex; align-items: center; gap: 10px; padding: 11px 13px; background: var(--card); }
-@media (hover: hover) { .rrow:hover { background: var(--surface2); } }
-.rrow:active { background: var(--surface2); }
-.rrow .rmodel { font-size: 10px; font-weight: 700; text-transform: uppercase; width: 18px; text-align: center; flex: none; }
-.rrow .rproj { font-weight: 600; font-size: 14px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rrow .rmeta { color: var(--dim); font-size: 12px; flex: none; font-variant-numeric: tabular-nums; }
-.rrow .chev { color: var(--faint); flex: none; }
-
-/* Empty state: a calm centred panel (was a bare line in a vast void). */
-.empty { display: flex; flex-direction: column; align-items: center; justify-content: center;
-    text-align: center; min-height: 48vh; gap: 10px; color: var(--dim); }
-.empty-icon { width: 44px; height: 44px; border-radius: 50%; border: 2px solid var(--border);
-    position: relative; opacity: 0.7; }
-.empty-icon::after { content: ''; position: absolute; inset: 0; margin: auto; width: 9px; height: 9px;
-    border-radius: 50%; background: var(--faint); }
-.empty-title { font-size: 16px; font-weight: 600; color: var(--text); }
-.empty-sub { font-size: 13px; line-height: 1.55; color: var(--dim); max-width: 340px; }
-.offline { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); background: var(--err); color: #fff; padding: 7px 16px; border-radius: 20px; font-size: 13px; box-shadow: var(--shadow); display: none; z-index: 20; }
-.offline.show { display: block; }
-
-/* Loading skeleton — shape of the real cards/bars, shimmer until the first poll */
-@keyframes skshimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
-.skcard { height: 132px; border-radius: 13px; border: 1px solid var(--border);
-    background: linear-gradient(90deg, var(--surface) 25%, var(--surface2) 37%, var(--surface) 63%);
-    background-size: 400% 100%; animation: skshimmer 1.5s ease infinite; }
-.rl.sk .skbar { height: 9px; border-radius: 4px;
-    background: linear-gradient(90deg, var(--surface) 25%, var(--surface2) 37%, var(--surface) 63%);
-    background-size: 400% 100%; animation: skshimmer 1.5s ease infinite; }
-.rl.sk .track { box-shadow: none; }
-@media (prefers-reduced-motion: reduce) { .skcard, .rl.sk .skbar { animation: none; } }
+/* ===== handoff: the View panel ===== */
+.viewpanel { position: fixed; top: calc(var(--tb-h) + 8px); right: 12px; z-index: 78; width: 258px;
+    background: var(--panel); border: 1px solid var(--edge2); border-radius: 13px; box-shadow: var(--shadow);
+    padding: 13px 15px; display: none; flex-direction: column; gap: 13px; }
+.viewpanel.open { display: flex; }
+.vp-cap { font: 700 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--faint);
+    display: flex; align-items: center; gap: 8px; }
+.vp-cap::after { content: ''; flex: 1; height: 1px; background: var(--edge); }
+.vp-grp { display: flex; flex-direction: column; gap: 6px; }
+.vp-lb { font: 700 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint);
+    display: flex; justify-content: space-between; }
+.vp-lb b { color: var(--dim); font-weight: 700; }
+.vp-seg { display: flex; gap: 3px; background: var(--well); border: 1px solid var(--edge); border-radius: 9px; padding: 3px; }
+.vp-seg button { flex: 1; border: none; background: none; color: var(--dim); border-radius: 6px;
+    padding: 6px 3px; font: 600 11px var(--sans); white-space: nowrap; }
+.vp-seg button[aria-pressed="true"] { background: var(--you-soft); color: var(--you); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--you) 40%, transparent); }
+.vp-seg button:hover { color: var(--text); }
+.vp-range { width: 100%; accent-color: var(--you); }
+.vp-hint { font: 10.5px var(--mono); color: var(--faint); line-height: 1.5; }
 </style>
+<script>(function(){try{var s=localStorage.getItem('cc-skin');if(s&&s!=='native')document.documentElement.dataset.skin=s;var d=localStorage.getItem('hx-idir')||'fleet';document.documentElement.dataset.dir=d;var f=localStorage.getItem('hx-fs');if(f)document.documentElement.style.setProperty('--zoom',(parseFloat(f)/14.5).toFixed(3));}catch(e){}})()</script>
 </head>
 <body>
-<header>
-    <div class="h-top">
-        <span class="brand">Claude <span class="host" id="host">sessions</span></span>
-        <span class="refresh-spin" id="refreshSpin" title="Refreshing…" hidden></span>
-        <span class="livechip" id="livechip" hidden><span class="pulse"></span><span id="liveN">0</span> live</span>
-        <span class="turnchip" id="turnchip" hidden><span class="tdot"></span><span id="turnN">0</span> your turn</span>
-        <span class="spacer"></span>
-        <button class="iconbtn" id="theme" title="Toggle theme" aria-label="Toggle theme">◐</button>
-    </div>
-    <div class="meta" id="meta">
-        <div class="rl sk"><span class="skbar" style="width:26px"></span><span class="track"></span><span class="skbar" style="width:34px"></span></div>
-        <div class="rl sk"><span class="skbar" style="width:26px"></span><span class="track"></span><span class="skbar" style="width:34px"></span></div>
-    </div>
-</header>
 
-<main>
-    <div id="liveWrap">
-        <div class="section-h" id="liveHead" hidden>Live <span class="n" id="liveHeadN"></span></div>
-        <div class="grid" id="liveGrid">
-            <div class="skcard"></div><div class="skcard"></div><div class="skcard"></div>
-        </div>
-        <div class="empty" id="liveEmpty" hidden>
-            <div class="empty-icon" aria-hidden="true"></div>
-            <div class="empty-title">No sessions running</div>
-            <div class="empty-sub">Live Claude Code sessions on this machine show up here.<br>Start one in a terminal and it'll appear within a few seconds.</div>
-        </div>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5 5l1.7 1.7M17.3 17.3L19 19M19 5l-1.7 1.7M6.7 17.3L5 19"/></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 13.5A8 8 0 0 1 10.5 4 8 8 0 1 0 20 13.5z"/></symbol>
+<symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.5L21.5 20h-19zM12 10v4.5M12 17.5h0"/></symbol>
+<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7.5" height="7.5" rx="1.5"/><rect x="13" y="3.5" width="7.5" height="7.5" rx="1.5"/><rect x="3.5" y="13" width="7.5" height="7.5" rx="1.5"/><rect x="13" y="13" width="7.5" height="7.5" rx="1.5"/></symbol>
+<symbol id="i-rows" viewBox="0 0 24 24"><path d="M4 6.5h16M4 12h16M4 17.5h16"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5L21 21"/></symbol>
+<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8l1.2 2.6 2.8-.6 1 2.7 2.7 1-.6 2.8 2.6 1.2-2.6 1.2.6 2.8-2.7 1-1 2.7-2.8-.6L12 21.2l-1.2-2.6-2.8.6-1-2.7-2.7-1 .6-2.8L2.3 12l2.6-1.2-.6-2.8 2.7-1 1-2.7 2.8.6z" opacity=".55"/></symbol>
+</defs></svg>
+
+<div class="topbar">
+  <span class="tb-brand">Claude</span><span class="tb-host">Aakarshs-M5-Pro</span>
+  <span class="tb-sp"></span>
+  <span class="chip live" id="chipLive"></span>
+  <span class="chip turn" id="chipTurn"></span>
+  <select class="tbtn" id="sortSel" title="Sort within groups">
+    <option value="urgency">sort: urgency</option>
+    <option value="recency">sort: recency</option>
+    <option value="cost">sort: cost</option>
+    <option value="ctx">sort: ctx left</option>
+  </select>
+  <button class="tbtn" id="densBtn" title="Toggle density (d)"></button>
+  <button class="tbtn" id="viewBtn" title="View options" aria-pressed="false"><svg class="icon"><use href="#i-gear"/></svg><span class="lb">view</span></button>
+  <button class="tbtn" id="themeBtn" title="Toggle theme"><svg class="icon"><use href="#i-moon"/></svg></button>
+</div>
+
+<main id="main"></main>
+<div class="hpk" id="hpk" aria-hidden="true"></div>
+<div class="viewpanel" id="viewPanel">
+  <div class="vp-cap">View</div>
+  <div class="vp-grp"><span class="vp-lb">Direction</span>
+    <div class="vp-seg" id="vpDir">
+      <button data-dir="fleet">Fleet</button><button data-dir="v5grid">Grid</button><button data-dir="base">Base</button>
     </div>
-    <div id="recentWrap"></div>
-</main>
-<div class="offline" id="offline">offline — can't reach the hub</div>
+    <span class="vp-hint" id="vpDirHint"></span>
+  </div>
+  <div class="vp-grp"><span class="vp-lb">Palette</span>
+    <div class="vp-seg" id="vpSkin">
+      <button data-skin="native">Native</button><button data-skin="tty">TTY</button><button data-skin="editorial">Editorial</button><button data-skin="product">Product</button>
+    </div>
+  </div>
+  <div class="vp-grp"><span class="vp-lb">Theme</span>
+    <div class="vp-seg" id="vpTheme"><button data-theme="dark">Dark</button><button data-theme="light">Light</button></div>
+  </div>
+  <div class="vp-grp"><span class="vp-lb">Text size <b id="vpFsVal">14.5</b>px</span>
+    <input class="vp-range" type="range" id="vpFs" min="12" max="18" step="0.5" value="14.5">
+  </div>
+</div>
 
 <script>
 "use strict";
-
-// ── Theme (dark default, persisted) ─────────────────────────────────────────
-const root = document.documentElement;
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ic = n => `<svg class="icon" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+const SS = { theme: 'cv-theme', dens: 'v6-density', sort: 'v6-sort' };
 function applyTheme(t) {
-    root.classList.toggle('light', t === 'light');
-    document.querySelector('meta[name=theme-color]').setAttribute('content', t === 'light' ? '#ffffff' : '#13151c');
+    document.documentElement.classList.toggle('light', t === 'light');
+    $('#themeBtn').innerHTML = ic(t === 'light' ? 'sun' : 'moon');
+    document.querySelectorAll('#vpTheme button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.theme === t)));
+    try { localStorage.setItem(SS.theme, t); } catch (e) {}
 }
-applyTheme(localStorage.getItem('hub-theme') || 'dark');
-document.getElementById('theme').addEventListener('click', () => {
-    const next = root.classList.contains('light') ? 'dark' : 'light';
-    localStorage.setItem('hub-theme', next); applyTheme(next);
-});
+applyTheme((() => { try { return localStorage.getItem(SS.theme) || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'); } catch (e) { return 'dark'; } })());
+$('#themeBtn').onclick = () => applyTheme(document.documentElement.classList.contains('light') ? 'dark' : 'light');
 
-// ── Formatting helpers ───────────────────────────────────────────────────────
-function esc(s) { return (s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
-function fmtTok(n) {
-    n = +n || 0;
-    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-    if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + 'K';
-    return String(n);
+/* ── real data ──────────────────────────────────────────────────────────
+   This page holds no session data of its own. FEED refills from
+   GET /api/sessions every poll; per-session tails stream from each
+   session's own GET /s/<id>/data?since=<seq> (keyed by session_id —
+   never by feed position). */
+const FEED = { host: '', live: [], recent: [],
+    limits: { '5h': { pct: 0 }, week: { pct: 0 } },
+    aggregates: { today: { sessions: 0, tokens_out: 0, cost_usd: 0 } } };
+const lim = p => p >= 90 ? 'hot' : p >= 70 ? 'warn' : '';
+const ctxCls = p => p < 10 ? 'hot' : p < 25 ? 'warn' : '';
+const kfmt = n => { n = +n || 0; return n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + 'K' : String(n); };
+function prettyModel(id) {
+    const parts = String(id || '').replace(/^claude-/, '').split('-');
+    if (!parts[0]) return '?';
+    const name = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+    const ver = parts.slice(1).filter(p => /^\d{1,2}$/.test(p)).join('.');
+    return ver ? `${name} ${ver}` : name;
 }
-function fmtCost(n) { n = +n || 0; return n >= 100 ? '$' + n.toFixed(0) : '$' + n.toFixed(2); }
-// Turn raw `ps etime` ([[DD-]HH:]MM:SS) into a human duration ("3d 1h" / "14h 7m"
-// / "22m") instead of dumping "03-01:13:13" which reads as a broken clock.
-function fmtElapsed(raw) {
-    if (!raw) return '';
+function etimeMin(raw) {   // ps etime: [[DD-]HH:]MM:SS → minutes
+    if (!raw) return 9e9;
     let days = 0, rest = String(raw);
-    if (rest.includes('-')) { const p = rest.split('-'); days = parseInt(p[0], 10) || 0; rest = p[1]; }
-    const t = rest.split(':').map(n => parseInt(n, 10) || 0);
+    if (rest.includes('-')) { const p = rest.split('-'); days = +p[0] || 0; rest = p[1]; }
+    const t = rest.split(':').map(n => +n || 0);
     let h = 0, m = 0;
     if (t.length === 3) { h = t[0]; m = t[1]; } else if (t.length === 2) { m = t[0]; }
-    if (days > 0) return days + 'd ' + h + 'h';
-    if (h > 0) return h + 'h ' + m + 'm';
-    return m + 'm';
+    return days * 1440 + h * 60 + m;
 }
-// Titles like "?" or whitespace are junk — treat as empty so the real fallback wins.
-function cleanTitle(t) { t = (t || '').trim(); return (t && t !== '?') ? t : ''; }
-function modelClass(m) { m = (m || '').toLowerCase(); return m.includes('opus') ? 'opus' : m.includes('sonnet') ? 'sonnet' : m.includes('haiku') ? 'haiku' : ''; }
-function modelGlyph(m) { m = (m || '').toLowerCase(); return m.includes('opus') ? '◆' : m.includes('sonnet') ? '●' : m.includes('haiku') ? '○' : '◇'; }
-function modelName(m) { m = (m || '').toLowerCase(); return m.includes('opus') ? 'Opus' : m.includes('sonnet') ? 'Sonnet' : m.includes('haiku') ? 'Haiku' : (m || '?'); }
-function sevColor(pct) { return pct >= 90 ? 'var(--err)' : pct >= 70 ? 'var(--warn)' : 'var(--good)'; }
-function ctxColor(rem) { return rem < 30 ? 'var(--err)' : rem < 60 ? 'var(--warn)' : 'var(--good)'; }
+function fmtElapsed(raw) {
+    const m = etimeMin(raw); if (m >= 9e9) return '';
+    const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mm = m % 60;
+    return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${mm}m` : `${mm}m`;
+}
 function relTime(iso) {
     if (!iso) return '';
-    const then = new Date(iso).getTime(); if (isNaN(then)) return '';
-    const s = Math.max(0, (Date.now() - then) / 1000);
+    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (isNaN(s)) return '';
     if (s < 60) return 'just now';
     if (s < 3600) return Math.floor(s / 60) + 'm ago';
     if (s < 86400) return Math.floor(s / 3600) + 'h ago';
     return Math.floor(s / 86400) + 'd ago';
 }
-function countdown(epochSec) {
-    if (!epochSec) return '';
-    let s = (+epochSec * 1000 - Date.now()) / 1000;
-    if (s <= 0) return 'now';
-    const d = Math.floor(s / 86400); s -= d * 86400;
-    const h = Math.floor(s / 3600); s -= h * 3600;
-    const m = Math.floor(s / 60);
-    if (d > 0) return `${d}d ${h}h`;
-    if (h > 0) return `${h}h ${m}m`;
-    return `${m}m`;
-}
-const ACTIVE = new Set(['thinking', 'responding', 'tool_use']);
-
-// ── Render ───────────────────────────────────────────────────────────────────
-function renderMeta(d) {
-    const L = d.limits || {}, five = L['5h'] || {}, week = L.week || {};
-    const ag = (d.aggregates || {}).today || {};
-    const bar = (lbl, o, reset) => {
-        const pct = Math.min(100, Math.round(o.pct || 0));
-        return `<div class="rl"><span class="lbl">${lbl}</span>
-            <span class="track"><span class="fill" style="width:${pct}%;background:${sevColor(pct)}"></span></span>
-            <span class="pct">${pct}%</span><span class="reset">${reset ? 'resets ' + countdown(reset) : ''}</span></div>`;
-    };
-    let html = '';
-    if (five.pct != null) html += bar('5h', five, L.resets_at);
-    if (week.pct != null) html += bar('7d', week, L.resets_at_weekly);
-    if (ag.sessions != null) html += `<div class="today">
-        <span><b>${ag.sessions || 0}</b> sessions today</span>
-        <span><b>${fmtTok(ag.turns)}</b> turns</span>
-        <span><b>${fmtTok(ag.tokens_out)}</b> out</span>
-        <span><b>${fmtCost(ag.cost_usd)}</b></span></div>`;
-    document.getElementById('meta').innerHTML = html;
-}
-
-// A live session is either WORKING (Claude is generating) or, since the process
-// is up but idle, waiting on YOU. The second case is what needs attention, so it
-// sorts to the top and wears the amber accent.
-function statusOf(s) {
-    if (ACTIVE.has(s.state) || s.state === 'tool_result') {
-        const verb = { thinking: 'thinking', responding: 'writing', tool_use: 'running tools', tool_result: 'processing' }[s.state] || 'working';
-        return { kind: 'working', label: 'Working', detail: s.state_detail || verb };
-    }
-    if (s.state === 'idle') return { kind: 'waiting', label: 'Your turn', detail: '' };
-    // Unknown / empty / not-yet-emitted state (a booting session, a future server
-    // string) — neutral, NOT counted as your-turn so it can't inflate the chip.
-    return { kind: 'unknown', label: 'Starting', detail: s.state_detail || '' };
-}
+function cleanTitle(t) { t = (t || '').trim(); return (t && t !== '?') ? t : ''; }
 function baseName(p) { p = (p || '').replace(/\/+$/, ''); const i = p.lastIndexOf('/'); return i >= 0 ? p.slice(i + 1) : p; }
-function liveCardInner(s) {
-    const st = statusOf(s), mc = modelClass(s.model);
-    const rem = parseInt(s.ctx_remaining, 10), hasCtx = !isNaN(rem);
-    const path = s.cwd_short || s.cwd || '';
-    // Title is the tab title or the project folder name; show the full path below
-    // only when it adds something (otherwise the two lines just repeat each other).
-    const titleText = cleanTitle(s.tab_title) || baseName(path) || '(session)';
-    const proj = esc(titleText);
-    const showPath = path && path !== titleText;
-    // Weight tiles (§7): turns · tools · output. Always rendered (zeros stay
-    // honest on a booting session) so card heights stay uniform in the grid.
-    const tiles = `<div class="tiles">
-        <span class="tile"><b>${+s.turns || 0}</b>turns</span>
-        <span class="tile"><b>${+s.tool_calls || 0}</b>tools</span>
-        <span class="tile out"><b>${fmtTok(s.output_tokens)}</b>↑ out</span>
-    </div>`;
-    const metrics = [
-        hasCtx ? `<span class="ctx" title="context remaining"><span class="bar"><i style="width:${Math.min(100, rem)}%;background:${ctxColor(rem)}"></i></span>${rem}%</span>` : '',
-        (+s.cost_usd) ? `<span class="m cost"><b>${fmtCost(s.cost_usd)}</b></span>` : '',
-        (+s.subagent_count) ? `<span class="m">↳<b>${s.subagent_count}</b></span>` : '',
-        s.git_branch ? `<span class="m branch">${esc(s.git_branch)}${(+s.git_modified) ? ' *' + s.git_modified : ''}</span>` : '',
-    ].filter(Boolean).join('');
-    return `<div class="c-body">
-        <div class="status"><span class="sdot"></span><span class="label">${st.label}</span>${st.detail ? `<span class="detail">· ${esc(st.detail)}</span>` : ''}<span class="elapsed" title="running for ${esc(fmtElapsed(s.elapsed))}">${esc(fmtElapsed(s.elapsed))}</span></div>
-        <div class="c-id"><span class="model ${mc}"><span class="glyph">${modelGlyph(s.model)}</span>${modelName(s.model)}</span><span class="proj">${proj}</span></div>
-        ${showPath ? `<div class="c-path">${esc(path)}</div>` : ''}
-        ${s.last_prompt ? `<div class="c-prompt">${esc(s.last_prompt)}</div>` : ''}
-        ${tiles}
-        <div class="c-metrics">${metrics}</div>
-    </div>${s.mcp_down ? `<div class="c-warn">⚠ MCP down: ${esc(s.mcp_down)}</div>` : ''}`;
+const DOING = { thinking: 'thinking', responding: 'writing', tool_use: 'running tools', tool_result: 'processing' };
+function adaptFeed(d) {
+    FEED.host = (d.host || '').replace(/\.local$/, '');
+    FEED.live = (d.live || []).map(s => Object.assign({}, s, {
+        state: s.state === 'idle' ? 'idle' : 'working',
+        doing: s.state_detail || DOING[s.state] || (s.state ? s.state : 'starting…'),
+        ctx_remaining: (v => isNaN(v) ? null : v)(parseInt(s.ctx_remaining, 10)),
+        cost_usd: +s.cost_usd || 0, turns: +s.turns || 0,
+        output_tokens: kfmt(s.output_tokens),
+        git_modified: +s.git_modified || 0,
+        elapsed: fmtElapsed(s.elapsed), _ageMin: etimeMin(s.elapsed),
+        cwd_short: cleanTitle(s.tab_title) || s.cwd_short || baseName(s.cwd) || '(session)',
+        model: prettyModel(s.model),
+    }));
+    const liveIds = new Set(FEED.live.map(s => s.session_id));
+    FEED.recent = (d.recent || [])
+        .filter(r => r.session_id && !liveIds.has(r.session_id))   // a live session's log is also the freshest history file
+        .slice(0, 12).map(s => Object.assign({}, s, {
+        state: 'ended', cost_usd: +s.cost_usd || 0, turns: +s.turns || 0,
+        model: prettyModel(s.model), git_branch: '',
+        ago: relTime(s.modified),
+        _ageMin: s.modified ? Math.max(0, (Date.now() - new Date(s.modified).getTime()) / 60000) : 9e9,
+        cwd_short: s.cwd_short || '(session)',
+    }));
+    FEED.limits = { '5h': (d.limits && d.limits['5h']) || { pct: 0 }, week: (d.limits && d.limits.week) || { pct: 0 } };
+    const ag = (d.aggregates || {}).today || {};
+    FEED.aggregates = { today: { sessions: +ag.sessions || 0, tokens_out: kfmt(ag.turns != null ? ag.tokens_out : 0), cost_usd: +ag.cost_usd || 0 } };
 }
-// Keyed update: cards keep their DOM identity across the 5s poll, so nothing
-// flickers, scroll doesn't jump, and an in-progress tap survives. Only changed
-// cards repaint; gone sessions are removed; order follows the your-turn sort.
-const cardEls = new Map();
-function renderLive(live) {
-    const order = { waiting: 0, working: 1, unknown: 2 };
-    const sorted = live.slice().sort((a, b) => order[statusOf(a).kind] - order[statusOf(b).kind]);
-    const grid = document.getElementById('liveGrid'), seen = new Set();
-    grid.querySelectorAll('.skcard').forEach(el => el.remove());   // clear loading skeleton
-    sorted.forEach((s, i) => {
-        seen.add(s.session_id);
-        const st = statusOf(s), html = liveCardInner(s);
-        let el = cardEls.get(s.session_id);
-        if (!el) {
-            el = document.createElement('a');
-            el.href = '/s/' + encodeURIComponent(s.session_id);
-            el.className = 'card enter s-' + st.kind;
-            el.innerHTML = html; el._html = html;
-            cardEls.set(s.session_id, el);
-            setTimeout(() => el.classList.remove('enter'), 320);
-        } else {
-            el.className = 'card s-' + st.kind;
-            if (el._html !== html) { el.innerHTML = html; el._html = html; }
-        }
-        if (grid.children[i] !== el) grid.insertBefore(el, grid.children[i] || null);
+
+/* density + sort, persisted */
+let density = (() => { try { return localStorage.getItem(SS.dens) || 'peeks'; } catch (e) { return 'peeks'; } })();
+let sortBy = (() => { try { return localStorage.getItem(SS.sort) || 'urgency'; } catch (e) { return 'urgency'; } })();
+let curQ = '';
+let cursor = -1; // keyboard selection over rendered items
+
+function densLabel() { $('#densBtn').innerHTML = density === 'peeks' ? ic('rows') + 'table' : ic('grid') + 'peeks'; }
+$('#densBtn').onclick = () => {
+    density = density === 'peeks' ? 'table' : 'peeks';
+    try { localStorage.setItem(SS.dens, density); } catch (e) {}
+    densLabel(); renderBoard(curQ);
+};
+$('#sortSel').value = sortBy;
+$('#sortSel').onchange = () => { sortBy = $('#sortSel').value; try { localStorage.setItem(SS.sort, sortBy); } catch (e) {} renderBoard(curQ); };
+
+/* peek-tail lines */
+function lineFor(r) {
+    if (!r) return null;
+    if (r.role === 'user') return { g: '❯', c: 'u', tx: String(r.text || '').replace(/<[^>]+>/g, ' ').trim().slice(0, 120) };
+    if (r.role === 'assistant') return { g: '⏺', c: 'a', tx: String(r.text || '').replace(/[#*`>]/g, '').trim().slice(0, 120) };
+    if (r.role === 'tools') { const t = r.tools[0];
+        return { g: '⏵', c: 't', tx: `<b>${esc(t.name)}</b> ${esc((t.preview || (t.input && t.input.command) || '').slice(0, 100))}`, html: true }; }
+    return { g: '·', c: 'e', tx: String(r.text || '').slice(0, 100) };
+}
+/* Tails stream from each session's own transcript endpoint, keyed strictly by
+   session_id. Prime = probe total_records via an impossible ?since, then fetch
+   the last slice; after that ?since=<lastSeq> is incremental. */
+const tails = {};                     // sid → { src: [lines], lastSeq, loading }
+const TAIL_KEEP = 40, TAIL_PRIME = 12;
+function ingestTail(sid, recs) {
+    const t = tails[sid]; if (!t) return;
+    t.loading = false;
+    for (const r of recs || []) {
+        if (r.seq <= t.lastSeq) continue;
+        t.lastSeq = r.seq;
+        const l = lineFor(r); if (l) t.src.push(l);
+    }
+    if (t.src.length > TAIL_KEEP) t.src = t.src.slice(-TAIL_KEEP);
+}
+async function primeTail(sid) {
+    if (!sid || tails[sid]) return;
+    tails[sid] = { src: [], lastSeq: 0, loading: true };
+    try {
+        const probe = await (await fetch(`/s/${encodeURIComponent(sid)}/data?since=2000000000`, { cache: 'no-store' })).json();
+        const total = (probe.meta && probe.meta.total_records) || 0;
+        const d = await (await fetch(`/s/${encodeURIComponent(sid)}/data?since=${Math.max(0, total - TAIL_PRIME)}`, { cache: 'no-store' })).json();
+        ingestTail(sid, d.records);
+        refreshTailDOM(sid);
+    } catch (e) { tails[sid].loading = false; }
+}
+function refreshTailDOM(sid) {
+    const s = FEED.live.find(x => x.session_id === sid) || FEED.recent.find(x => x.session_id === sid);
+    if (!s) return;
+    const el = document.querySelector(`[data-tail="${sid}"]`);
+    if (el) {
+        const lines = tailLinesFor(s);
+        el.innerHTML = lines.map((l, i) => lineHTML(l, s.state === 'working' && i === lines.length - 1 ? ' cursorline fresh' : '')).join('');
+    }
+    if (hpkSid === sid) {
+        const row = document.querySelector(`[data-peek][data-sid="${sid}"]`);
+        if (row) showPeek(row);
+    }
+}
+function tailLinesFor(s) {
+    const t = tails[s.session_id];
+    if (!t) return [];
+    if (s.state === 'idle') return t.src.slice(Math.max(0, t.src.length - 2));
+    if (s.state === 'ended') return t.src.slice(Math.max(0, t.src.length - 3));
+    return t.src.slice(Math.max(0, t.src.length - 5));
+}
+const lineHTML = (l, extra) =>
+    `<div class="p-line${extra || ''}"><span class="g ${l.c}">${l.g}</span><span class="tx">${l.html ? l.tx : esc(l.tx)}</span></div>`;
+
+/* ---------------- peeks density ---------------- */
+function paneHTML(s, hit) {
+    const yourTurn = s.state === 'idle';
+    const kind = yourTurn ? 'turn' : 'working';
+    let tail;
+    if (yourTurn) {
+        tail = tailLinesFor(s).map(l => lineHTML(l)).join('') +
+            `<div class="p-line p-wait"><span class="g u">❯</span><span class="tx"><b>your turn</b>${s.last_prompt ? ` — last: ${esc(s.last_prompt.slice(0, 90))}…` : ''}</span></div>`;
+    } else {
+        const lines = tailLinesFor(s);
+        tail = lines.map((l, i) => lineHTML(l, i === lines.length - 1 ? ' cursorline' : '')).join('');
+    }
+    return `<a class="pane ${kind}" href="/s/${encodeURIComponent(s.session_id)}" data-sid="${esc(s.session_id)}" data-screen-label="session ${esc(s.cwd_short)}">` +
+        `<div class="p-head"><span class="p-st"></span><span class="p-title">${esc(s.cwd_short)}</span>` +
+        `<span class="p-model">${esc(s.model)}</span>` +
+        `<span class="p-state">${yourTurn ? 'your turn' : 'working'}</span>` +
+        `<span class="p-el">${esc(s.elapsed)}</span></div>` +
+        `<div class="p-tail" data-tail="${esc(s.session_id)}">${tail}</div>` +
+        (hit ? hitHTML(hit) : '') +
+        (s.mcp_down ? `<div class="p-alert">${ic('alert')}MCP down: ${esc(s.mcp_down)}</div>` : '') +
+        `<div class="p-foot">` +
+        (s.ctx_remaining != null ? `<span class="ctx ${ctxCls(s.ctx_remaining)}"><span class="bar"><i style="width:${s.ctx_remaining}%"></i></span>ctx ${s.ctx_remaining}%</span>` : '') +
+        `<span>↑${esc(s.output_tokens)}</span><span>$${s.cost_usd.toFixed(2)}</span>` +
+        `<span>${s.turns}t</span>` +
+        (s.subagent_count ? `<span>↳${s.subagent_count}</span>` : '') +
+        (s.git_branch ? `<span class="branch">⎇ ${esc(s.git_branch)}${s.git_modified ? ` <span class="mod">*${s.git_modified}</span>` : ''}</span>` : '') +
+        `</div></a>`;
+}
+function endedPaneHTML(s, hit) {
+    return `<a class="pane ended" href="/s/${encodeURIComponent(s.session_id)}" data-sid="${esc(s.session_id)}" data-peek="1">` +
+        `<div class="p-head"><span class="p-st"></span><span class="p-title">${esc(s.cwd_short)}</span>` +
+        `<span class="p-model">${esc(s.model)}</span><span class="p-state">ended</span>` +
+        `<span class="p-el">${esc(s.ago)}</span></div>` +
+        `<div class="p-tail" data-tail="${esc(s.session_id)}">` + tailLinesFor(s).map(l => lineHTML(l)).join('') + `</div>` +
+        (hit ? hitHTML(hit) : '') +
+        `<div class="p-foot"><span>${s.turns}t</span><span>$${s.cost_usd.toFixed(2)}</span>` +
+        (s.git_branch ? `<span class="branch">⎇ ${esc(s.git_branch)}</span>` : '') + `</div></a>`;
+}
+
+/* ---------------- table density ---------------- */
+function rowHTML(s, hit) {
+    const yourTurn = s.state === 'idle', ended = s.state === 'ended';
+    const kind = ended ? 'ended' : yourTurn ? 'turn' : 'working';
+    return `<a class="trow ${kind}" href="/s/${encodeURIComponent(s.session_id || '')}" data-sid="${esc(s.session_id || '')}" data-peek="1">` +
+        `<span class="st"></span>` +
+        `<span class="c-dir">${esc(s.cwd_short)}</span>` +
+        `<span class="c-model">${esc(s.model)}</span>` +
+        `<span class="c-state"><b>${ended ? 'ended' : yourTurn ? 'your turn' : 'working'}</b>` +
+        `<span class="doing"> · ${esc(ended ? 'finished ' + (s.ago || '') : yourTurn ? (s.last_prompt || '').slice(0, 56) + '…' : (s.doing || ''))}</span></span>` +
+        (ended || s.ctx_remaining == null ? `<span class="c-ctx">—</span>` :
+            `<span class="c-ctx ${ctxCls(s.ctx_remaining)}"><span class="gauge"><i style="width:${s.ctx_remaining}%"></i></span>${s.ctx_remaining}%</span>`) +
+        `<span class="c-cost">$${s.cost_usd.toFixed(2)}</span>` +
+        `<span class="c-turns">${s.turns}t</span>` +
+        `<span class="c-branch">${s.git_branch ? `⎇ ${esc(s.git_branch)}${s.git_modified ? ` <span class="mod">*${s.git_modified}</span>` : ''}` : ''}</span>` +
+        `<span class="c-el">${esc(ended ? s.ago : s.elapsed)}</span>` +
+        (s.mcp_down ? `<span class="mcp">${ic('alert')}MCP down: ${esc(s.mcp_down)}</span>` : '') +
+        (hit ? `<span class="t-hit">${hitHTML(hit)}</span>` : '') + `</a>`;
+}
+/* hover/cursor preview pane */
+const hpk = $('#hpk');
+let hpkSid = null;
+function showPeek(el) {
+    const sid = el.dataset.sid;
+    const s = FEED.live.find(x => x.session_id === sid) || FEED.recent.find(x => x.session_id === sid);
+    if (!s) { hidePeek(); return; }
+    hpkSid = sid;
+    if (!tails[sid]) primeTail(sid);   // ended rows load their tail on first hover
+    const lines = tailLinesFor(s);
+    hpk.innerHTML = `<div class="hd"><b>${esc(s.cwd_short)}</b><span>${s.state === 'idle' ? 'your turn' : s.state}</span></div>` +
+        `<div class="p-tail">${lines.map((l, i) => lineHTML(l, s.state === 'working' && i === lines.length - 1 ? ' cursorline' : '')).join('') || '<div class="p-line p-wait"><span class="tx">no tail</span></div>'}</div>`;
+    const r = el.getBoundingClientRect();
+    hpk.classList.add('on');
+    const w = hpk.offsetWidth, h = hpk.offsetHeight;
+    let x = Math.min(r.right - w, innerWidth - w - 12); x = Math.max(12, x);
+    let y = r.bottom + 6;
+    if (y + h > innerHeight - 10) y = r.top - h - 6;
+    hpk.style.left = x + 'px'; hpk.style.top = Math.max(50, y) + 'px';
+}
+function hidePeek() { hpk.classList.remove('on'); hpkSid = null; }
+document.addEventListener('mouseover', e => {
+    const row = e.target.closest && e.target.closest('[data-peek]');
+    if (row) showPeek(row); else if (!e.target.closest || !e.target.closest('.hpk')) hidePeek();
+});
+addEventListener('scroll', hidePeek, { passive: true });
+
+/* ---------------- query engine ---------------- */
+function parseQ(q) {
+    const f = {}, free = [];
+    q.split(/\s+/).filter(Boolean).forEach(t => {
+        const m = t.match(/^(\w+):(.+)$/);
+        if (m) f[m[1].toLowerCase()] = m[2].toLowerCase(); else free.push(t.toLowerCase());
     });
-    for (const [id, el] of cardEls) if (!seen.has(id)) { el.remove(); cardEls.delete(id); }
-    document.getElementById('liveHead').hidden = !sorted.length;
-    document.getElementById('liveHeadN').textContent = sorted.length;
-    document.getElementById('liveEmpty').hidden = !!sorted.length;
-    return sorted.filter(s => statusOf(s).kind === 'waiting').length;
+    return { f, free };
+}
+function sessionAttrs(s) {
+    return { model: s.model || '', branch: s.git_branch || '', dir: (s.cwd_short || '') + ' ' + (s.cwd || ''),
+        state: s.state === 'idle' ? 'idle your-turn' : (s.state || ''), name: s.cwd_short || '', prompt: s.last_prompt || '' };
+}
+function matchSession(s, pq) {
+    const attrs = sessionAttrs(s);
+    const all = Object.values(attrs).join(' ').toLowerCase();
+    for (const [k, v] of Object.entries(pq.f)) {
+        const key = ({ folder: 'dir', file: 'dir', repo: 'dir' })[k] || k;
+        if (!(attrs[key] || '').toLowerCase().includes(v)) return null;
+    }
+    let hit = null;
+    for (const w of pq.free) {
+        if (all.includes(w)) continue;
+        // Free text falls through to recent activity (the streamed tail lines,
+        // keyed by session_id). Whole-transcript search is a follow-up item.
+        const t = (tails[s.session_id] || {}).src || [];
+        const m = t.find(l => String(l.tx).toLowerCase().includes(w));
+        if (!m) return null;
+        hit = hit || { txt: String(m.tx).replace(/<[^>]+>/g, ''), w };
+    }
+    return { hit };
+}
+function hitHTML(hit) {
+    const i = hit.txt.toLowerCase().indexOf(hit.w);
+    const s0 = Math.max(0, i - 28);
+    return `<div class="p-hit" title="first transcript match">in transcript: …${esc(hit.txt.slice(s0, i))}` +
+        `<mark>${esc(hit.txt.slice(i, i + hit.w.length))}</mark>${esc(hit.txt.slice(i + hit.w.length, i + 76))}…</div>`;
 }
 
-function recentRow(r) {
-    const mc = modelClass(r.model);
-    return `<a class="rrow" href="/s/${encodeURIComponent(r.session_id)}">
-        <span class="rmodel" style="color:var(--${mc || 'dim'})">${modelGlyph(r.model)}</span>
-        <span class="rproj">${esc(r.cwd_short || '(session)')}</span>
-        <span class="rmeta">${r.turns || 0}t · ${relTime(r.modified)}${(+r.cost_usd) ? ' · ' + fmtCost(r.cost_usd) : ''}</span>
-        <span class="chev">›</span>
-    </a>`;
+/* ---------------- sort ---------------- */
+function sortGroup(arr) {
+    const a = arr.slice();
+    if (sortBy === 'cost') a.sort((x, y) => (y.s.cost_usd || 0) - (x.s.cost_usd || 0));
+    else if (sortBy === 'ctx') a.sort((x, y) => (x.s.ctx_remaining ?? 101) - (y.s.ctx_remaining ?? 101));
+    else if (sortBy === 'recency') a.sort((x, y) => (x.s._ageMin ?? 9e9) - (y.s._ageMin ?? 9e9));   // real ages from the adapter, not display strings
+    return a; // urgency = feed order within state groups
 }
 
-function render(d) {
-    document.getElementById('host').textContent = (d.host || '').replace(/\.local$/, '');
-    const live = d.live || [], recent = (d.recent || []).filter(r => r.session_id);
-    renderMeta(d);
-    const turnN = renderLive(live);                       // keyed; returns your-turn count
-
-    const chip = document.getElementById('livechip');
-    chip.hidden = !live.length; document.getElementById('liveN').textContent = live.length;
-    const tchip = document.getElementById('turnchip');
-    tchip.hidden = !turnN; document.getElementById('turnN').textContent = turnN;
-
-    document.getElementById('recentWrap').innerHTML = recent.length
-        ? `<div class="section-h">Recent <span class="n">${recent.length}</span></div><div class="recent">${recent.slice(0, 30).map(recentRow).join('')}</div>`
-        : '';
+/* ---------------- render ---------------- */
+function render() {
+    const live = FEED.live;
+    const turn = live.filter(s => s.state === 'idle').length;
+    const L = FEED.limits, A = FEED.aggregates.today;
+    const hostEl = document.querySelector('.tb-host'); if (hostEl) hostEl.textContent = FEED.host || '';
+    const wasFocused = document.activeElement && document.activeElement.id === 'fq';
+    $('#chipLive').innerHTML = `<span class="pulse"></span>${live.length} live`;
+    $('#chipTurn').innerHTML = `<span class="pulse"></span>${turn} your turn`;
+    $('#chipTurn').style.display = turn ? '' : 'none';
+    $('#main').innerHTML =
+        `<div class="mh-row"><h1>Sessions</h1>` +
+        `<div class="mh-line">` +
+        `<span class="meter ${lim(L['5h'].pct)}"><span>5h</span><span class="bar"><i style="width:${L['5h'].pct}%"></i></span><b>${L['5h'].pct}%</b></span>` +
+        `<span class="meter ${lim(L.week.pct)}"><span>7d</span><span class="bar"><i style="width:${L.week.pct}%"></i></span><b>${L.week.pct}%</b></span>` +
+        `<span>today <b>${A.sessions}</b> sessions · <b>↑${A.tokens_out}</b> · <b>$${A.cost_usd.toFixed(2)}</b></span>` +
+        `</div></div>` +
+        ((VDIR && !VDIR.query) ? '' :
+        `<div class="qbar">${ic('search')}<input id="fq" placeholder="Browse the fleet — sessions AND transcripts" autocomplete="off" spellcheck="false"><span class="qstat" id="qstat"></span></div>` +
+        `<div class="qhint" id="qhint">try <code>deepseek</code> <code>model:opus</code> <code>branch:intents</code> <code>dir:versable</code> <code>state:idle</code></div>`) +
+        `<div id="board"></div>`;
+    const _fq = $('#fq');
+    if (_fq) {
+        let qDeb;   // debounced: a keystroke must not rebuild the board synchronously at fleet scale
+        _fq.addEventListener('input', e => { curQ = e.target.value.trim(); clearTimeout(qDeb); qDeb = setTimeout(() => renderBoard(curQ), 120); });
+        $('#qhint').addEventListener('click', e => {
+            const c = e.target.closest('code'); if (!c) return;
+            _fq.value = c.textContent; _fq.dispatchEvent(new Event('input')); _fq.focus();
+        });
+        _fq.value = curQ;
+        if (wasFocused) _fq.focus();   // a background poll re-render must not steal the query field
+    }
+    renderBoard(curQ);
 }
+function renderBoard(q) {
+    cursor = -1; hidePeek();
+    const pq = parseQ(q);
+    const lm = FEED.live.map(s => ({ s, m: matchSession(s, pq) })).filter(x => x.m);
+    const rm = FEED.recent.map(s => ({ s, m: matchSession(s, pq) })).filter(x => x.m);
+    const need = sortGroup(lm.filter(x => x.s.state === 'idle'));
+    const work = sortGroup(lm.filter(x => x.s.state !== 'idle'));
+    const ended = sortGroup(rm);
+    const _qs = $('#qstat'); if (_qs) _qs.textContent = q ? `${lm.length + rm.length}/${FEED.live.length + FEED.recent.length} match` : `${FEED.live.length} live · ${FEED.recent.length} recent`;
+    const D = VDIR || DIRECTIONS.fleet;
+    const tbl = (D.layout === 'auto' ? density : D.layout) === 'table';
+    const group = (cls, label, items, fn) => items.length ?
+        `<div class="sec ${cls}">${label} <span class="n">${items.length}</span></div>` +
+        (tbl ? `<div class="tbl">${items.map(x => rowHTML(x.s, x.m.hit)).join('')}</div>`
+             : `<div class="grid">${items.map(x => fn(x.s, x.m.hit)).join('')}</div>`) : '';
+    let boardHTML;
+    if (D.grouped) {
+        boardHTML = group('you', 'Needs you', need, paneHTML) +
+            group('cl', 'Working', work, paneHTML) +
+            group('', 'Ended', ended, endedPaneHTML);
+    } else {
+        const liveAll = need.concat(work);
+        if (tbl) {
+            boardHTML = (liveAll.length || ended.length)
+                ? `<div class="tbl">${liveAll.map(x => rowHTML(x.s, x.m.hit)).join('')}${ended.map(x => rowHTML(x.s, x.m.hit)).join('')}</div>` : '';
+        } else {
+            boardHTML = (liveAll.length ? `<div class="grid">${liveAll.map(x => paneHTML(x.s, x.m.hit)).join('')}</div>` : '') +
+                (ended.length ? `<div class="sec">Ended <span class="n">${ended.length}</span></div><div class="grid">${ended.map(x => endedPaneHTML(x.s, x.m.hit)).join('')}</div>` : '');
+        }
+    }
+    $('#board').innerHTML =
+        boardHTML +
+        (!lm.length && !rm.length ? `<div class="emptycard" style="margin:8vh auto"><h2>No matches</h2>` +
+            `<p>Nothing in session attributes or transcripts matched "${esc(q)}".</p></div>` : '') +
+        `<div class="endcap">${q ? 'querying attributes + transcript content' : "that's every session"}</div>` +
+        `<div class="hint"><span class="kbd">↑</span><span class="kbd">↓</span> select · <span class="kbd">↵</span> open · <span class="kbd">d</span> density · <span class="kbd">/</span> query</div>`;
+}
+/* keyboard selection over rendered items (both densities) */
+document.addEventListener('keydown', e => {
+    if (e.target.matches('input,select,textarea')) {
+        if (e.key === 'Escape') e.target.blur();
+        return;
+    }
+    if (e.key === '/') { e.preventDefault(); const fq = $('#fq'); fq && fq.focus(); return; }
+    if (e.key === 'd') { $('#densBtn').click(); return; }
+    if (e.key === 't') { $('#themeBtn').click(); return; }
+    const items = [...document.querySelectorAll('#board .pane, #board .trow')];
+    if (!items.length) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        cursor = cursor < 0 ? 0 : Math.min(items.length - 1, Math.max(0, cursor + (e.key === 'ArrowDown' ? 1 : -1)));
+        items.forEach((el, i) => el.classList.toggle('cur', i === cursor));
+        const el = items[cursor], r = el.getBoundingClientRect();
+        if (r.bottom > innerHeight - 24 || r.top < 90) scrollTo({ top: el.offsetTop - 140, behavior: 'smooth' });
+        if (el.dataset.peek) showPeek(el); else hidePeek();
+    } else if (e.key === 'Enter' && cursor >= 0) items[cursor].click();
+});
 
-// ── Poll, with stale-while-revalidate ────────────────────────────────────────
-// The last payload is cached so reopening the page paints INSTANTLY from cache
-// (no skeleton flash) — then a live fetch always runs and replaces it, so this
-// never trades freshness: the cache is a placeholder, not a TTL bet (it always
-// revalidates). A spinner shows while a fetch is in flight, gated by a short
-// delay so fast localhost polls don't flicker it.
-const offline = document.getElementById('offline');
-const spin = document.getElementById('refreshSpin');
-const CACHE_KEY = 'hub-cache-v1';
-function setRefreshing(on) { if (spin) spin.hidden = !on; }
-async function poll() {
-    const t = setTimeout(() => setRefreshing(true), 250);
+/* ── polling — the feed every 5s (board re-renders only on real change),
+      per-session tails every 5s (in-place DOM patches, never a board rebuild),
+      both paused while the tab is hidden ── */
+let mode = 'loading';
+let booted = false, lastHash = '';
+function feedHash() {
+    return JSON.stringify(FEED.live.map(s => [s.session_id, s.state, s.doing, s.ctx_remaining, s.cost_usd, s.turns, s.output_tokens, s.git_branch, s.git_modified, s.mcp_down, s.elapsed]))
+        + '|' + JSON.stringify(FEED.recent.map(s => [s.session_id, s.ago]))
+        + '|' + JSON.stringify([FEED.limits, FEED.aggregates]);
+}
+async function pollFeed() {
+    if (document.hidden && booted) return;
     try {
         const r = await fetch('/api/sessions', { cache: 'no-store' });
         if (!r.ok) throw new Error(r.status);
-        const data = await r.json();
-        render(data);
-        try { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch (e) {}
-        offline.classList.remove('show');
-    } catch (e) { offline.classList.add('show'); }
-    finally { clearTimeout(t); setRefreshing(false); }
+        adaptFeed(await r.json());
+        for (const s of FEED.live) primeTail(s.session_id);   // no-op once primed
+        const h = feedHash();
+        if (!booted) { booted = true; lastHash = h; setMode(FEED.live.length || FEED.recent.length ? 'normal' : 'empty'); }
+        else if (mode === 'empty' && (FEED.live.length || FEED.recent.length)) { lastHash = h; setMode('normal'); }
+        else if (mode === 'normal' && h !== lastHash) { lastHash = h; render(); }
+    } catch (e) { if (!booted) setMode('error'); }   // once booted: keep the last good board
 }
-// Paint cached data immediately (clears the skeleton) before the first fetch.
-try {
-    const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
-    if (cached && (cached.live || cached.recent)) render(cached);
-} catch (e) {}
-poll();
-setInterval(poll, 5000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
+async function pollTails() {
+    if (document.hidden || !booted) return;
+    for (const s of FEED.live) {
+        const sid = s.session_id, t = tails[sid];
+        if (!sid || !t || t.loading) continue;
+        try {
+            const d = await (await fetch(`/s/${encodeURIComponent(sid)}/data?since=${t.lastSeq}`, { cache: 'no-store' })).json();
+            if (d.records && d.records.length) { ingestTail(sid, d.records); refreshTailDOM(sid); }
+        } catch (e) {}
+    }
+}
+setInterval(pollFeed, 5000);
+setInterval(pollTails, 5000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { pollFeed(); pollTails(); } });
+
+function setMode(m) {
+    mode = m;
+    const main = $('#main');
+    if (m === 'normal') return render();
+    if (m === 'loading') main.innerHTML =
+        `<div class="sk" style="height:24px;width:38%"></div>` +
+        `<div class="grid" style="margin-top:18px"><div class="sk" style="height:220px"></div>` +
+        `<div class="sk" style="height:220px"></div><div class="sk" style="height:220px"></div></div>`;
+    if (m === 'empty') main.innerHTML =
+        `<div class="emptycard"><div class="pane-ghost">❯ waiting for sessions…</div><h2>No sessions running</h2>` +
+        `<p>Each live Claude Code session appears here — as a live peek pane or a table row, your choice.</p></div>`;
+    if (m === 'error') main.innerHTML =
+        `<div class="errbanner">${ic('alert')}<div class="t"><b>Can't reach the session server</b>` +
+        `<span>GET /api/sessions failed — the last good board stays on screen while retrying</span></div>` +
+        `<button onclick="setMode('loading');pollFeed()">Retry</button></div>`;
+}
+/* ================= handoff view controls (theme · palette · direction · text size) */
+const DIRECTIONS = {
+    fleet:  { grouped: true,  layout: 'auto',  query: true,  sort: true,  hint: 'V6 — merged board. State groups (Needs you → Working → Ended), query + live peeks, density + sort. The recommended home.' },
+    v5grid: { grouped: false, layout: 'grid',  query: true,  sort: false, hint: 'V5 — command grid. Flat peek panes, query on, no state grouping.' },
+    base:   { grouped: false, layout: 'table', query: false, sort: false, hint: 'Base — the plain index. One dense table, hover to preview, no query or grouping.' },
+};
+let VDIR = null;
+const save = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+const load = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } };
+function seg(sel, val, attr) {
+    document.querySelectorAll(sel + ' button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset[attr] === val)));
+}
+function applyDir(name) {
+    const d = DIRECTIONS[name] || DIRECTIONS.fleet; VDIR = d;
+    document.documentElement.dataset.dir = name;
+    const ss = $('#sortSel'); if (ss) ss.style.display = d.sort ? '' : 'none';
+    const db = $('#densBtn'); if (db) db.style.display = d.layout === 'auto' ? '' : 'none';
+    seg('#vpDir', name, 'dir');
+    const hint = $('#vpDirHint'); if (hint) hint.textContent = d.hint;
+    save('hx-idir', name);
+    if (mode === 'normal') render();
+}
+function applyPalette(skin) {
+    if (skin === 'native') delete document.documentElement.dataset.skin;
+    else document.documentElement.dataset.skin = skin;
+    seg('#vpSkin', skin, 'skin'); save('cc-skin', skin);
+}
+function applyTextSize(px) {
+    document.documentElement.style.setProperty('--zoom', (px / 14.5).toFixed(3));
+    const v = $('#vpFsVal'); if (v) v.textContent = px;
+    const r = $('#vpFs'); if (r) r.value = px;
+    save('hx-fs', px);
+}
+/* view panel wiring */
+$('#viewBtn').onclick = () => { const p = $('#viewPanel'); const o = p.classList.toggle('open'); $('#viewBtn').setAttribute('aria-pressed', String(o)); };
+document.addEventListener('click', e => {
+    if (!e.target.closest('#viewPanel') && !e.target.closest('#viewBtn')) { $('#viewPanel').classList.remove('open'); $('#viewBtn').setAttribute('aria-pressed', 'false'); }
+});
+$('#vpDir').onclick = e => { const b = e.target.closest('button'); if (b) applyDir(b.dataset.dir); };
+$('#vpSkin').onclick = e => { const b = e.target.closest('button'); if (b) applyPalette(b.dataset.skin); };
+$('#vpTheme').onclick = e => { const b = e.target.closest('button'); if (b) applyTheme(b.dataset.theme); };
+$('#vpFs').oninput = e => applyTextSize(+e.target.value);
+
+window.setMode = setMode;
+densLabel();
+applyDir(load('hx-idir', 'fleet'));
+applyPalette(load('cc-skin', 'native'));
+applyTextSize(parseFloat(load('hx-fs', '14.5')));
+setMode('loading');
+pollFeed();
 </script>
 </body>
 </html>
