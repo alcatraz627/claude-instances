@@ -692,26 +692,89 @@ function parseQ(q) {
     });
     return { f, free };
 }
+/* Whole-transcript search: an in-memory text index per session, fetched on
+   demand — a typed free-text query is the only trigger, never boot, so phone
+   data stays cheap. First need pulls the session's full /data once; live
+   sessions revalidate incrementally (?since=) at most once per query string.
+   Not persisted: full transcripts would blow the localStorage quota. */
+const FT = {};                 // sid → { maxSeq, recs: [{seq, txt}], loading, failed, revalidatedFor }
+const FT_POOL = 4;             // concurrent transcript fetches
+let ftPending = 0;             // fetches in flight (drives the qstat note)
+function ftLine(r) {
+    const txt = r.role === 'tools'
+        ? (r.tools || []).map(t => t.name + ' ' + (t.preview || (t.input && t.input.command) || '')).join(' · ')
+        : String(r.text || '')
+            .replace(/<command-message>[\s\S]*?<\/command-message>/g, '')
+            .replace(/<\/?command-(name|args)>/g, '')
+            .replace(/\s+/g, ' ').trim();
+    return txt ? { seq: r.seq, txt } : null;
+}
+async function fetchFT(sid) {
+    const f = FT[sid] || (FT[sid] = { maxSeq: 0, recs: [] });
+    if (f.loading) return;
+    f.loading = true;
+    try {
+        const res = await fetch(`/s/${encodeURIComponent(sid)}/data${f.maxSeq ? `?since=${f.maxSeq}` : ''}`, { cache: 'no-store' });
+        if (!res.ok) throw 0;
+        const d = await res.json();
+        for (const r of d.records || []) {
+            if (r.seq <= f.maxSeq) continue;
+            f.maxSeq = r.seq;
+            const l = ftLine(r); if (l) f.recs.push(l);
+        }
+    } finally { f.loading = false; }
+}
+function ftNote() {
+    const el = $('#qstat'); if (!el) return;
+    el.textContent = el.textContent.replace(/ · scanning transcripts…$/, '') + (ftPending ? ' · scanning transcripts…' : '');
+}
+let ftDeb;
+function scheduleFT(q, sids) {
+    clearTimeout(ftDeb);
+    ftDeb = setTimeout(async () => {
+        if (q !== curQ) return;                              // stale keystroke
+        const queue = sids.filter(sid => !(FT[sid] && FT[sid].loading));
+        if (!queue.length) return;
+        const worker = async () => {
+            for (let sid; (sid = queue.shift()); ) {
+                ftPending++; ftNote();
+                try { await fetchFT(sid); }
+                catch (e) { FT[sid].failed = true; }         // e.g. foreign-provider transcripts the hub can't resolve
+                FT[sid].revalidatedFor = q;
+                ftPending--; ftNote();
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(FT_POOL, queue.length) }, worker));
+        if (!ftPending && curQ) renderBoard(curQ);           // settled → render the final truth
+    }, 300);   // outlasts the 120ms board debounce: never fetch mid-word
+}
 function sessionAttrs(s) {
     return { model: s.model || '', branch: s.git_branch || '', dir: (s.cwd_short || '') + ' ' + (s.cwd || ''),
         state: s.state === 'idle' ? 'idle your-turn' : (s.state || ''), name: s.cwd_short || '', prompt: s.last_prompt || '' };
 }
-function matchSession(s, pq) {
-    const attrs = sessionAttrs(s);
-    const all = Object.values(attrs).join(' ').toLowerCase();
+function fieldsPass(attrs, pq) {
     for (const [k, v] of Object.entries(pq.f)) {
         const key = ({ folder: 'dir', file: 'dir', repo: 'dir' })[k] || k;
-        if (!(attrs[key] || '').toLowerCase().includes(v)) return null;
+        if (!(attrs[key] || '').toLowerCase().includes(v)) return false;
     }
+    return true;
+}
+function matchSession(s, pq) {
+    const attrs = sessionAttrs(s);
+    if (!fieldsPass(attrs, pq)) return null;
+    const all = Object.values(attrs).join(' ').toLowerCase();
     let hit = null;
     for (const w of pq.free) {
         if (all.includes(w)) continue;
-        // Free text falls through to recent activity (the streamed tail lines,
-        // keyed by session_id). Whole-transcript search is a follow-up item.
+        // Free text: the streamed tail lines answer from memory first…
         const t = (tails[s.session_id] || {}).src || [];
         const m = t.find(l => String(l.tx).toLowerCase().includes(w));
-        if (!m) return null;
-        hit = hit || { txt: String(m.tx).replace(/<[^>]+>/g, ''), w, seq: m.seq };
+        if (m) { hit = hit || { txt: String(m.tx).replace(/<[^>]+>/g, ''), w, seq: m.seq }; continue; }
+        // …then the whole-transcript index (fetched on demand by scheduleFT).
+        const f = FT[s.session_id];
+        const fm = f && f.recs.find(x => x.txt.toLowerCase().includes(w));
+        if (!fm) return null;
+        hit = hit || { txt: fm.txt, w, seq: fm.seq };
     }
     return { hit };
 }
@@ -776,7 +839,19 @@ function renderBoard(q) {
     const need = sortGroup(lm.filter(x => x.s.state === 'idle'));
     const work = sortGroup(lm.filter(x => x.s.state !== 'idle'));
     const ended = sortGroup(rm);
-    const _qs = $('#qstat'); if (_qs) _qs.textContent = q ? `${lm.length + rm.length}/${FEED.live.length + FEED.recent.length} match` : `${FEED.live.length} live · ${FEED.recent.length} recent`;
+    /* free words the sync pass couldn't answer → scan whole transcripts, on demand */
+    let scanning = ftPending > 0;
+    if (pq.free.length) {
+        const matched = new Set(lm.concat(rm).map(x => x.s.session_id));
+        const liveIds = new Set(FEED.live.map(s => s.session_id));
+        const cand = FEED.live.concat(FEED.recent)
+            .filter(s => s.session_id && !matched.has(s.session_id) && fieldsPass(sessionAttrs(s), pq))
+            .filter(s => { const f = FT[s.session_id];
+                return !f || (!f.failed && liveIds.has(s.session_id) && f.revalidatedFor !== q); })
+            .map(s => s.session_id);
+        if (cand.length) { scanning = true; scheduleFT(q, cand); }
+    }
+    const _qs = $('#qstat'); if (_qs) _qs.textContent = (q ? `${lm.length + rm.length}/${FEED.live.length + FEED.recent.length} match` : `${FEED.live.length} live · ${FEED.recent.length} recent`) + (scanning ? ' · scanning transcripts…' : '');
     const D = VDIR || DIRECTIONS.fleet;
     const tbl = (D.layout === 'auto' ? density : D.layout) === 'table';
     const group = (cls, label, items, fn) => items.length ?
@@ -800,9 +875,10 @@ function renderBoard(q) {
     }
     $('#board').innerHTML =
         boardHTML +
-        (!lm.length && !rm.length ? `<div class="emptycard" style="margin:8vh auto"><h2>No matches</h2>` +
-            `<p>Nothing in session attributes or transcripts matched "${esc(q)}".</p></div>` : '') +
-        `<div class="endcap">${q ? 'querying attributes + recent activity' : "that's every session"}</div>` +
+        (!lm.length && !rm.length ? `<div class="emptycard" style="margin:8vh auto">` +
+            (scanning ? `<h2>Searching transcripts…</h2><p>Attributes and recent activity didn't match "${esc(q)}" — scanning full transcripts now.</p>`
+                      : `<h2>No matches</h2><p>Nothing in session attributes or transcripts matched "${esc(q)}".</p>`) + `</div>` : '') +
+        `<div class="endcap">${q ? 'querying attributes + full transcripts' : "that's every session"}</div>` +
         `<div class="hint"><span class="kbd">↑</span><span class="kbd">↓</span> select · <span class="kbd">↵</span> open · <span class="kbd">d</span> density · <span class="kbd">/</span> query</div>`;
     if (keepSid) {
         const el = document.querySelector(`[data-peek][data-sid="${keepSid}"]`);
