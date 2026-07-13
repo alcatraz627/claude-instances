@@ -99,3 +99,15 @@ adapter; no transcript.py changes required to start.
   transcript rows appear in recents (cwd_short "subagents" — filter or label)
   · v5grid/base directions + light theme + ≤720px spot-checks · limit-meter
   reset countdowns dropped by design (old page had them — confirm with owner).
+- 2026-07-13 (evening, owner feedback round, `641e141` + `3af92d8`): SWR tail
+  cache (localStorage, prime-before-first-paint, prune) killed the hover
+  fill-in reflow; hover preview elevated + position-stable + re-anchored
+  across board re-renders; custom SVG favicon (terracotta starburst on slate
+  + teal live-dot) on both pages; subagents filtered from recents
+  (client-side; scan-side fix waits on provider work); ended-state kicker on
+  the transcript wired from the feed; foreign-provider model ids truncated.
+  Remaining P2 items: whole-transcript query · limit-meter reset countdowns
+  (owner taste call) · scan flake: a live session intermittently drops out of
+  one scan cycle (watch; scan.sh is provider-work territory) · boot-only 404
+  noise priming foreign-provider recents whose transcripts the hub can't
+  resolve. Then P3 phone pass.
