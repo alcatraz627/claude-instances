@@ -87,3 +87,15 @@ adapter; no transcript.py changes required to start.
   across directions · kicker "● live" is static (ended-session signal needs
   P2 feed data) · timeline doesn't rebuild on live append (tlBuilt cache,
   prototype behavior) · outline drawer <1100px check.
+- 2026-07-13 (later): P1 punch list closed (`3428696`) — timeline live-rebuild
+  fixed + verified, palettes + drawer spot-checked. **P2 core landed**
+  (`c17ee8d`): fleet index ported onto real /api/sessions; the peek-tail
+  server dependency dissolved — tails stream client-side per session via a
+  `?since=` probe+slice against the existing /s/<id>/data, keyed by
+  session_id, so hub-server.py stays untouched. All four DIFF source bugs
+  fixed at the consumption layer. P2 punch list: whole-transcript query
+  (currently attrs + streamed tails only, endcap says so) · "ended" state on
+  the transcript kicker/badge (feed knows; wire /s page later) · subagent
+  transcript rows appear in recents (cwd_short "subagents" — filter or label)
+  · v5grid/base directions + light theme + ≤720px spot-checks · limit-meter
+  reset countdowns dropped by design (old page had them — confirm with owner).
