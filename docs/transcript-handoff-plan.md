@@ -1,8 +1,9 @@
 # Reading claude design's handoff — what we took, what we cut, what's next
 
 This is the engineering read of claude design's transcript proposal
-(`~/Downloads/HANDOFF.md` plus the `Transcript Viewer Proposal.dc.html` /
-`Session Index.dc.html` prototypes). The proposal has many strong systems but it
+(preserved in this repo as [`transcript-design-reply.md`](transcript-design-reply.md);
+the accompanying `Transcript Viewer Proposal.dc.html` / `Session Index.dc.html`
+prototypes were not kept). The proposal has many strong systems but it
 is a reference, not a spec. The filter applied throughout:
 
 > **Keep every idea that adds quantified information; cut every idea that is
@@ -46,6 +47,17 @@ the legend.
    working, then idle), three weight tiles + the token split-bar, top-4 tool
    monograms, day-span. Status is a live server property, not in the log — the hub
    already knows it. This is its own surface and its own round.
+
+   *Status 2026-07-13: mostly built.* Status-first cards + the amber sort landed
+   in the June/July audit rounds; the weight tiles (turns · tools · ↑out, the
+   viewer masthead's tile idiom) landed today. The **token split-bar was tried
+   and cut**: the scan's `input_tokens` is non-cache input, which prompt caching
+   keeps at ~0.2% of output (measured 42–158 in vs 25K–79K out across live
+   sessions), so on a card the bar renders as one solid colour — decoration, not
+   information. Still open from §7: **top-4 tool monograms**, blocked on per-tool
+   counts (scan emits only a `tool_calls` total; needs a `toolCounts` map in
+   scan.sh / hub-server.py — touch after the in-flight provider-generalization
+   work lands, those files are mid-change).
 
 2. **Tool results in expanded bodies.** Today the bodies render the tool *input*
    (the diff, the command, the JSON). The handoff's model is `{input, result}` —

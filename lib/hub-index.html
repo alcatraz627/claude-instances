@@ -153,6 +153,16 @@ main { padding: 16px 16px 40px; max-width: 1180px; margin: 0 auto; }
 /* Colour discipline: tokens (a glance-value) keep teal; cost keeps amber; the
    branch is ambient metadata, so it recedes to grey rather than competing. */
 .m.cost b { color: var(--warn); } .m.tok b { color: var(--accent2); }
+
+/* Weight tiles (design handoff §7): the same stat-tile idiom as the transcript
+   viewer's masthead so the two surfaces read as one system. The handoff's token
+   split-bar was tried and cut: the scan's input_tokens is non-cache input,
+   which caching keeps at ~0.2% of output, so the bar renders as a constant
+   single-colour stripe — decoration, not information. */
+.tiles { display: flex; gap: 18px; margin-top: 11px; }
+.tile { font-size: 11px; color: var(--dim); }
+.tile b { color: var(--text); font-size: 14px; font-weight: 700; margin-right: 4px; font-variant-numeric: tabular-nums; }
+.tile.out b { color: var(--accent2); }
 .branch { color: var(--dim); } .branch::before { content: '⎇ '; opacity: 0.7; }
 .c-warn { margin: 0 14px 12px; font-size: 12px; color: var(--err); display: flex; align-items: center; gap: 6px; }
 
@@ -341,11 +351,16 @@ function liveCardInner(s) {
     const titleText = cleanTitle(s.tab_title) || baseName(path) || '(session)';
     const proj = esc(titleText);
     const showPath = path && path !== titleText;
+    // Weight tiles (§7): turns · tools · output. Always rendered (zeros stay
+    // honest on a booting session) so card heights stay uniform in the grid.
+    const tiles = `<div class="tiles">
+        <span class="tile"><b>${+s.turns || 0}</b>turns</span>
+        <span class="tile"><b>${+s.tool_calls || 0}</b>tools</span>
+        <span class="tile out"><b>${fmtTok(s.output_tokens)}</b>↑ out</span>
+    </div>`;
     const metrics = [
         hasCtx ? `<span class="ctx" title="context remaining"><span class="bar"><i style="width:${Math.min(100, rem)}%;background:${ctxColor(rem)}"></i></span>${rem}%</span>` : '',
-        s.output_tokens ? `<span class="m tok">↑<b>${fmtTok(s.output_tokens)}</b></span>` : '',
         (+s.cost_usd) ? `<span class="m cost"><b>${fmtCost(s.cost_usd)}</b></span>` : '',
-        (+s.turns) ? `<span class="m"><b>${+s.turns}</b>t</span>` : '',
         (+s.subagent_count) ? `<span class="m">↳<b>${s.subagent_count}</b></span>` : '',
         s.git_branch ? `<span class="m branch">${esc(s.git_branch)}${(+s.git_modified) ? ' *' + s.git_modified : ''}</span>` : '',
     ].filter(Boolean).join('');
@@ -354,6 +369,7 @@ function liveCardInner(s) {
         <div class="c-id"><span class="model ${mc}"><span class="glyph">${modelGlyph(s.model)}</span>${modelName(s.model)}</span><span class="proj">${proj}</span></div>
         ${showPath ? `<div class="c-path">${esc(path)}</div>` : ''}
         ${s.last_prompt ? `<div class="c-prompt">${esc(s.last_prompt)}</div>` : ''}
+        ${tiles}
         <div class="c-metrics">${metrics}</div>
     </div>${s.mcp_down ? `<div class="c-warn">⚠ MCP down: ${esc(s.mcp_down)}</div>` : ''}`;
 }
