@@ -886,7 +886,7 @@ function chapterHTML(c, i) {
         }
         if (r.role === 'assistant')
             h += `<div class="passage" data-seq="${r.seq}"><div class="byline"><span class="who">claude</span>` +
-                `<span>opus${r.tokens && r.tokens.out ? ` · ↑${kfmt(r.tokens.out)}` : ''}${r.sidechain ? ' · ↳ sidechain' : ''}</span><span class="hgap"></span>` +
+                `<span>${esc(prettyModel(r.model).toLowerCase())}${r.tokens && r.tokens.out ? ` · ↑${kfmt(r.tokens.out)}` : ''}${r.sidechain ? ' · ↳ sidechain' : ''}</span><span class="hgap"></span>` +
                 `<span>${esc(r.ts || '')}</span><button class="cp" data-copy>copy</button></div>` +
                 `<div class="content" data-md data-raw="${esc(r.text)}"></div></div>`;
     }
