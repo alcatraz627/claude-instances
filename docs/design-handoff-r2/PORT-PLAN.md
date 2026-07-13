@@ -47,6 +47,26 @@ below were confirmed by the owner on 2026-07-13; treat them as fixed.
 5. Verify per exercise-based rule: real session, live tail, every direction ×
    theme (8 states minimum) + palette spot-checks, search, spine jumps, states.
 
+## P1 contract diff (transcript.py vs README §5 SESSION) — done 2026-07-13
+
+Verdict: `/data` is already a near-superset. Port with a thin client-side
+adapter; no transcript.py changes required to start.
+
+- Present: seq/role/ts/ts_iso/ts_full · text · tokens (assistant {in,out,cache},
+  tools {out}) · tools[] {name,id,input,preview,paths,subagent{agentType,
+  description,agentId,exists}} · sidechain on every record · system_reminders ·
+  event cls (mode/hooks/err) · meta {ai_title, model, git_branch,
+  permission_mode, tokens, counts, subagent_count, tools_breakdown,
+  total_tool_calls, total_records} · `?since=` incremental.
+- Derived in reader (README §5 note): chapter grouping · _workedMin (30-min idle
+  clip) · userKind typed-vs-injected (from raw text markers; our text keeps them)
+  · timeline buckets · per-chapter top-3 tools / token sums.
+- Not inlined: subagents{} — keep lazy `?agent=<id>` (plan decision).
+- R2 tool bodies render INPUT only (Bash = command + description; else JSON), so
+  round-1's "thread tool_result" backend item is NOT needed for P1.
+- Verify against proto map: source of chapter error ticks (event cls 'err' only,
+  or also tool_result errors — the latter would need a data change).
+
 ## DIFF.md bugs to fix at source (do not re-port)
 
 1. Peek tails keyed by feed position → key by `session_id` (P2, server-side).
