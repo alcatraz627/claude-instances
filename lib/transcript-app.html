@@ -597,6 +597,7 @@ const state = {
     curCh: 0,
     term: '', hits: [], hitIdx: 0,
     newSince: null, live: true, mode: 'loading',   // boot() flips to normal once /data lands
+    isLive: true,            // hub feed corrects this (checkLiveness); ended sessions stop polling
     dir: null, dirName: 'chapters',
 };
 let TITLE = 'Transcript';
@@ -692,7 +693,7 @@ function renderMasthead() {
     const d0 = rs.length ? fmtDay(rs[0].ts_iso) : '', d1 = rs.length ? fmtDay(rs[rs.length - 1].ts_iso) : '';
     const range = d0 ? (d0 === d1 ? d0 : `${d0} – ${d1}`) : '';
     $('#masthead').innerHTML =
-        `<div class="mh-kicker"><span class="live">● live</span> · claude code session · ${m.session_id.slice(0, 8)}</div>` +
+        `<div class="mh-kicker">${state.isLive === false ? `<span style="color:var(--faint)">■ ended</span>` : `<span class="live">● live</span>`} · claude code session · ${m.session_id.slice(0, 8)}</div>` +
         `<h1 class="mh-title">${esc(TITLE)}</h1>` +
         `<div class="mh-byline">` +
         `<span class="bi model">${ic('diamond')}${esc(prettyModel(m.model))}</span>` +
@@ -1102,6 +1103,22 @@ $('#jumpNew').onclick = () => {
 function startLive() { state.live = true; if (!liveTimer) liveTimer = setInterval(pollLive, 5000); }
 function stopLive() { state.live = false; clearInterval(liveTimer); liveTimer = null; }
 document.addEventListener('visibilitychange', () => { if (!document.hidden && state.live) pollLive(); });
+/* Whether this session's process is still running is a hub fact, not a log
+   fact — check the feed. On the legacy (per-PID) route the endpoint is
+   absent; the catch keeps the live assumption. */
+async function checkLiveness() {
+    try {
+        const d = await (await fetch('/api/sessions', { cache: 'no-store' })).json();
+        const sid = (state.meta && state.meta.session_id) || '';
+        const isLive = (d.live || []).some(s => s.session_id === sid);
+        if (isLive === state.isLive) return;
+        state.isLive = isLive;
+        if (state.mode === 'normal') renderMasthead();
+        if (!isLive) { setLiveState('ended'); stopLive(); }
+        else { setLiveState('working'); startLive(); }
+    } catch (e) { /* not the hub — stay in live mode */ }
+}
+setInterval(checkLiveness, 30000);
 
 /* ================= states (demo) */
 function setMode(mode) {
@@ -1278,6 +1295,7 @@ async function boot() {
         lastSeq = data.records.length ? data.records[data.records.length - 1].seq : 0;
         setMode(data.records.length ? 'normal' : 'empty');
         startLive();
+        checkLiveness();
     } catch (e) { setMode('error'); }
 }
 window.boot = boot;

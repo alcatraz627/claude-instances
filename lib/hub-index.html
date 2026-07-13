@@ -213,6 +213,8 @@ h1 { font: 650 21px/1.2 var(--sans); letter-spacing: -.014em; margin: 0; }
 .hpk .hd { display: flex; gap: 8px; align-items: baseline; padding: 7px 13px; background: var(--well);
     border-bottom: 1px solid var(--edge); font: 700 11px var(--mono); color: var(--dim); }
 .hpk .hd b { color: var(--text); }
+.trow .c-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 @media (max-width: 1020px) {
     .thead, .trow { grid-template-columns: 14px minmax(110px,1.1fr) minmax(170px,2fr) 88px minmax(100px,1fr) 64px; }
     .c-model, .c-cost, .c-turns, .thead span:nth-child(3), .thead span:nth-child(7) { display: none; }
@@ -407,7 +409,9 @@ const lim = p => p >= 90 ? 'hot' : p >= 70 ? 'warn' : '';
 const ctxCls = p => p < 10 ? 'hot' : p < 25 ? 'warn' : '';
 const kfmt = n => { n = +n || 0; return n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + 'K' : String(n); };
 function prettyModel(id) {
-    const parts = String(id || '').replace(/^claude-/, '').split('-');
+    let s = String(id || '');
+    if (s.includes('/')) s = s.split('/')[0];   // foreign providers ("openai/0.142.5") → provider name only
+    const parts = s.replace(/^claude-/, '').split('-');
     if (!parts[0]) return '?';
     const name = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
     const ver = parts.slice(1).filter(p => /^\d{1,2}$/.test(p)).join('.');
