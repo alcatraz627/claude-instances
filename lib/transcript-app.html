@@ -347,6 +347,28 @@ main { flex: 1; min-width: 0; padding: 0 20px 30vh; }
     display: flex; flex-direction: column; gap: 5px; box-shadow: var(--shadow); color: var(--dim); }
 .demo-body label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
 
+/* Per-block permalink — a '#' that appears on hover in every direction; the
+   block a #r<seq> URL points at wears a light left border. */
+[data-seq] { position: relative; }
+.blink { position: absolute; left: -24px; top: 2px; width: 20px; height: 20px;
+    display: none; align-items: center; justify-content: center; border: 0;
+    background: none; padding: 0; cursor: pointer; border-radius: 5px;
+    color: var(--faint); font: 600 13px var(--mono); opacity: .8; }
+[data-seq]:hover > .blink { display: inline-flex; }
+.blink:hover { color: var(--you); background: var(--you-soft); opacity: 1; }
+@media (hover: none) { .blink { display: inline-flex; opacity: .3; } }
+.linked { box-shadow: inset 2.5px 0 0 var(--you-ring); }
+section.chapter.linked { box-shadow: none; }
+section.chapter.linked .ch-head { box-shadow: inset 2.5px 0 0 var(--you-ring); }
+mark.qhl { background: var(--mark, rgba(226,176,91,.35)); color: inherit; border-radius: 2px; padding: 0 1px; }
+
+/* View-panel option icons */
+.vp-seg button { display: inline-flex; align-items: center; gap: 5px; }
+.vp-seg .icon { width: 12px; height: 12px; }
+.vp-seg .sw { width: 12px; height: 12px; border-radius: 4px; border: 1px solid var(--edge2);
+    display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.vp-seg .sw i { width: 5px; height: 5px; border-radius: 50%; }
+
 @media (max-width: 720px) {
     :root { --fs-prose: 15px; }
     main { padding: 0 16px 34vh; }
@@ -486,17 +508,17 @@ body.has-tl .outline { top: calc(var(--tb-h) + 46px); }
   <div class="vp-cap">View</div>
   <div class="vp-grp"><span class="vp-lb">Direction</span>
     <div class="vp-seg" id="vpDir">
-      <button data-dir="chapters">Chapters</button><button data-dir="command">Command</button><button data-dir="tty">TTY</button><button data-dir="inspector">Inspector</button>
+      <button data-dir="chapters"><svg class="icon" viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h13v18H6a2 2 0 0 1-2-2z"/><path d="M9 7h6M9 11h6"/></svg>Chapters</button><button data-dir="command"><svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg>Command</button><button data-dir="tty"><svg class="icon" viewBox="0 0 24 24"><path d="m5 7 5 5-5 5M13 17h6"/></svg>TTY</button><button data-dir="inspector"><svg class="icon" viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg>Inspector</button>
     </div>
     <span class="vp-hint" id="vpDirHint"></span>
   </div>
   <div class="vp-grp"><span class="vp-lb">Palette</span>
     <div class="vp-seg" id="vpSkin">
-      <button data-skin="native">Native</button><button data-skin="tty">TTY</button><button data-skin="editorial">Editorial</button><button data-skin="product">Product</button>
+      <button data-skin="native"><span class="sw" style="background:#191a21"><i style="background:oklch(0.76 0.15 268)"></i></span>Native</button><button data-skin="tty"><span class="sw" style="background:#14161e"><i style="background:#aeb7cc"></i></span>TTY</button><button data-skin="editorial"><span class="sw" style="background:#191a21"><i style="background:oklch(0.74 0.11 305)"></i></span>Editorial</button><button data-skin="product"><span class="sw" style="background:#171923"><i style="background:oklch(0.72 0.13 180)"></i></span>Product</button>
     </div>
   </div>
   <div class="vp-grp"><span class="vp-lb">Theme</span>
-    <div class="vp-seg" id="vpTheme"><button data-theme="dark">Dark</button><button data-theme="light">Light</button></div>
+    <div class="vp-seg" id="vpTheme"><button data-theme="dark"><svg class="icon"><use href="#i-moon"/></svg>Dark</button><button data-theme="light"><svg class="icon"><use href="#i-sun"/></svg>Light</button></div>
   </div>
   <div class="vp-grp"><span class="vp-lb">Text size <b id="vpFsVal">15.5</b>px</span>
     <input class="vp-range" type="range" id="vpFs" min="13" max="19" step="0.5" value="15.5">
@@ -903,6 +925,7 @@ function renderChapters() {
     el.innerHTML = state.chapters.map((c, i) => chapterHTML(c, i)).join('') +
         `<div class="endcap">the end · ${state.records.length}/${state.meta.total_records} blocks · ↑${kfmt(state.meta.tokens.output)}</div>`;
     el.querySelectorAll('.content[data-md]').forEach(mdRender);
+    addPermalinks();
     renderOutline();
     updateSpine();
     $('#chLab').innerHTML = `<b>${state.curCh + 1}/${state.chapters.length}</b>`;
@@ -916,6 +939,7 @@ function rerenderChapter(i) {
     const fresh = t.content.querySelector('.chapter');
     old.replaceWith(...t.content.childNodes);
     document.querySelectorAll(`.chapter[data-ch="${i}"] .content[data-md]`).forEach(mdRender);
+    addPermalinks();
 }
 
 /* ================= navigation */
@@ -934,6 +958,63 @@ function jumpToSeq(seq) {
     window.scrollTo({ top: el.getBoundingClientRect().top + scrollY - 70, behavior: 'smooth' });
     el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
 }
+/* Per-block permalinks + deep links: #r<seq> jumps and marks the block;
+   #r<seq>&q=<term> additionally highlights the matched text inside it. */
+function addPermalinks() {
+    document.querySelectorAll('#chapters [data-seq]').forEach(el => {
+        if (el.querySelector(':scope > .blink')) return;
+        const b = document.createElement('button');
+        b.className = 'blink'; b.textContent = '#';
+        b.title = 'Copy link to this block';
+        el.prepend(b);
+    });
+}
+document.addEventListener('click', e => {
+    const b = e.target.closest('.blink'); if (!b) return;
+    e.preventDefault(); e.stopPropagation();
+    const seq = b.parentElement.dataset.seq;
+    copyText(location.origin + location.pathname + '#r' + seq);
+    b.textContent = '✓'; setTimeout(() => { b.textContent = '#'; }, 900);
+}, true);
+function clearHl() {
+    document.querySelectorAll('mark.qhl').forEach(m => {
+        const p = m.parentNode; p.replaceChild(document.createTextNode(m.textContent), m); p.normalize();
+    });
+}
+function highlightIn(el, term) {
+    clearHl();
+    if (!el || !term) return;
+    const t = term.toLowerCase();
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    const found = [];
+    while (walker.nextNode()) {
+        const n = walker.currentNode;
+        if (n.parentElement.closest('.blink')) continue;
+        if (n.textContent.toLowerCase().indexOf(t) >= 0) found.push(n);
+    }
+    for (const n of found) {
+        const i = n.textContent.toLowerCase().indexOf(t);
+        const m = document.createElement('mark'); m.className = 'qhl';
+        const mid = n.splitText(i); mid.splitText(t.length);
+        m.textContent = mid.textContent;
+        mid.parentNode.replaceChild(m, mid);
+    }
+}
+function applyHash() {
+    const m = location.hash.match(/^#r(\d+)(?:&q=([^&]+))?/);
+    if (!m || state.mode !== 'normal') return;
+    const seq = +m[1];
+    document.querySelectorAll('.linked').forEach(el => el.classList.remove('linked'));
+    let el = document.querySelector(`[data-seq="${seq}"]`);
+    if (!el) {   // seq lives inside a collapsed run — anchor on its chapter, like jumpToSeq
+        const ch = state.chapters.findIndex(c => c.firstSeq <= seq && (c.items.length ? c.items[c.items.length - 1].seq >= seq : c.firstSeq === seq));
+        if (ch >= 0) el = document.querySelector(`.chapter[data-ch="${ch}"]`);
+    }
+    if (el) el.classList.add('linked');
+    jumpToSeq(seq);
+    if (m[2]) highlightIn(el, decodeURIComponent(m[2]));
+}
+addEventListener('hashchange', applyHash);
 function updateSpine() {
     document.querySelectorAll('#spine span').forEach((s, i) => {
         s.classList.toggle('done', i < state.curCh);
@@ -1030,7 +1111,10 @@ function renderHits() {
 }
 function openFind() { $('#smodal').classList.add('open'); renderHits(); $('#q').focus(); }
 function closeFind() { $('#smodal').classList.remove('open'); }
-function hitJump(n) { const h = state.hits[n]; if (!h) return; closeFind(); jumpToSeq(h.r.seq); }
+function hitJump(n) {
+    const h = state.hits[n]; if (!h) return; closeFind(); jumpToSeq(h.r.seq);
+    highlightIn(document.querySelector(`[data-seq="${h.r.seq}"]`), state.term);
+}
 $('#findBtn').onclick = openFind;
 $('#smodal').addEventListener('click', e => { if (e.target === $('#smodal')) closeFind(); });
 $('#q').addEventListener('input', e => runSearch(e.target.value.trim()));
@@ -1149,7 +1233,7 @@ function setMode(mode) {
         `<p>The session just started — chapter one appears with your first prompt.</p></div>`;
 }
 window.setMode = setMode;
-$('#themeBtn').onclick = () => applyTheme(document.documentElement.classList.contains('light') ? 'dark' : 'light');
+$('#themeBtn').onclick = () => vt(() => applyTheme(document.documentElement.classList.contains('light') ? 'dark' : 'light'));
 $('#tbTitle').onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
 
 /* ================= handoff view controls (theme · palette · direction · text size · timeline) */
@@ -1199,7 +1283,8 @@ function applyDir(name) {
     document.body.classList.toggle('no-outline', !d.sidebar);
     const ob = $('#olBtn'); if (ob) ob.style.display = d.sidebar ? '' : 'none';
     if (!d.sidebar) closeOutline();
-    setTimeline(d.timeline);
+    const tlPref = load('hx-tl', null);
+    setTimeline(tlPref == null ? d.timeline : tlPref === '1');
     seg('#vpDir', name, 'dir');
     const hint = $('#vpDirHint'); if (hint) hint.textContent = d.hint;
     save('hx-dir', name);
@@ -1248,7 +1333,8 @@ function buildTimeline() {
     });
     document.body.appendChild(strip);
 }
-function setTimeline(on) {
+function setTimeline(on, byUser) {
+    if (byUser) save('hx-tl', on ? '1' : '0');   // a user's choice outlives direction switches and reloads
     if (on && !tlBuilt) { buildTimeline(); tlBuilt = true; }
     const s = $('#cctl'); if (s) s.classList.toggle('on', on);
     const t = $('#vpTl'); if (t) t.checked = on;
@@ -1263,15 +1349,19 @@ function rebuildTimeline() {
     const s = $('#cctl'); if (s && wasOn) s.classList.add('on');
 }
 /* view panel wiring */
+/* View Transitions: soft crossfade on user-initiated look changes only —
+   never on live appends. No-op where unsupported or with reduced motion. */
+const vt = fn => (document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches)
+    ? document.startViewTransition(fn) : fn();
 $('#viewBtn').onclick = () => { const p = $('#viewPanel'); const o = p.classList.toggle('open'); $('#viewBtn').setAttribute('aria-pressed', String(o)); };
 document.addEventListener('click', e => {
     if (!e.target.closest('#viewPanel') && !e.target.closest('#viewBtn')) { $('#viewPanel').classList.remove('open'); $('#viewBtn').setAttribute('aria-pressed', 'false'); }
 });
-$('#vpDir').onclick = e => { const b = e.target.closest('button'); if (b) applyDir(b.dataset.dir); };
-$('#vpSkin').onclick = e => { const b = e.target.closest('button'); if (b) applyPalette(b.dataset.skin); };
-$('#vpTheme').onclick = e => { const b = e.target.closest('button'); if (b) applyTheme(b.dataset.theme); };
+$('#vpDir').onclick = e => { const b = e.target.closest('button'); if (b) vt(() => applyDir(b.dataset.dir)); };
+$('#vpSkin').onclick = e => { const b = e.target.closest('button'); if (b) vt(() => applyPalette(b.dataset.skin)); };
+$('#vpTheme').onclick = e => { const b = e.target.closest('button'); if (b) vt(() => applyTheme(b.dataset.theme)); };
 $('#vpFs').oninput = e => applyTextSize(+e.target.value);
-$('#vpTl').onchange = e => setTimeline(e.target.checked);
+$('#vpTl').onchange = e => setTimeline(e.target.checked, true);
 
 /* ================= init — fetch the real session, then go live */
 applyTheme((() => { try { return localStorage.getItem(SS.theme) || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'); } catch (e) { return 'dark'; } })());
@@ -1296,6 +1386,7 @@ async function boot() {
         setMode(data.records.length ? 'normal' : 'empty');
         startLive();
         checkLiveness();
+        applyHash();   // deep link (#r<seq>[&q=…]) from the hub or a copied block link
     } catch (e) { setMode('error'); }
 }
 window.boot = boot;

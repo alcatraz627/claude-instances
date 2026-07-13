@@ -215,6 +215,13 @@ h1 { font: 650 21px/1.2 var(--sans); letter-spacing: -.014em; margin: 0; }
 .hpk .hd b { color: var(--text); }
 .trow .c-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* View-panel option icons */
+.vp-seg button { display: inline-flex; align-items: center; gap: 5px; }
+.vp-seg .icon { width: 12px; height: 12px; }
+.vp-seg .sw { width: 12px; height: 12px; border-radius: 4px; border: 1px solid var(--edge2);
+    display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.vp-seg .sw i { width: 5px; height: 5px; border-radius: 50%; }
+
 @media (max-width: 1020px) {
     .thead, .trow { grid-template-columns: 14px minmax(110px,1.1fr) minmax(170px,2fr) 88px minmax(100px,1fr) 64px; }
     .c-model, .c-cost, .c-turns, .thead span:nth-child(3), .thead span:nth-child(7) { display: none; }
@@ -365,17 +372,17 @@ h1 { font: 650 21px/1.2 var(--sans); letter-spacing: -.014em; margin: 0; }
   <div class="vp-cap">View</div>
   <div class="vp-grp"><span class="vp-lb">Direction</span>
     <div class="vp-seg" id="vpDir">
-      <button data-dir="fleet">Fleet</button><button data-dir="v5grid">Grid</button><button data-dir="base">Base</button>
+      <button data-dir="fleet"><svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="5" rx="1"/><rect x="3" y="11" width="18" height="5" rx="1"/><path d="M3 21h12"/></svg>Fleet</button><button data-dir="v5grid"><svg class="icon"><use href="#i-grid"/></svg>Grid</button><button data-dir="base"><svg class="icon"><use href="#i-rows"/></svg>Base</button>
     </div>
     <span class="vp-hint" id="vpDirHint"></span>
   </div>
   <div class="vp-grp"><span class="vp-lb">Palette</span>
     <div class="vp-seg" id="vpSkin">
-      <button data-skin="native">Native</button><button data-skin="tty">TTY</button><button data-skin="editorial">Editorial</button><button data-skin="product">Product</button>
+      <button data-skin="native"><span class="sw" style="background:#191a21"><i style="background:oklch(0.76 0.15 268)"></i></span>Native</button><button data-skin="tty"><span class="sw" style="background:#14161e"><i style="background:#aeb7cc"></i></span>TTY</button><button data-skin="editorial"><span class="sw" style="background:#191a21"><i style="background:oklch(0.74 0.11 305)"></i></span>Editorial</button><button data-skin="product"><span class="sw" style="background:#171923"><i style="background:oklch(0.72 0.13 180)"></i></span>Product</button>
     </div>
   </div>
   <div class="vp-grp"><span class="vp-lb">Theme</span>
-    <div class="vp-seg" id="vpTheme"><button data-theme="dark">Dark</button><button data-theme="light">Light</button></div>
+    <div class="vp-seg" id="vpTheme"><button data-theme="dark"><svg class="icon"><use href="#i-moon"/></svg>Dark</button><button data-theme="light"><svg class="icon"><use href="#i-sun"/></svg>Light</button></div>
   </div>
   <div class="vp-grp"><span class="vp-lb">Text size <b id="vpFsVal">14.5</b>px</span>
     <input class="vp-range" type="range" id="vpFs" min="12" max="18" step="0.5" value="14.5">
@@ -395,7 +402,7 @@ function applyTheme(t) {
     try { localStorage.setItem(SS.theme, t); } catch (e) {}
 }
 applyTheme((() => { try { return localStorage.getItem(SS.theme) || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'); } catch (e) { return 'dark'; } })());
-$('#themeBtn').onclick = () => applyTheme(document.documentElement.classList.contains('light') ? 'dark' : 'light');
+$('#themeBtn').onclick = () => vt(() => applyTheme(document.documentElement.classList.contains('light') ? 'dark' : 'light'));
 
 /* ── real data ──────────────────────────────────────────────────────────
    This page holds no session data of its own. FEED refills from
@@ -482,7 +489,7 @@ function densLabel() { $('#densBtn').innerHTML = density === 'peeks' ? ic('rows'
 $('#densBtn').onclick = () => {
     density = density === 'peeks' ? 'table' : 'peeks';
     try { localStorage.setItem(SS.dens, density); } catch (e) {}
-    densLabel(); renderBoard(curQ);
+    densLabel(); vt(() => renderBoard(curQ));
 };
 $('#sortSel').value = sortBy;
 $('#sortSel').onchange = () => { sortBy = $('#sortSel').value; try { localStorage.setItem(SS.sort, sortBy); } catch (e) {} renderBoard(curQ); };
@@ -507,14 +514,14 @@ function ingestTail(sid, recs) {
     for (const r of recs || []) {
         if (r.seq <= t.lastSeq) continue;
         t.lastSeq = r.seq;
-        const l = lineFor(r); if (l) t.src.push(l);
+        const l = lineFor(r); if (l) { l.seq = r.seq; t.src.push(l); }   // seq travels so query hits can deep-link
     }
     if (t.src.length > TAIL_KEEP) t.src = t.src.slice(-TAIL_KEEP);
 }
 /* SWR cache: tails persist in localStorage so a reopen (or a hover repeat)
    paints instantly from stale data, then one cheap ?since revalidate catches
    up. The cache is a placeholder, never a TTL bet — every prime revalidates. */
-const TAILCACHE = 'hub-tail-v1:';
+const TAILCACHE = 'hub-tail-v2:';   // v2: tail lines carry seq for deep links
 function loadTailCache(sid) {
     try { const v = JSON.parse(localStorage.getItem(TAILCACHE + sid)); return v && Array.isArray(v.src) ? v : null; }
     catch (e) { return null; }
@@ -528,7 +535,7 @@ function pruneTailCache() {
     try {
         for (let i = localStorage.length - 1; i >= 0; i--) {
             const k = localStorage.key(i);
-            if (k && k.startsWith(TAILCACHE) && !keep.has(k)) localStorage.removeItem(k);
+            if (k && k.startsWith('hub-tail-v') && !keep.has(k)) localStorage.removeItem(k);   // also sweeps old cache versions
         }
     } catch (e) {}
 }
@@ -584,7 +591,7 @@ function paneHTML(s, hit) {
         const lines = tailLinesFor(s);
         tail = lines.map((l, i) => lineHTML(l, i === lines.length - 1 ? ' cursorline' : '')).join('');
     }
-    return `<a class="pane ${kind}" href="/s/${encodeURIComponent(s.session_id)}" data-sid="${esc(s.session_id)}" data-screen-label="session ${esc(s.cwd_short)}">` +
+    return `<a class="pane ${kind}" href="/s/${encodeURIComponent(s.session_id)}${hit && hit.seq ? `#r${hit.seq}&q=${encodeURIComponent(hit.w)}` : ''}" data-sid="${esc(s.session_id)}" data-screen-label="session ${esc(s.cwd_short)}">` +
         `<div class="p-head"><span class="p-st"></span><span class="p-title">${esc(s.cwd_short)}</span>` +
         `<span class="p-model">${esc(s.model)}</span>` +
         `<span class="p-state">${yourTurn ? 'your turn' : 'working'}</span>` +
@@ -601,7 +608,7 @@ function paneHTML(s, hit) {
         `</div></a>`;
 }
 function endedPaneHTML(s, hit) {
-    return `<a class="pane ended" href="/s/${encodeURIComponent(s.session_id)}" data-sid="${esc(s.session_id)}" data-peek="1">` +
+    return `<a class="pane ended" href="/s/${encodeURIComponent(s.session_id)}${hit && hit.seq ? `#r${hit.seq}&q=${encodeURIComponent(hit.w)}` : ''}" data-sid="${esc(s.session_id)}" data-peek="1">` +
         `<div class="p-head"><span class="p-st"></span><span class="p-title">${esc(s.cwd_short)}</span>` +
         `<span class="p-model">${esc(s.model)}</span><span class="p-state">ended</span>` +
         `<span class="p-el">${esc(s.ago)}</span></div>` +
@@ -615,7 +622,7 @@ function endedPaneHTML(s, hit) {
 function rowHTML(s, hit) {
     const yourTurn = s.state === 'idle', ended = s.state === 'ended';
     const kind = ended ? 'ended' : yourTurn ? 'turn' : 'working';
-    return `<a class="trow ${kind}" href="/s/${encodeURIComponent(s.session_id || '')}" data-sid="${esc(s.session_id || '')}" data-peek="1">` +
+    return `<a class="trow ${kind}" href="/s/${encodeURIComponent(s.session_id || '')}${hit && hit.seq ? `#r${hit.seq}&q=${encodeURIComponent(hit.w)}` : ''}" data-sid="${esc(s.session_id || '')}" data-peek="1">` +
         `<span class="st"></span>` +
         `<span class="c-dir">${esc(s.cwd_short)}</span>` +
         `<span class="c-model">${esc(s.model)}</span>` +
@@ -661,6 +668,22 @@ document.addEventListener('mouseover', e => {
 addEventListener('scroll', hidePeek, { passive: true });
 
 /* ---------------- query engine ---------------- */
+/* Last 10 committed queries (Enter, or opening a result while filtering)
+   persist and render as chips next to the try-examples. */
+const QHIST = 'hub-q-hist';
+function loadHist() { try { return JSON.parse(localStorage.getItem(QHIST)) || []; } catch (e) { return []; } }
+function pushHist(q) {
+    q = (q || '').trim(); if (!q) return;
+    const h = [q].concat(loadHist().filter(x => x !== q)).slice(0, 10);
+    try { localStorage.setItem(QHIST, JSON.stringify(h)); } catch (e) {}
+    renderQhint();
+}
+function renderQhint() {
+    const el = $('#qhint'); if (!el) return;
+    const hist = loadHist();
+    el.innerHTML = (hist.length ? `recent ${hist.map(q => `<code>${esc(q)}</code>`).join(' ')} · ` : '') +
+        `try <code>deepseek</code> <code>model:opus</code> <code>branch:intents</code> <code>dir:versable</code> <code>state:idle</code>`;
+}
 function parseQ(q) {
     const f = {}, free = [];
     q.split(/\s+/).filter(Boolean).forEach(t => {
@@ -688,7 +711,7 @@ function matchSession(s, pq) {
         const t = (tails[s.session_id] || {}).src || [];
         const m = t.find(l => String(l.tx).toLowerCase().includes(w));
         if (!m) return null;
-        hit = hit || { txt: String(m.tx).replace(/<[^>]+>/g, ''), w };
+        hit = hit || { txt: String(m.tx).replace(/<[^>]+>/g, ''), w, seq: m.seq };
     }
     return { hit };
 }
@@ -727,16 +750,18 @@ function render() {
         `</div></div>` +
         ((VDIR && !VDIR.query) ? '' :
         `<div class="qbar">${ic('search')}<input id="fq" placeholder="Browse the fleet — sessions AND transcripts" autocomplete="off" spellcheck="false"><span class="qstat" id="qstat"></span></div>` +
-        `<div class="qhint" id="qhint">try <code>deepseek</code> <code>model:opus</code> <code>branch:intents</code> <code>dir:versable</code> <code>state:idle</code></div>`) +
+        `<div class="qhint" id="qhint"></div>`) +
         `<div id="board"></div>`;
     const _fq = $('#fq');
     if (_fq) {
         let qDeb;   // debounced: a keystroke must not rebuild the board synchronously at fleet scale
         _fq.addEventListener('input', e => { curQ = e.target.value.trim(); clearTimeout(qDeb); qDeb = setTimeout(() => renderBoard(curQ), 120); });
+        _fq.addEventListener('keydown', e => { if (e.key === 'Enter') pushHist(curQ); });
         $('#qhint').addEventListener('click', e => {
             const c = e.target.closest('code'); if (!c) return;
             _fq.value = c.textContent; _fq.dispatchEvent(new Event('input')); _fq.focus();
         });
+        renderQhint();
         _fq.value = curQ;
         if (wasFocused) _fq.focus();   // a background poll re-render must not steal the query field
     }
@@ -903,13 +928,19 @@ function applyTextSize(px) {
     save('hx-fs', px);
 }
 /* view panel wiring */
+/* View Transitions: soft crossfade on user-initiated look changes only —
+   never on the 5s polls. No-op where unsupported or with reduced motion. */
+const vt = fn => (document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches)
+    ? document.startViewTransition(fn) : fn();
+/* opening a result while filtering = a query that worked; remember it */
+document.addEventListener('click', e => { if (curQ && e.target.closest('#board a')) pushHist(curQ); });
 $('#viewBtn').onclick = () => { const p = $('#viewPanel'); const o = p.classList.toggle('open'); $('#viewBtn').setAttribute('aria-pressed', String(o)); };
 document.addEventListener('click', e => {
     if (!e.target.closest('#viewPanel') && !e.target.closest('#viewBtn')) { $('#viewPanel').classList.remove('open'); $('#viewBtn').setAttribute('aria-pressed', 'false'); }
 });
-$('#vpDir').onclick = e => { const b = e.target.closest('button'); if (b) applyDir(b.dataset.dir); };
-$('#vpSkin').onclick = e => { const b = e.target.closest('button'); if (b) applyPalette(b.dataset.skin); };
-$('#vpTheme').onclick = e => { const b = e.target.closest('button'); if (b) applyTheme(b.dataset.theme); };
+$('#vpDir').onclick = e => { const b = e.target.closest('button'); if (b) vt(() => applyDir(b.dataset.dir)); };
+$('#vpSkin').onclick = e => { const b = e.target.closest('button'); if (b) vt(() => applyPalette(b.dataset.skin)); };
+$('#vpTheme').onclick = e => { const b = e.target.closest('button'); if (b) vt(() => applyTheme(b.dataset.theme)); };
 $('#vpFs').oninput = e => applyTextSize(+e.target.value);
 
 window.setMode = setMode;
