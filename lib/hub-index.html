@@ -3,7 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Session Index — handoff reference</title>
+<title>Claude sessions</title>
+<!-- The menu-bar widget's Claude starburst (terracotta), tiled on the hub's
+     slate and wearing a teal live-dot — the hub's own mark. -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23191a21'/%3E%3Cg stroke='%23d97757' stroke-width='5.5' stroke-linecap='round'%3E%3Cpath d='M32 32 32 9'/%3E%3Cpath d='M32 32 46 14'/%3E%3Cpath d='M32 32 55 27'/%3E%3Cpath d='M32 32 50 44'/%3E%3Cpath d='M32 32 37 55'/%3E%3Cpath d='M32 32 21 52'/%3E%3Cpath d='M32 32 10 42'/%3E%3Cpath d='M32 32 9 25'/%3E%3Cpath d='M32 32 18 11'/%3E%3C/g%3E%3Ccircle cx='51' cy='51' r='6' fill='%234fb6a6' stroke='%23191a21' stroke-width='2.5'/%3E%3C/svg%3E">
 <style>
 /* V6 "FLEET" index — the merged board. V3's state-grouped spine (Needs you →
    Working → Ended), V5's query grammar + live peek panes, V1's table density,
@@ -198,9 +201,14 @@ h1 { font: 650 21px/1.2 var(--sans); letter-spacing: -.014em; margin: 0; }
 .mcp .icon { width: 12px; height: 12px; }
 /* hover/cursor preview — the V1 inspector idea: peek without opening */
 .hpk { position: fixed; z-index: 70; width: 380px; max-width: calc(100vw - 24px); display: none;
-    background: var(--panel); border: 1px solid var(--edge2); border-radius: var(--r);
-    box-shadow: var(--shadow); overflow: hidden; pointer-events: none; }
-.hpk.on { display: block; }
+    background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(8px);
+    border: 1px solid var(--edge2); border-radius: var(--r);
+    /* floats a full layer above the board: deep drop + ambient ring, not the card shadow */
+    box-shadow: 0 24px 56px -12px rgba(0,0,0,.72), 0 4px 14px rgba(0,0,0,.38), 0 0 0 1px rgba(0,0,0,.28);
+    overflow: hidden; pointer-events: none; }
+:root.light .hpk { box-shadow: 0 24px 56px -12px rgba(30,40,70,.4), 0 4px 14px rgba(30,40,70,.2), 0 0 0 1px rgba(30,40,70,.08); }
+.hpk.on { display: block; animation: hpkin var(--t-fast) var(--ease); }
+@keyframes hpkin { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 .hpk .p-tail { min-height: 0; }
 .hpk .hd { display: flex; gap: 8px; align-items: baseline; padding: 7px 13px; background: var(--well);
     border-bottom: 1px solid var(--edge); font: 700 11px var(--mono); color: var(--dim); }
@@ -447,6 +455,7 @@ function adaptFeed(d) {
     const liveIds = new Set(FEED.live.map(s => s.session_id));
     FEED.recent = (d.recent || [])
         .filter(r => r.session_id && !liveIds.has(r.session_id))   // a live session's log is also the freshest history file
+        .filter(r => (r.cwd_short || r.project) !== 'subagents')   // sub-agent transcripts aren't sessions (scan-side fix waits on the provider work landing)
         .slice(0, 12).map(s => Object.assign({}, s, {
         state: 'ended', cost_usd: +s.cost_usd || 0, turns: +s.turns || 0,
         model: prettyModel(s.model), git_branch: '',
@@ -498,15 +507,42 @@ function ingestTail(sid, recs) {
     }
     if (t.src.length > TAIL_KEEP) t.src = t.src.slice(-TAIL_KEEP);
 }
+/* SWR cache: tails persist in localStorage so a reopen (or a hover repeat)
+   paints instantly from stale data, then one cheap ?since revalidate catches
+   up. The cache is a placeholder, never a TTL bet — every prime revalidates. */
+const TAILCACHE = 'hub-tail-v1:';
+function loadTailCache(sid) {
+    try { const v = JSON.parse(localStorage.getItem(TAILCACHE + sid)); return v && Array.isArray(v.src) ? v : null; }
+    catch (e) { return null; }
+}
+function saveTailCache(sid) {
+    const t = tails[sid]; if (!t || !t.src.length) return;
+    try { localStorage.setItem(TAILCACHE + sid, JSON.stringify({ lastSeq: t.lastSeq, src: t.src.slice(-TAIL_KEEP) })); } catch (e) {}
+}
+function pruneTailCache() {
+    const keep = new Set(FEED.live.concat(FEED.recent).map(s => TAILCACHE + s.session_id));
+    try {
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+            const k = localStorage.key(i);
+            if (k && k.startsWith(TAILCACHE) && !keep.has(k)) localStorage.removeItem(k);
+        }
+    } catch (e) {}
+}
 async function primeTail(sid) {
     if (!sid || tails[sid]) return;
-    tails[sid] = { src: [], lastSeq: 0, loading: true };
+    const cached = loadTailCache(sid);
+    tails[sid] = { src: cached ? cached.src : [], lastSeq: cached ? cached.lastSeq : 0, loading: true };
+    if (cached) refreshTailDOM(sid);            // stale immediately…
     try {
-        const probe = await (await fetch(`/s/${encodeURIComponent(sid)}/data?since=2000000000`, { cache: 'no-store' })).json();
-        const total = (probe.meta && probe.meta.total_records) || 0;
-        const d = await (await fetch(`/s/${encodeURIComponent(sid)}/data?since=${Math.max(0, total - TAIL_PRIME)}`, { cache: 'no-store' })).json();
+        let from = tails[sid].lastSeq;
+        if (!cached) {
+            const probe = await (await fetch(`/s/${encodeURIComponent(sid)}/data?since=2000000000`, { cache: 'no-store' })).json();
+            from = Math.max(0, ((probe.meta && probe.meta.total_records) || 0) - TAIL_PRIME);
+        }
+        const d = await (await fetch(`/s/${encodeURIComponent(sid)}/data?since=${from}`, { cache: 'no-store' })).json();
         ingestTail(sid, d.records);
-        refreshTailDOM(sid);
+        saveTailCache(sid);
+        refreshTailDOM(sid);                     // …revalidated after
     } catch (e) { tails[sid].loading = false; }
 }
 function refreshTailDOM(sid) {
@@ -597,11 +633,14 @@ function showPeek(el) {
     const sid = el.dataset.sid;
     const s = FEED.live.find(x => x.session_id === sid) || FEED.recent.find(x => x.session_id === sid);
     if (!s) { hidePeek(); return; }
+    const same = hpkSid === sid && hpk.classList.contains('on');
     hpkSid = sid;
     if (!tails[sid]) primeTail(sid);   // ended rows load their tail on first hover
     const lines = tailLinesFor(s);
+    const loading = tails[sid] && tails[sid].loading && !lines.length;
     hpk.innerHTML = `<div class="hd"><b>${esc(s.cwd_short)}</b><span>${s.state === 'idle' ? 'your turn' : s.state}</span></div>` +
-        `<div class="p-tail">${lines.map((l, i) => lineHTML(l, s.state === 'working' && i === lines.length - 1 ? ' cursorline' : '')).join('') || '<div class="p-line p-wait"><span class="tx">no tail</span></div>'}</div>`;
+        `<div class="p-tail">${lines.map((l, i) => lineHTML(l, s.state === 'working' && i === lines.length - 1 ? ' cursorline' : '')).join('') || `<div class="p-line p-wait"><span class="tx">${loading ? 'loading recent activity…' : 'no recent activity'}</span></div>`}</div>`;
+    if (same) return;   // content refresh only — repositioning mid-hover is the jump the owner flagged
     const r = el.getBoundingClientRect();
     hpk.classList.add('on');
     const w = hpk.offsetWidth, h = hpk.offsetHeight;
@@ -700,6 +739,7 @@ function render() {
     renderBoard(curQ);
 }
 function renderBoard(q) {
+    const keepSid = hpkSid;   // a background re-render must not yank an open preview from under the cursor
     cursor = -1; hidePeek();
     const pq = parseQ(q);
     const lm = FEED.live.map(s => ({ s, m: matchSession(s, pq) })).filter(x => x.m);
@@ -733,8 +773,12 @@ function renderBoard(q) {
         boardHTML +
         (!lm.length && !rm.length ? `<div class="emptycard" style="margin:8vh auto"><h2>No matches</h2>` +
             `<p>Nothing in session attributes or transcripts matched "${esc(q)}".</p></div>` : '') +
-        `<div class="endcap">${q ? 'querying attributes + transcript content' : "that's every session"}</div>` +
+        `<div class="endcap">${q ? 'querying attributes + recent activity' : "that's every session"}</div>` +
         `<div class="hint"><span class="kbd">↑</span><span class="kbd">↓</span> select · <span class="kbd">↵</span> open · <span class="kbd">d</span> density · <span class="kbd">/</span> query</div>`;
+    if (keepSid) {
+        const el = document.querySelector(`[data-peek][data-sid="${keepSid}"]`);
+        if (el) showPeek(el);
+    }
 }
 /* keyboard selection over rendered items (both densities) */
 document.addEventListener('keydown', e => {
@@ -773,10 +817,20 @@ async function pollFeed() {
         const r = await fetch('/api/sessions', { cache: 'no-store' });
         if (!r.ok) throw new Error(r.status);
         adaptFeed(await r.json());
-        for (const s of FEED.live) primeTail(s.session_id);   // no-op once primed
+        if (!booted) {
+            pruneTailCache();
+            // Prime every tail BEFORE first paint (time-capped): panes filling
+            // in after render is the layout jump the owner flagged. With the
+            // SWR cache this wait is ~one revalidate round-trip on reopens.
+            const all = FEED.live.concat(FEED.recent).map(s => primeTail(s.session_id));
+            await Promise.race([Promise.allSettled(all), new Promise(r2 => setTimeout(r2, 1800))]);
+            booted = true; lastHash = feedHash();
+            setMode(FEED.live.length || FEED.recent.length ? 'normal' : 'empty');
+            return;
+        }
+        for (const s of FEED.live.concat(FEED.recent)) primeTail(s.session_id);   // no-op once primed
         const h = feedHash();
-        if (!booted) { booted = true; lastHash = h; setMode(FEED.live.length || FEED.recent.length ? 'normal' : 'empty'); }
-        else if (mode === 'empty' && (FEED.live.length || FEED.recent.length)) { lastHash = h; setMode('normal'); }
+        if (mode === 'empty' && (FEED.live.length || FEED.recent.length)) { lastHash = h; setMode('normal'); }
         else if (mode === 'normal' && h !== lastHash) { lastHash = h; render(); }
     } catch (e) { if (!booted) setMode('error'); }   // once booted: keep the last good board
 }
@@ -787,7 +841,7 @@ async function pollTails() {
         if (!sid || !t || t.loading) continue;
         try {
             const d = await (await fetch(`/s/${encodeURIComponent(sid)}/data?since=${t.lastSeq}`, { cache: 'no-store' })).json();
-            if (d.records && d.records.length) { ingestTail(sid, d.records); refreshTailDOM(sid); }
+            if (d.records && d.records.length) { ingestTail(sid, d.records); saveTailCache(sid); refreshTailDOM(sid); }
         } catch (e) {}
     }
 }
