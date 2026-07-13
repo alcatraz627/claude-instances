@@ -111,3 +111,13 @@ adapter; no transcript.py changes required to start.
   one scan cycle (watch; scan.sh is provider-work territory) · boot-only 404
   noise priming foreign-provider recents whose transcripts the hub can't
   resolve. Then P3 phone pass.
+- 2026-07-13 (night, feedback round two, `7635f33`): hub query history (last
+  10, chips) · transcript-hit deep links (`#r<seq>&q=<term>`) · block
+  permalinks ('#' on hover, all directions, `.linked` border on the target,
+  chapter fallback for collapsed seqs) · search-term highlighting (shared by
+  the transcript search modal and hub deep links) · timeline toggle persists
+  as user override (the "editorial variant" report — presets were resetting
+  it) · view-panel option icons · View Transitions crossfade on look changes
+  (owner to judge the feel). NOTE: the running hub process predates the
+  no-store header — pages can serve stale from browser cache until the hub
+  restarts (which should wait for/accompany the provider work landing).
