@@ -1063,7 +1063,7 @@ function ingestNew(recs) {
     buildChapters();
     if (state.chapters.length !== prevN) renderChapters();
     else rerenderChapter(state.chapters.length - 1);
-    renderOutline(); updateSpine(); renderMasthead();
+    renderOutline(); updateSpine(); renderMasthead(); rebuildTimeline();
     for (const rec of recs) {
         const el = document.querySelector(`[data-seq="${rec.seq}"]`);
         if (el) el.classList.add('fresh');
@@ -1235,6 +1235,14 @@ function setTimeline(on) {
     const s = $('#cctl'); if (s) s.classList.toggle('on', on);
     const t = $('#vpTl'); if (t) t.checked = on;
     document.body.classList.toggle('has-tl', on);
+}
+/* live records shift the time span — swap the strip rather than let it go stale */
+function rebuildTimeline() {
+    if (!tlBuilt) return;
+    const old = $('#cctl'), wasOn = old ? old.classList.contains('on') : false;
+    if (old) old.remove();
+    buildTimeline();
+    const s = $('#cctl'); if (s && wasOn) s.classList.add('on');
 }
 /* view panel wiring */
 $('#viewBtn').onclick = () => { const p = $('#viewPanel'); const o = p.classList.toggle('open'); $('#viewBtn').setAttribute('aria-pressed', String(o)); };
