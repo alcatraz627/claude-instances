@@ -78,3 +78,12 @@ adapter; no transcript.py changes required to start.
 ## Status log
 
 - 2026-07-13: branch created; bundle preserved (`9132456`); plan written.
+- 2026-07-13: **P1 core landed** (`9796e12`, `a5ea2e0`). Reader ported onto real
+  `/data` + `?since=` polling; sub-agents lazy-load; prototype constants fixed
+  (model, dates, byline). Verified live on a real working session: chapters
+  light+dark, tty dark, command dark + real timeline, inspector, search (35
+  hits), error→Retry recovery, live-append pill, working/your-turn flips.
+  P1 punch list still open: editorial/product palettes + light spot-checks
+  across directions · kicker "● live" is static (ended-session signal needs
+  P2 feed data) · timeline doesn't rebuild on live append (tlBuilt cache,
+  prototype behavior) · outline drawer <1100px check.
