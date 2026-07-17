@@ -250,6 +250,30 @@ def main(argv):
             print(f"{len(agg)}:{len(hist)}:{a['today']['tokens_out']}")
         finally:
             shutil.rmtree(root, ignore_errors=True)
+    elif op == "agg_models_today":
+        # The bar renders model_breakdown on the row labeled "Today"
+        # (native/Bar.swift), so it must count today's sessions — with the
+        # full-window walk feeding it, an unfiltered count silently became
+        # "the week's model mix" wearing a Today label.
+        import tempfile, shutil, time
+        root = tempfile.mkdtemp(prefix="aggmod-")
+        try:
+            _mk_sessions(root, 2)
+            d = os.path.join(root, "projects", "-tmp-agg")
+            old = os.path.join(d, "beef0000-0000-4000-8000-000000000000.jsonl")
+            with open(old, "w") as fh:
+                fh.write(json.dumps({"type": "assistant", "message": {
+                    "model": "claude-sonnet-5",
+                    "usage": {"input_tokens": 10, "output_tokens": 5}}}) + "\n")
+            two_days = time.time() - 2 * 86400
+            os.utime(old, (two_days, two_days))
+            ns2 = _load_agg(os.path.join(root, "projects"),
+                            os.path.join(root, "cache", "s.json"))
+            a = ns2["compute_aggregates"](ns2["get_aggregate_history"]())
+            print(f"{a['today']['sessions']}:{a['week']['sessions']}:"
+                  f"{json.dumps(a['model_breakdown'], sort_keys=True)}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
     elif op == "agg_cache_reuse":
         # Unchanged files must come from the cache, and only the file that
         # grew may re-parse.
@@ -306,13 +330,19 @@ def main(argv):
             paths = _mk_sessions(root, n)
             cache = os.path.join(root, "cache", "s.json")
             os.makedirs(os.path.dirname(cache))
-            st0 = os.stat(paths[0])
+            st0, st2 = os.stat(paths[0]), os.stat(paths[2])
             with open(cache, "w") as fh:
                 json.dump({
                     paths[0]: {"mtime_ns": st0.st_mtime_ns, "size": st0.st_size,
                                "summary": {"model": 5, "turns": "ten",
                                            "tokens_in": None, "tokens_out": []}},
                     paths[1]: ["not", "a", "dict"],
+                    # Type-valid, range-invalid: negative and absurd ints are
+                    # exactly what isinstance() alone would wave through.
+                    paths[2]: {"mtime_ns": st2.st_mtime_ns, "size": st2.st_size,
+                               "summary": {"model": "opus", "turns": 1,
+                                           "tokens_in": -999999,
+                                           "tokens_out": 10**300}},
                     "/nonexistent/x.jsonl": {"mtime_ns": 1, "size": 1,
                                              "summary": {"model": "opus", "turns": 1,
                                                          "tokens_in": 1, "tokens_out": 1}},

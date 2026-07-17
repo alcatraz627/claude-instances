@@ -81,6 +81,10 @@ both before restarting a service the owner is looking at.
   that do not exist. A reviewer will flag it; reject it.
 - The scan's cost is **95% subprocess spawns**, not file reads. Profile before
   optimizing: the 26MB `readlines()` everyone blames was 17ms of 2835ms.
+- `codex_transcript_iter` caps by **calendar shard date** (14 days), not file
+  mtime — a codex session still being written inside a >14-day-old shard is
+  invisible to the scan. Pre-existing on both sides of R1; flagged by the R1
+  validation pass, left as-is.
 
 **Never** run `git checkout` / `stash` / `reset` / `clean` to test a mutation —
 restore by copy. **Never** write a real `/tmp/claude-{cost,tpath,statusline,ctx}-<pid>`
@@ -90,31 +94,34 @@ on it).
 
 ---
 
-## R1 — Aggregates cover 20 sessions and call it "today"
+## R1 — Aggregates cover 20 sessions and call it "today" — DONE 2026-07-17
 
-**Priority: highest.** This is the owner's principle in its purest form: the
-header states "today: 19 sessions" when the real number is **148** (209 over 7
-days). It is not a missing feature; it is a confident falsehood.
+Shipped on `feat/r1-truthful-aggregates`. The header now reports the real
+window: today/week totals walk every provider session in the last 7 days
+through a per-file summary cache at `~/.claude/widgets/.session-summaries.json`
+keyed by `(mtime_ns, size)`, so unchanged transcripts never re-parse (warm
+scan 1.5-1.7s == baseline; the one-time cold rebuild ~2.9s). The display list
+stays capped at 20 — it is a list of rows, not a total.
 
-**Why it is not already fixed.** `aggregates = compute_aggregates(history)` in
-scan.sh, and `get_session_history(max_sessions=20)` caps the pool — so the
-totals can only see what the *display list* parsed. Widening the window costs
-**+838ms** on a scan that already takes 2.06s (measured: 209 sessions / 508MB
-over 7 days; 148 / 120MB for today alone).
+Found on the way, both fixed:
 
-**The fix, in order:**
-1. Build a per-file summary cache keyed by `(path, mtime, size)` →
-   `{turns, tokens_in, tokens_out, model}`. Unchanged sessions never re-parse.
-   A sensible home is `~/.claude/widgets/.session-summaries.json`, written
-   atomically (tmp + rename), pruned to files that still exist.
-2. Decouple `compute_aggregates` from the 20-row display list: give it its own
-   file list over the real window (today + 7 days), served from the cache.
-3. Keep `max_sessions=20` for the display list. That cap is correct — it is a
-   list of rows, not a total.
+- `claude_transcript_iter` recursed into `<sid>/subagents/`, so sub-agent
+  transcripts counted as sessions (a week read 644 when 265 was true) with
+  their tokens double-counted. Top-level only now, with its own guard. The
+  old walk also miscounted 416 `vercel-plugin/skill-injections.jsonl` files
+  as phantom zero-token sessions; those are excluded too.
+- `model_breakdown` had no day filter, and the bar renders it on its "Today"
+  row (`native/Bar.swift`) — the window walk turned a bounded error into "the
+  week's model mix wearing a Today label" (the adversarial gate's find, real
+  data: 121 sessions today, 268 badges). It now counts today's bucket only.
 
-**Do not** widen the window before the cache exists. Making the dashboard slower
-to make one number righter is a bad trade, and the owner watches this thing all
-day.
+Validation: `.claude/output/20260717-r1-validation/report.md` (ISSUES-FOUND →
+both MAJORs fixed same day; 8 guards in run-tests.sh § "aggregate window",
+each watched red first and mutation-tested individually). Accepted-by-design
+residue, documented in the code: a same-size rewrite forged to the same mtime
+serves the stale cached summary (the make/rsync tradeoff — transcripts only
+append), and a `.jsonl` directly in the projects root is not scanned (none
+exists; Claude Code always creates a project dir).
 
 ## R2 — `seq` is positional but the client treats it as identity
 

@@ -1445,11 +1445,13 @@ def compute_aggregates(history):
 
     for s in history:
         mod = local_day(s.get('modified', ''))
-        model = s.get('model', 'unknown')
-        model_counts[model] = model_counts.get(model, 0) + 1
-
         if mod == today_str:
             today_sessions.append(s)
+            # Today's bucket only: the bar renders model_breakdown on its
+            # "Today" row (native/Bar.swift), so an unfiltered count over
+            # the window walk would show the week's mix under a Today label.
+            model = s.get('model', 'unknown')
+            model_counts[model] = model_counts.get(model, 0) + 1
         if mod >= week_ago:
             week_sessions.append(s)
 
@@ -1490,10 +1492,16 @@ def short_model(model):
     return model
 
 def _valid_summary(s):
-    return (isinstance(s, dict)
-            and isinstance(s.get('model'), str)
-            and all(isinstance(s.get(k), int) and not isinstance(s.get(k), bool)
-                    for k in ('turns', 'tokens_in', 'tokens_out')))
+    """A cached summary the scan may trust: right shape, right types, sane
+    ranges. Type-valid but range-invalid ints (negative, absurd) re-parse —
+    isinstance alone let tokens_out: 10**300 straight into the day's total."""
+    if not isinstance(s, dict) or not isinstance(s.get('model'), str):
+        return False
+    for k in ('turns', 'tokens_in', 'tokens_out'):
+        v = s.get(k)
+        if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v <= 10**12:
+            return False
+    return True
 
 def load_summary_cache():
     """Last scan's per-file summaries, or {} when absent or damaged."""
@@ -1526,7 +1534,10 @@ def save_summary_cache(cache):
 
 def get_aggregate_history(window_days=7):
     """Every provider session in the aggregate window, as minimal rows for
-    compute_aggregates. Only new or changed files pay a parse."""
+    compute_aggregates. Only new or changed files pay a parse, where
+    "changed" means a different (mtime_ns, size) — a same-size rewrite
+    forged to the same mtime would serve the stale summary. That is the
+    tradeoff make and rsync accept, and transcripts only ever append."""
     now_local = datetime.now().astimezone()
     cutoff = (now_local - timedelta(days=window_days)).replace(
         hour=0, minute=0, second=0, microsecond=0)

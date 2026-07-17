@@ -679,6 +679,10 @@ t_eq "the shipped output walks the window"  "25:20" \
      "$(python3 "$SCAN_PROBE" agg_e2e 25)"
 t_eq "sub-agent transcripts are not sessions" "3:3:15" \
      "$(python3 "$SCAN_PROBE" agg_sessions_only)"
+# The bar renders model_breakdown on its "Today" row; an unfiltered count over
+# the window walk showed the week's model mix wearing a Today label.
+t_eq "model badges count today, not the window" '2:3:{"opus": 2}' \
+     "$(python3 "$SCAN_PROBE" agg_models_today)"
 t_eq "unchanged files come from the cache"  "3:0:1:3" \
      "$(python3 "$SCAN_PROBE" agg_cache_reuse 3)"
 t_eq "corrupt cache rebuilds and repairs"   "3:REPAIRED" \
