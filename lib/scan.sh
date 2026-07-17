@@ -22,7 +22,7 @@ QUICK_MODE=0
 [[ "${1:-}" == "--quick" ]] && QUICK_MODE=1
 
 python3 - "$PROJECTS_DIR" "$LIMITS_CACHE" "$EVENTS_FILE" "$STATUSLINE_DIR" "$QUICK_MODE" <<'PYEOF'
-import sys, json, os, subprocess, re
+import sys, json, os, subprocess, re, math
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -34,39 +34,43 @@ quick_mode = sys.argv[5] == '1'
 
 home = os.path.expanduser('~')
 
-# ─── Statusline reader ─────────────────────────────────────────
+# ─── Per-PID /tmp readers ──────────────────────────────────────
+#
+# A live session's daemon writes several small files to /tmp keyed by the
+# claude process's pid. They are the only honest source for what a process is
+# doing, and they are also untrusted input: /tmp is world-writable, so anything
+# could be sitting at one of those paths.
 
-def read_statusline(pid):
-    """Read /tmp/claude-statusline-<pid> key=value file."""
-    path = os.path.join(statusline_dir, f"claude-statusline-{pid}")
-    metrics = {}
-    if not os.path.exists(path):
-        return metrics
+def read_pid_file(pid, kind):
+    """The contents of /tmp/claude-<kind>-<pid>, or '' if there isn't one.
+
+    Every caller goes through here because of one trap: opening a FIFO blocks
+    forever waiting for a writer, and a scan that blocks takes the whole
+    dashboard down with it. os.path.exists() is True for a FIFO — only isfile()
+    rules one out — so the obvious guard is no guard at all.
+    """
+    path = os.path.join(statusline_dir, f"claude-{kind}-{pid}")
+    if not os.path.isfile(path):
+        return ''
     try:
         with open(path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if '=' in line:
-                    k, _, v = line.partition('=')
-                    metrics[k.strip()] = v.strip()
+            return f.read()
     except OSError:
-        pass
+        return ''
+
+def read_statusline(pid):
+    """The daemon's key=value metrics for this pid (cpu, mem, mcp health, ...)."""
+    metrics = {}
+    for line in read_pid_file(pid, 'statusline').splitlines():
+        line = line.strip()
+        if '=' in line:
+            k, _, v = line.partition('=')
+            metrics[k.strip()] = v.strip()
     return metrics
 
-# ─── Context remaining % reader ────────────────────────────────
-
 def read_context_remaining(pid):
-    """Read /tmp/claude-ctx-<pid> for context window remaining %."""
-    path = os.path.join(statusline_dir, f"claude-ctx-{pid}")
-    try:
-        if os.path.exists(path):
-            with open(path, 'r') as f:
-                val = f.read().strip()
-                if val:
-                    return val
-    except OSError:
-        pass
-    return ''
+    """How much of this session's context window is left, as a percentage string."""
+    return read_pid_file(pid, 'ctx').strip()
 
 # ─── Transcript path reader ────────────────────────────────────
 
@@ -82,17 +86,33 @@ def read_transcript_path(pid):
     hosts several concurrent sessions (~/.claude does) and they are otherwise
     indistinguishable from the outside.
     """
-    path = os.path.join(statusline_dir, f"claude-tpath-{pid}")
-    try:
-        with open(path, 'r') as f:
-            tpath = f.read().strip()
-    except OSError:
-        return ''
+    tpath = read_pid_file(pid, 'tpath').strip()
     # A dead session's file lingers until its daemon reaps it; requiring the
     # transcript to still exist keeps a stale pointer from winning.
-    if tpath.endswith('.jsonl') and os.path.exists(tpath):
+    if tpath.endswith('.jsonl') and os.path.isfile(tpath):
         return tpath
     return ''
+
+# ─── Cost reader ───────────────────────────────────────────────
+
+def read_cost(pid):
+    """What this session has actually cost so far, or None if it hasn't said.
+
+    Claude Code knows its own running total and hands it to the statusline,
+    which forwards it to /tmp/claude-cost-<pid> (statusline.sh:771). That is the
+    real number. estimate_cost() below only guesses from token counts against a
+    rate table that cannot know every model, so prefer this whenever it exists.
+    """
+    try:
+        val = float(read_pid_file(pid, 'cost').strip())
+    except ValueError:
+        return None
+    # float() also accepts 'inf' and 'nan'. An infinite cost would serialize as
+    # the bare literal Infinity, which is not JSON — it would take down every
+    # consumer of this scan, not just one card. A negative total is garbage too.
+    if not math.isfinite(val) or val < 0:
+        return None
+    return val
 
 # ─── Tab title reader ──────────────────────────────────────────
 
@@ -411,6 +431,87 @@ def infer_session_state(filepath, pid):
 # ─── Session JSONL token aggregator ─────────────────────────────
 
 # Cost rates per million tokens
+def tail_lines(path, n, avg_line=400):
+    """The last n lines of a file, without reading the rest of it.
+
+    These logs are append-only and only their tail is ever wanted, but they grow
+    without bound — events.jsonl is 26MB and 110k lines here, and reading all of
+    it to keep 500 lines cost more than everything else on the fast path put
+    together. Seeks back a guessed span and widens if it undershot.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return []
+    span = min(size, n * avg_line)
+    while True:
+        try:
+            with open(path, 'r', errors='replace') as f:
+                f.seek(max(0, size - span))
+                if span < size:
+                    f.readline()      # drop the partial line the seek landed in
+                lines = f.readlines()
+        except OSError:
+            return []
+        if len(lines) >= n or span >= size:
+            return lines[-n:]
+        span = min(size, span * 4)
+
+# ─── Batched process lookups ───────────────────────────────────
+#
+# lsof and ps cost far more to start than to answer, so asking once per session
+# made the scan's largest expense scale with the number of sessions — 25 spawns,
+# 2.7s of a 2.8s scan. These prime one answer for everybody.
+
+_proc_cwds = {}
+_proc_elapsed = {}
+
+def prime_process_info(pids):
+    """Look up every live pid's cwd and uptime in one lsof and one ps.
+
+    The `-a` matters: lsof ORs its selection flags, so `-p <pids> -d cwd` alone
+    means "these pids OR any cwd" and dumps the whole process table — ~2400
+    lines for a pid that doesn't exist. `-a` ANDs them into the question we
+    actually meant.
+    """
+    pids = [str(p) for p in pids]
+    if not pids:
+        return
+    want = set(pids)
+    try:
+        out = subprocess.run(['lsof', '-a', '-p', ','.join(pids), '-d', 'cwd', '-Fn'],
+                             capture_output=True, text=True, timeout=10).stdout
+        cur = ''
+        for line in out.splitlines():
+            if line.startswith('p'):
+                cur = line[1:]
+            elif line.startswith('n/') and cur in want and cur not in _proc_cwds:
+                _proc_cwds[cur] = line[1:]
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    try:
+        out = subprocess.run(['ps', '-p', ','.join(pids), '-o', 'pid=,etime='],
+                             capture_output=True, text=True, timeout=5).stdout
+        for line in out.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                _proc_elapsed[parts[0].strip()] = parts[1].strip()
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+def token_count(v):
+    """A usage number from a transcript, or 0 if it isn't one.
+
+    Transcripts are just files on disk, and json.loads happily turns a bare
+    Infinity or NaN into a float. Those survive arithmetic and then serialize
+    back out as literals no JSON parser accepts, so one corrupt session would
+    take down every consumer of this scan. Anything that isn't a finite number
+    counts as nothing.
+    """
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return 0
+    return int(v) if math.isfinite(v) else 0
+
 COST_RATES = {
     'opus': (15.0, 75.0),
     'sonnet': (3.0, 15.0),
@@ -418,9 +519,33 @@ COST_RATES = {
 }
 
 def estimate_cost(model_short, input_tokens, output_tokens):
-    rate_in, rate_out = COST_RATES.get(model_short, (0, 0))
+    """Guess a session's cost from its token counts, or None if we can't.
+
+    None is the important half. Every model outside COST_RATES — fable, a codex
+    session, whatever ships next — used to price at $0.00, which is
+    indistinguishable from genuinely free and let a $215 session render as free.
+    An unknown model must say it is unknown; callers render that, they don't
+    total it.
+
+    Matches the family as a whole word, so a full id ('claude-opus-4-8') prices
+    the same as the short name a --model flag gives, while a name that merely
+    contains one ('octopus') doesn't inherit its rates.
+    """
+    m = (model_short or '').lower()
+    rates = next((r for family, r in COST_RATES.items()
+                  if re.search(rf'\b{family}\b', m)), None)
+    if rates is None:
+        return None
+    # json.loads accepts a bare Infinity, so a corrupt transcript's usage counts
+    # can arrive as inf and multiply straight through to an infinite cost. That
+    # would serialize as the literal Infinity, which is not JSON, and take every
+    # consumer of this scan down with it — and via the aggregates it would take
+    # every other session's total too, not just the poisoned row.
+    if not (math.isfinite(input_tokens) and math.isfinite(output_tokens)):
+        return None
     if input_tokens > 0 or output_tokens > 0:
-        return round((input_tokens * rate_in + output_tokens * rate_out) / 1_000_000, 4)
+        cost = round((input_tokens * rates[0] + output_tokens * rates[1]) / 1_000_000, 4)
+        return cost if math.isfinite(cost) else None
     return 0.0
 
 def _resolve_session_path(pid, cwd, prefer_sid=''):
@@ -483,33 +608,32 @@ def get_session_tokens(pid, cwd, prefer_sid=''):
     result['session_id'] = Path(filepath).stem
     result['jsonl_path'] = filepath
 
-    # Read the file — aggregate usage from assistant messages
-    # For large files, only read last 500KB for speed
+    # Every assistant message in the session, streamed.
+    #
+    # This used to read only the last 500KB, which made these counts a fiction:
+    # a transcript is mostly enormous tool_result lines, so on a 58MB session the
+    # window held 44 of 4488 turns and shipped that as the total. Reading it all
+    # costs ~14ms more per scan (measured across the live sessions, whose
+    # transcripts run 1.6-8MB) because the substring check below skips the huge
+    # lines without paying json.loads on them — that parse, not the file size,
+    # was the expense.
     try:
-        size = os.path.getsize(filepath)
-        lines = []
-        if size > 500_000:
-            with open(filepath, 'rb') as f:
-                f.seek(max(0, size - 500_000))
-                f.readline()  # skip partial line
-                lines = f.read().decode('utf-8', errors='replace').splitlines()
-        else:
-            with open(filepath, 'r', errors='replace') as f:
-                lines = f.readlines()
-
         turn_count = 0
         tool_call_count = 0
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+        with open(filepath, 'r', errors='replace') as f:
+            for line in f:
+                if '"assistant"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
 
-            msg_type = obj.get('type', '')
-            if msg_type == 'assistant':
+                # The substring check above also passes a user message that
+                # merely says "assistant", so the type still decides.
+                if obj.get('type') != 'assistant':
+                    continue
+
                 turn_count += 1
                 msg = obj.get('message', {})
                 model = msg.get('model', '')
@@ -517,11 +641,10 @@ def get_session_tokens(pid, cwd, prefer_sid=''):
                     result['model'] = model
                 usage = msg.get('usage', {})
                 if usage:
-                    result['input_tokens'] += usage.get('input_tokens', 0)
-                    result['output_tokens'] += usage.get('output_tokens', 0)
-                    result['cache_read'] += usage.get('cache_read_input_tokens', 0)
-                    result['cache_create'] += usage.get('cache_creation_input_tokens', 0)
-                # Count tool_use blocks in content
+                    result['input_tokens'] += token_count(usage.get('input_tokens'))
+                    result['output_tokens'] += token_count(usage.get('output_tokens'))
+                    result['cache_read'] += token_count(usage.get('cache_read_input_tokens'))
+                    result['cache_create'] += token_count(usage.get('cache_creation_input_tokens'))
                 content = msg.get('content', [])
                 if isinstance(content, list):
                     for block in content:
@@ -585,25 +708,37 @@ def claude_transcript_iter():
                 yield os.path.join(root, f)
 
 def claude_parse_session(filepath):
-    """Read one claude transcript's summary stats for the history list: model,
-    a rough turn count (every JSONL line, matching this scanner's long-
-    standing convention elsewhere), and the final assistant message's token
-    usage. Read-once and cheap — history only needs a summary, not the full
-    per-session aggregation get_session_tokens() does for live instances.
+    """One finished session's summary for the history list: model, turns, tokens.
+
+    Counts and totals mean the same thing here as they do for a live instance —
+    a turn is an assistant message, and the tokens are the session's. They used
+    to disagree: this counted every line (so a 102-turn session read as 1089)
+    and took its tokens from the last line alone, which is almost always a
+    tool_result, so a session that spent 868K output tokens reported zero and
+    the day's total read as a couple of thousand.
     """
     model = 'unknown'
     turn_count = 0
     total_input = 0
     total_output = 0
-    last_line = ''
     try:
+        first_lines = []
         with open(filepath, 'r', errors='replace') as f:
-            first_lines = []
             for i, line in enumerate(f):
                 if i < 50:
                     first_lines.append(line.strip())
+                if '"assistant"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if obj.get('type') != 'assistant':
+                    continue
                 turn_count += 1
-                last_line = line.strip()
+                usage = (obj.get('message') or {}).get('usage') or {}
+                total_input += token_count(usage.get('input_tokens'))
+                total_output += token_count(usage.get('output_tokens'))
 
         for line in first_lines:
             try:
@@ -628,15 +763,6 @@ def claude_parse_session(filepath):
             except json.JSONDecodeError:
                 pass
 
-        if last_line:
-            try:
-                obj = json.loads(last_line)
-                if obj.get('type') == 'assistant':
-                    usage = obj.get('message', {}).get('usage', {})
-                    total_input = usage.get('input_tokens', 0)
-                    total_output = usage.get('output_tokens', 0)
-            except json.JSONDecodeError:
-                pass
     except OSError:
         return None
 
@@ -820,37 +946,32 @@ def _build_claude_instance(pid, cmdline, provider):
     model_flag = meta['model_hint']
     resume_id = meta['resume_id']
 
-    # Get CWD via lsof
-    cwd = ''
-    try:
-        lsof = subprocess.run(
-            ['lsof', '-p', pid_str, '-d', 'cwd', '-Fn'],
-            capture_output=True, text=True, timeout=2
-        )
-        lines = lsof.stdout.split('\n')
-        target_marker = f'p{pid_str}'
-        found_pid = False
-        for lline in lines:
-            if lline == target_marker:
-                found_pid = True
-            elif found_pid and lline.startswith('n/'):
-                cwd = lline[1:]
-                break
-            elif found_pid and lline.startswith('p'):
-                break
-    except (subprocess.TimeoutExpired, OSError):
-        pass
+    # cwd and uptime come from the batched lookup; the per-pid calls below only
+    # run for a process that appeared after it (a session started mid-scan).
+    cwd = _proc_cwds.get(pid_str, '')
+    if not cwd:
+        try:
+            lsof = subprocess.run(
+                ['lsof', '-p', pid_str, '-d', 'cwd', '-Fn'],
+                capture_output=True, text=True, timeout=2
+            )
+            for lline in lsof.stdout.splitlines():
+                if lline.startswith('n/'):
+                    cwd = lline[1:]
+                    break
+        except (subprocess.TimeoutExpired, OSError):
+            pass
 
-    # Get elapsed time
-    elapsed = '?'
-    try:
-        ps_result = subprocess.run(
-            ['ps', '-p', pid_str, '-o', 'etime='],
-            capture_output=True, text=True, timeout=2
-        )
-        elapsed = ps_result.stdout.strip()
-    except (subprocess.TimeoutExpired, OSError):
-        pass
+    elapsed = _proc_elapsed.get(pid_str, '')
+    if not elapsed:
+        try:
+            ps_result = subprocess.run(
+                ['ps', '-p', pid_str, '-o', 'etime='],
+                capture_output=True, text=True, timeout=2
+            )
+            elapsed = ps_result.stdout.strip() or '?'
+        except (subprocess.TimeoutExpired, OSError):
+            elapsed = '?'
 
     # Read statusline metrics
     statusline = read_statusline(pid)
@@ -893,10 +1014,13 @@ def _build_claude_instance(pid, cmdline, provider):
     elif 'haiku' in model_flag:
         model_display = 'haiku'
 
-    # Estimate cost
-    cost_usd = estimate_cost(model_display,
-                              session_data['input_tokens'],
-                              session_data['output_tokens'])
+    # What it cost, straight from the process; the estimate is only a fallback
+    # for a session whose statusline has never rendered.
+    cost_usd = read_cost(pid)
+    if cost_usd is None:
+        cost_usd = estimate_cost(model_display,
+                                 session_data['input_tokens'],
+                                 session_data['output_tokens'])
 
     # Shorten CWD for display
     cwd_short = cwd.replace(home, '~') if cwd else '?'
@@ -955,35 +1079,30 @@ def _build_codex_instance(pid, cmdline, provider):
     pid_str = str(pid)
     meta = provider['proc_meta'](cmdline)
 
-    cwd = ''
-    try:
-        lsof = subprocess.run(
-            ['lsof', '-p', pid_str, '-d', 'cwd', '-Fn'],
-            capture_output=True, text=True, timeout=2
-        )
-        lines = lsof.stdout.split('\n')
-        target_marker = f'p{pid_str}'
-        found_pid = False
-        for lline in lines:
-            if lline == target_marker:
-                found_pid = True
-            elif found_pid and lline.startswith('n/'):
-                cwd = lline[1:]
-                break
-            elif found_pid and lline.startswith('p'):
-                break
-    except (subprocess.TimeoutExpired, OSError):
-        pass
+    cwd = _proc_cwds.get(pid_str, '')
+    if not cwd:
+        try:
+            lsof = subprocess.run(
+                ['lsof', '-p', pid_str, '-d', 'cwd', '-Fn'],
+                capture_output=True, text=True, timeout=2
+            )
+            for lline in lsof.stdout.splitlines():
+                if lline.startswith('n/'):
+                    cwd = lline[1:]
+                    break
+        except (subprocess.TimeoutExpired, OSError):
+            pass
 
-    elapsed = '?'
-    try:
-        ps_result = subprocess.run(
-            ['ps', '-p', pid_str, '-o', 'etime='],
-            capture_output=True, text=True, timeout=2
-        )
-        elapsed = ps_result.stdout.strip()
-    except (subprocess.TimeoutExpired, OSError):
-        pass
+    elapsed = _proc_elapsed.get(pid_str, '?')
+    if elapsed == '?':
+        try:
+            ps_result = subprocess.run(
+                ['ps', '-p', pid_str, '-o', 'etime='],
+                capture_output=True, text=True, timeout=2
+            )
+            elapsed = ps_result.stdout.strip() or '?'
+        except (subprocess.TimeoutExpired, OSError):
+            elapsed = '?'
 
     model_display = 'unknown'
     session_id = ''
@@ -1011,7 +1130,8 @@ def _build_codex_instance(pid, cmdline, provider):
         'cache_read': 0,
         'turns': 0,
         'tool_calls': 0,
-        'cost_usd': 0.0,
+        # Nobody prices a codex session here, and $0.00 would read as free.
+        'cost_usd': None,
         'tab_title': '',
         'subagent_count': 0,
         'session_state': {'state': 'idle', 'detail': ''},
@@ -1043,6 +1163,7 @@ def get_live_instances():
         if result.returncode != 0:
             return instances
 
+        matched = []
         for line in result.stdout.strip().split('\n'):
             if not line.strip():
                 continue
@@ -1056,8 +1177,12 @@ def get_live_instances():
             provider = next((p for p in PROVIDERS if p['proc_match'](basename, cmdline)), None)
             if provider is None:
                 continue
+            matched.append((int(pid_str), cmdline, provider))
 
-            pid = int(pid_str)
+        # Ask about the whole fleet once, before building any row.
+        prime_process_info([p for p, _, _ in matched])
+
+        for pid, cmdline, provider in matched:
             if provider['name'] == 'claude':
                 instance = _build_claude_instance(pid, cmdline, provider)
             else:
@@ -1230,11 +1355,8 @@ def get_recent_events(max_events=10, deep_max=50):
     if not os.path.exists(events_file):
         return events, []
     try:
-        with open(events_file, 'r') as f:
-            lines = f.readlines()
-
         all_events = []
-        for line in lines[-500:]:
+        for line in tail_lines(events_file, 500):
             try:
                 obj = json.loads(line.strip())
                 event = obj.get('event', '')
@@ -1272,9 +1394,34 @@ def get_recent_events(max_events=10, deep_max=50):
 
 # ─── Aggregates ──────────────────────────────────────────────────
 
+def local_day(iso_utc):
+    """The local calendar day an ISO-UTC timestamp fell on, or '' if unreadable.
+
+    A day means the reader's day. Work at 01:00 belongs to the date they would
+    call today, whatever UTC happened to be doing at the time.
+    """
+    # fromisoformat, not a fixed strptime pattern: the stamp this is fed today
+    # has no fractional seconds, but a parse failure here doesn't error — it
+    # returns '' and the session quietly disappears from every bucket. Accept
+    # the whole ISO family so a change upstream can't silently delete a day.
+    try:
+        dt = datetime.fromisoformat((iso_utc or '').replace('Z', '+00:00'))
+    except (ValueError, TypeError, AttributeError):
+        return ''
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone().strftime('%Y-%m-%d')
+
 def compute_aggregates(history):
-    """Compute today/week session stats and model breakdown."""
-    now = datetime.now(timezone.utc)
+    """Compute today/week session stats and model breakdown.
+
+    Buckets by the local day, not UTC. History stamps `modified` in UTC, and
+    comparing that against a UTC "today" is self-consistent and still wrong for
+    anyone east or west of it: at +05:30 the day's first five and a half hours
+    carry yesterday's UTC date, so a night's work vanished from `today` the
+    moment UTC rolled over.
+    """
+    now = datetime.now().astimezone()
     today_str = now.strftime('%Y-%m-%d')
     week_ago = (now - timedelta(days=7)).strftime('%Y-%m-%d')
 
@@ -1283,7 +1430,7 @@ def compute_aggregates(history):
     model_counts = {}
 
     for s in history:
-        mod = s.get('modified', '')[:10]
+        mod = local_day(s.get('modified', ''))
         model = s.get('model', 'unknown')
         model_counts[model] = model_counts.get(model, 0) + 1
 
@@ -1298,7 +1445,9 @@ def compute_aggregates(history):
             'turns': sum(s.get('turns', 0) for s in sessions),
             'tokens_in': sum(s.get('tokens_in', 0) for s in sessions),
             'tokens_out': sum(s.get('tokens_out', 0) for s in sessions),
-            'cost_usd': round(sum(s.get('cost_usd', 0) for s in sessions), 4),
+            # `or 0` skips unpriced sessions rather than crashing the sum on a
+            # None. The total is therefore a floor when any model has no rate.
+            'cost_usd': round(sum(s.get('cost_usd') or 0 for s in sessions), 4),
         }
 
     return {
@@ -1336,10 +1485,8 @@ def get_claudew_metrics():
     # Read host events (last 50 lines)
     if os.path.exists(CLAUDEW_EVENTS):
         try:
-            with open(CLAUDEW_EVENTS, 'r') as f:
-                lines = f.readlines()
             exits = []
-            for line in lines[-50:]:
+            for line in tail_lines(CLAUDEW_EVENTS, 50):
                 try:
                     obj = json.loads(line.strip())
                     if obj.get('event') == 'exit':
@@ -1363,12 +1510,16 @@ def get_claudew_metrics():
     resume_exits_path = os.path.join(CLAUDEW_STATE, '00-auto-resume', 'exits.jsonl')
     if os.path.exists(resume_exits_path):
         try:
-            with open(resume_exits_path, 'r') as f:
-                resume_lines = f.readlines()
-            rate_limits = sum(1 for l in resume_lines[-50:]
-                              if '"RATE_LIMIT"' in l)
-            api_errors = sum(1 for l in resume_lines[-50:]
-                             if '"API_ERROR"' in l)
+            # Read the reason field rather than grepping the raw line: the
+            # substring matched anywhere, including inside a message quoting it.
+            reasons = []
+            for l in tail_lines(resume_exits_path, 50):
+                try:
+                    reasons.append(json.loads(l).get('reason', ''))
+                except (json.JSONDecodeError, ValueError, AttributeError):
+                    continue
+            rate_limits = reasons.count('RATE_LIMIT')
+            api_errors = reasons.count('API_ERROR')
             metrics['rate_limit_exits'] = rate_limits
             metrics['api_error_exits'] = api_errors
         except OSError:

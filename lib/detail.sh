@@ -29,10 +29,15 @@ if [[ -z "$PID" ]] && [[ -z "$SESSION_ID" ]]; then
     exit 1
 fi
 
-# Find the JSONL transcript for this session.
+# Find the JSONL transcript for this session. Session ids are unique, but if
+# that ever breaks, take the freshest — `find | head -1` returns whatever the
+# filesystem lists first, which can differ run to run and silently serve
+# another session's transcript. Same reason as resolve_session_jsonl in
+# lib/hub-server.py; a fix to one belongs in both.
 JSONL_FILE=""
 if [[ -n "$SESSION_ID" ]]; then
-    JSONL_FILE=$(find "$PROJECTS_DIR" -name "${SESSION_ID}.jsonl" 2>/dev/null | head -1)
+    JSONL_FILE=$(find "$PROJECTS_DIR" -name "${SESSION_ID}.jsonl" 2>/dev/null \
+        -exec stat -f '%m %N' {} + 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
 fi
 if [[ -z "$JSONL_FILE" ]] && [[ -n "$PID" ]]; then
     CWD=$(lsof -p "$PID" -d cwd -Fn 2>/dev/null | grep "^n/" | head -1 | cut -c2-)

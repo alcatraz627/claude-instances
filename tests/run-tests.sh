@@ -150,6 +150,86 @@ else
 fi
 rm -f "$SCAN_OUT"
 
+# ── T3.5 — provider seam: default field + codex fixture ─────────────────────
+
+t_section "provider seam"
+SEAM_OUT=$(mktemp)
+bash lib/scan.sh > "$SEAM_OUT" 2>/dev/null
+if [[ "$LIVE_COUNT" -gt 0 ]]; then
+    if python3 -c "
+import json,sys
+inst = json.load(open('$SEAM_OUT'))['live'][0]
+sys.exit(0 if inst.get('provider') == 'claude' else 1)" 2>/dev/null; then
+        t_pass "scan.sh live[0] carries provider:'claude'"
+    else
+        t_fail "scan.sh live[0] missing/wrong 'provider'"
+    fi
+else
+    t_log "  ${C_DIM}(skipping live provider check — no live Claude sessions)${C_RESET}"
+fi
+if python3 -c "
+import json,sys
+hist = json.load(open('$SEAM_OUT')).get('history', [])
+sys.exit(0 if hist and hist[0].get('provider') == 'claude' else 1)" 2>/dev/null; then
+    t_pass "scan.sh history[0] carries provider:'claude'"
+else
+    t_fail "scan.sh history[0] missing/wrong 'provider' (or history empty)"
+fi
+rm -f "$SEAM_OUT"
+
+# Codex fixture: stage a real (redacted) rollout under today's date shard —
+# inside codex_transcript_iter's 14-day window — run a real scan, confirm it
+# surfaces as a 'codex' history entry, then clean up. A synthetic session_id
+# (not the real on-disk codex session's id) keeps the assertions deterministic
+# regardless of what real codex history this machine has.
+CODEX_FIXTURE="$REPO_ROOT/tests/fixtures/sample-codex-session.jsonl"
+CODEX_FIXTURE_SID="test-fixture-codex-0000000000001"
+CODEX_SHARD="$HOME/.codex/sessions/$(date -u +%Y)/$(date -u +%m)/$(date -u +%d)"
+CODEX_STAGED="$CODEX_SHARD/rollout-test-fixture-${CODEX_FIXTURE_SID}.jsonl"
+mkdir -p "$CODEX_SHARD"
+cp "$CODEX_FIXTURE" "$CODEX_STAGED"
+
+CODEX_SCAN_OUT=$(mktemp)
+bash lib/scan.sh > "$CODEX_SCAN_OUT" 2>/dev/null
+
+CODEX_CHECK() {
+    python3 -c "
+import json,sys
+hist = json.load(open('$CODEX_SCAN_OUT')).get('history', [])
+match = next((s for s in hist if s.get('session_id') == '$CODEX_FIXTURE_SID'), None)
+sys.exit(0 if match and match.get('$1') == '''$2''' else 1)" 2>/dev/null
+}
+
+if CODEX_CHECK provider codex; then
+    t_pass "codex fixture surfaces in history with provider:'codex'"
+else
+    t_fail "codex fixture did not surface in history with provider:'codex'"
+fi
+if CODEX_CHECK model 'openai/0.142.5'; then
+    t_pass "codex fixture model shown as model_provider/cli_version"
+else
+    t_fail "codex fixture model field wrong"
+fi
+if CODEX_CHECK project 'Claude/fastfetch-explorer'; then
+    t_pass "codex fixture project derived from session_meta cwd"
+else
+    t_fail "codex fixture project field wrong"
+fi
+if python3 -c "
+import json,sys
+hist = json.load(open('$CODEX_SCAN_OUT')).get('history', [])
+match = next((s for s in hist if s.get('session_id') == '$CODEX_FIXTURE_SID'), None)
+sys.exit(0 if match and match.get('turns') == 2 else 1)" 2>/dev/null; then
+    t_pass "codex fixture turn count (assistant messages)"
+else
+    t_fail "codex fixture turn count wrong"
+fi
+
+rm -f "$CODEX_SCAN_OUT" "$CODEX_STAGED"
+rmdir "$CODEX_SHARD" 2>/dev/null || true
+rmdir "$(dirname "$CODEX_SHARD")" 2>/dev/null || true
+rmdir "$(dirname "$(dirname "$CODEX_SHARD")")" 2>/dev/null || true
+
 # ── T4 — scan.sh --quick produces valid JSON ─────────────────────────────────
 
 t_section "scan.sh --quick"
@@ -359,6 +439,229 @@ t_grep "RowToggleRow row component"            native/ 'struct RowToggleRow'
 t_grep "menuBehavior notification restarts timer" native/ 'restartScanTimer\(\)'
 t_grep "inline row uses centerY alignment"     native/ 'row.alignment = .centerY'
 t_grep "state-icon uses SF Symbol now"         native/ 'symbolAttributedString'
+
+# ── Cost reporting ───────────────────────────────────────────────────────────
+#
+# The dashboard once reported a fable session's $215 as $0.00: estimate_cost
+# priced any model missing from COST_RATES at zero, which renders exactly like
+# genuinely free. These pin the two halves of the contract — the daemon's own
+# cost file wins, and an unpriced model says so instead of guessing zero.
+
+# ── Live-tail cursor ─────────────────────────────────────────────────────────
+#
+# A tools group flushed mid-burst keeps its seq while still gaining tools, so
+# `since=<seq>` filtering used to hide every tool appended after the client
+# first saw that group — the transcript went quiet and the UI claimed the agent
+# was done. The probe drives the real client loop against a growing fixture and
+# checks both directions: the growth arrives, AND the session still goes idle
+# once the burst actually stops.
+
+t_section "live-tail cursor"
+
+SINCE_OUT=$(python3 "$REPO_ROOT/tests/fixtures/since-probe.py" 2>&1)
+t_eq "since-probe: all cases pass" "0" "$?"
+for _case in "client catches up mid-burst" "grown group is delivered" \
+             "growth counts as activity" "no duplicate records" \
+             "goes idle when the burst stops" "post-close records still arrive"; do
+    if grep -q "\[PASS\] $_case" <<< "$SINCE_OUT"; then t_pass "since: $_case"
+    else t_fail "since: $_case — $(grep -A1 "\[FAIL\] $_case" <<< "$SINCE_OUT" | tail -1)"; fi
+done
+
+# A codex row used to look exactly like a claude row and 404 on click. The hub
+# can only read claude transcripts: they live under ~/.claude/projects, and the
+# reader keys on user/assistant lines a codex rollout doesn't have — pointing it
+# at one would render an EMPTY session rather than fail, which is worse.
+# /tmp is world-writable, so a per-PID path is untrusted input. Opening a FIFO
+# blocks forever waiting for a writer and takes the whole scan with it — and
+# os.path.exists() is True for a FIFO, so the idiom these readers used was no
+# guard at all. The hard timeout IS the assertion: without isfile() the probe
+# never returns.
+_fifo_probe() {   # kind -> what the reader returns, or HUNG
+    local kind="$1" pid=999883
+    mkfifo "/tmp/claude-${kind}-${pid}" 2>/dev/null
+    perl -e 'my $p=fork; if($p==0){setpgrp(0,0); exec(@ARGV)} local $SIG{ALRM}=sub{kill "KILL",-$p; print "HUNG\n"; exit 0}; alarm 8; waitpid($p,0)' \
+        python3 "$SCAN_PROBE" read_pid_file "$pid" "$kind" 2>/dev/null
+    trash "/tmp/claude-${kind}-${pid}" 2>/dev/null || true
+}
+for _k in statusline ctx tpath cost; do
+    t_eq "a FIFO at claude-${_k} does not hang the scan" "" "$(_fifo_probe "$_k")"
+done
+
+# Hub hardening. Each of these reported something confident and false: a scan
+# that failed cached "no sessions" as fact; a cache miss launched N scans
+# instead of one; a broken transcript.py stayed silent until someone hit a 500;
+# and hub.sh called a start successful when the port belonged to another
+# process entirely — which served stale code for hours.
+# Found by the adversarial pass, each a hole in a fix from this same session:
+# a scan that crashed AFTER printing valid JSON was cached as truth; `?since=`
+# (bare) skipped the validation entirely because parse_qs drops blank values;
+# and `**` follows symlinks, so one planted link made a tailnet-reachable
+# server hand out any .jsonl on the disk.
+t_grep "a scan that exits nonzero is a failure" lib/hub-server.py 'scan.sh exited'
+t_grep "blank query values are kept"        lib/hub-server.py 'keep_blank_values=True'
+t_grep "symlinks cannot escape the root"    lib/hub-server.py 'startswith\(root \+ os.sep\)'
+t_grep "a shrunk group is not frozen"       lib/transcript-app.html 'if \(after === before\) continue'
+
+t_grep "scan runs under the lock, once"     lib/hub-server.py 'The lock covers the'
+t_grep "a failed scan keeps the last good"  lib/hub-server.py 'keeping the last good result'
+t_grep "broken transcript.py warns at boot" lib/hub-server.py 'WARNING: transcript.py failed to import'
+t_grep "parser errors do not reach clients" lib/hub-server.py 'transcript could not be parsed'
+t_grep "duplicate session ids are surfaced" lib/hub-server.py 'transcripts share id'
+t_grep "detail.sh picks freshest on a tie"  lib/detail.sh 'sort -rn'
+t_grep "hub.sh checks OUR pid holds it"     lib/hub.sh 'grep -qx "\$pid"'
+
+t_grep "hub passes provider through (live)"   lib/hub-server.py '"provider": inst.get'
+t_grep "hub passes provider through (recent)" lib/hub-server.py '"provider": h.get'
+t_grep "unreadable rows carry no link"        lib/hub-index.html 'const openable'
+t_grep "unreadable rows say why"              lib/hub-index.html "transcript isn't readable here"
+t_grep "no prefetch of unreadable rows"       lib/hub-index.html '\.filter\(openable\)'
+
+t_grep "EOF flush marks the group open" lib/transcript.py 'flush_tools\(still_open=True\)'
+t_grep "reader resends the open group"  lib/hub-server.py 'r\.get\("open"\)'
+t_grep "bad since is rejected, not ignored" lib/hub-server.py 'since must be an integer'
+t_grep "client swaps the open group"    lib/transcript-app.html 'function refreshOpen'
+
+t_section "cost reporting"
+
+SCAN_PROBE="$REPO_ROOT/tests/fixtures/scan-probe.py"
+COST_PID=999424
+
+t_eq "priced model still prices"      "90.0"  "$(python3 "$SCAN_PROBE" estimate opus 1000000 1000000)"
+t_eq "sonnet rate intact"             "18.0"  "$(python3 "$SCAN_PROBE" estimate sonnet 1000000 1000000)"
+t_eq "unpriced model is None, not 0"  "None"  "$(python3 "$SCAN_PROBE" estimate fable 1000000 1000000)"
+t_eq "full model id normalizes"       "90.0"  "$(python3 "$SCAN_PROBE" estimate claude-opus-4-8 1000000 1000000)"
+t_eq "empty model is None"            "None"  "$(python3 "$SCAN_PROBE" estimate '' 1000000 1000000)"
+# A name that merely contains a family word must not inherit its rates.
+t_eq "octopus is not opus"            "None"  "$(python3 "$SCAN_PROBE" estimate octopus 1000000 1000000)"
+t_eq "full haiku id still prices"     "1.5"   "$(python3 "$SCAN_PROBE" estimate claude-haiku-4-5-20251001 1000000 1000000)"
+t_eq "zero tokens costs nothing"      "0.0"   "$(python3 "$SCAN_PROBE" estimate opus 0 0)"
+# json.loads accepts a bare Infinity, so a corrupt transcript's usage counts can
+# arrive as inf. An infinite cost serializes as a non-JSON literal and takes the
+# whole scan down — including every other session, via the aggregates.
+t_eq "infinite input tokens are None" "None"  "$(python3 "$SCAN_PROBE" estimate opus inf 100)"
+t_eq "infinite output tokens are None" "None" "$(python3 "$SCAN_PROBE" estimate opus 100 inf)"
+t_eq "NaN tokens are None"            "None"  "$(python3 "$SCAN_PROBE" estimate opus nan 100)"
+
+# read_cost trusts the daemon's file, but never a malformed one.
+printf '215.3312241500002\n' > "/tmp/claude-cost-${COST_PID}"
+t_eq "reads the daemon's cost file"   "215.3312"  "$(python3 "$SCAN_PROBE" read_cost "$COST_PID")"
+printf '' > "/tmp/claude-cost-${COST_PID}"
+t_eq "empty cost file is None"        "None"  "$(python3 "$SCAN_PROBE" read_cost "$COST_PID")"
+printf '   \n' > "/tmp/claude-cost-${COST_PID}"
+t_eq "whitespace cost file is None"   "None"  "$(python3 "$SCAN_PROBE" read_cost "$COST_PID")"
+printf 'not-a-number\n' > "/tmp/claude-cost-${COST_PID}"
+t_eq "garbage cost file is None"      "None"  "$(python3 "$SCAN_PROBE" read_cost "$COST_PID")"
+printf -- '-5\n' > "/tmp/claude-cost-${COST_PID}"
+t_eq "negative cost is None"          "None"  "$(python3 "$SCAN_PROBE" read_cost "$COST_PID")"
+# float() parses these, and json.dumps would emit the bare literal Infinity —
+# not JSON, so every consumer of the scan breaks, not just one card.
+printf 'inf\n' > "/tmp/claude-cost-${COST_PID}"
+t_eq "infinite cost is None"          "None"  "$(python3 "$SCAN_PROBE" read_cost "$COST_PID")"
+printf 'nan\n' > "/tmp/claude-cost-${COST_PID}"
+t_eq "NaN cost is None"               "None"  "$(python3 "$SCAN_PROBE" read_cost "$COST_PID")"
+printf '1e400\n' > "/tmp/claude-cost-${COST_PID}"
+t_eq "overflow-to-inf cost is None"   "None"  "$(python3 "$SCAN_PROBE" read_cost "$COST_PID")"
+trash "/tmp/claude-cost-${COST_PID}" 2>/dev/null || true
+t_eq "missing cost file is None"      "None"  "$(python3 "$SCAN_PROBE" read_cost "$COST_PID")"
+mkdir -p "/tmp/claude-cost-${COST_PID}"
+t_eq "a directory is not a cost"      "None"  "$(python3 "$SCAN_PROBE" read_cost "$COST_PID")"
+rmdir "/tmp/claude-cost-${COST_PID}" 2>/dev/null || true
+
+# /tmp is world-writable: a FIFO here blocks open() forever waiting for a
+# writer, stalling every scan. The hard timeout is the assertion — without the
+# isfile() guard this never returns.
+mkfifo "/tmp/claude-cost-${COST_PID}" 2>/dev/null
+_fifo_read=$(perl -e 'my $p=fork; if($p==0){setpgrp(0,0); exec(@ARGV)} local $SIG{ALRM}=sub{kill "KILL",-$p; print "HUNG\n"; exit 0}; alarm 8; waitpid($p,0)' \
+    python3 "$SCAN_PROBE" read_cost "$COST_PID" 2>/dev/null)
+t_eq "a FIFO does not hang the scan"  "None"  "$_fifo_read"
+trash "/tmp/claude-cost-${COST_PID}" 2>/dev/null || true
+
+# An unpriced session must not take the aggregates down with it.
+t_eq "aggregates survive a None cost" "1.5"   "$(python3 "$SCAN_PROBE" agg_sum '[1.5, null]')"
+
+# Transcripts are just files on disk and json.loads accepts a bare Infinity, so
+# usage counts are untrusted input. Guard at the boundary they enter through.
+t_eq "Infinity token count is 0"      "0"     "$(python3 "$SCAN_PROBE" tokens 'Infinity')"
+t_eq "NaN token count is 0"           "0"     "$(python3 "$SCAN_PROBE" tokens 'NaN')"
+t_eq "string token count is 0"        "0"     "$(python3 "$SCAN_PROBE" tokens '"lots"')"
+t_eq "null token count is 0"          "0"     "$(python3 "$SCAN_PROBE" tokens 'null')"
+t_eq "bool token count is 0"          "0"     "$(python3 "$SCAN_PROBE" tokens 'true')"
+t_eq "real token count survives"      "1234"  "$(python3 "$SCAN_PROBE" tokens '1234')"
+
+# The unit guards above all passed while the scan still emitted a bare Infinity
+# through tokens_in, so assert on the whole scan's real output too.
+t_eq "poisoned transcript keeps the scan valid JSON" "STRICT_JSON_OK" \
+     "$(python3 "$SCAN_PROBE" poison_scan)"
+
+# ── Session counts ───────────────────────────────────────────────────────────
+#
+# Reading only the last 500KB made turns/tool_calls a fiction on any real
+# session: transcripts are mostly huge tool_result lines, so a 58MB session
+# reported 44 of its 4488 turns — and shipped that as the total.
+
+t_section "session counts"
+
+t_eq "counts every turn past the old window" "40:40:True" \
+     "$(python3 "$SCAN_PROBE" turns_big 40)"
+t_eq "counts a small session exactly"        "3:3:False" \
+     "$(python3 "$SCAN_PROBE" turns_big 3)"
+
+# History used to count every JSONL line as a turn (so 12 turns read as 25) and
+# take its tokens from the last line, which is nearly always a tool_result —
+# hence a day of real work totalling 6 input tokens.
+t_eq "history counts turns like live does"   "12:120:60" \
+     "$(python3 "$SCAN_PROBE" history_session 12)"
+
+# ── Day boundaries ───────────────────────────────────────────────────────────
+#
+# "Today" means the reader's today. Bucketing by UTC is self-consistent and
+# still wrong everywhere but UTC: at +05:30 a night's work carried yesterday's
+# UTC date and dropped out of `today` the moment UTC rolled over. The zones are
+# pinned because this bug is invisible in UTC — the tests must fail wherever
+# they run, not only where they were written.
+
+# ── Scan cost ────────────────────────────────────────────────────────────────
+#
+# The scan's expense was never the files — it was spawning lsof and ps once per
+# live session. Both cost far more to start than to answer (one lsof about
+# eight processes takes the same ~0.3s as one about a single process), so 25
+# spawns burned 2.7s of a 2.8s scan. These pin the batching, and the tail read
+# that replaced loading a 26MB log to keep its last 500 lines.
+
+t_section "scan cost"
+
+# -a is load-bearing: lsof ORs its selection flags, so `-p <pids> -d cwd` means
+# "these pids OR any cwd" and dumps the whole process table — ~2400 lines for a
+# pid that doesn't even exist, and the cache then held every process on the box.
+t_grep "lsof ANDs its selection flags"  lib/scan.sh "'lsof', '-a', '-p'"
+t_check "lsof -a really filters"        bash -c '[ "$(lsof -a -p 999999 -d cwd -Fn 2>/dev/null | wc -l | tr -d " ")" = "0" ]'
+t_grep "only requested pids are cached" lib/scan.sh 'cur in want'
+
+t_grep "process info is batched"        lib/scan.sh 'def prime_process_info'
+t_grep "batched before any row is built" lib/scan.sh 'prime_process_info\(\[p for p'
+t_grep "logs are tailed, not slurped"   lib/scan.sh 'def tail_lines'
+# Exactly one readlines() may remain: the one inside tail_lines, which reads
+# only the span it seeked to. Any second one is a whole-file slurp again.
+t_eq "only tail_lines slurps"           "1"   "$(rg -c 'readlines\(\)' lib/scan.sh)"
+t_eq "tail_lines returns the last n"    "3" \
+     "$(printf 'a\nb\nc\nd\ne\n' > /tmp/tl-test.txt; python3 "$SCAN_PROBE" tail /tmp/tl-test.txt 3; trash /tmp/tl-test.txt 2>/dev/null)"
+
+t_section "day boundaries"
+
+t_eq "19:00Z is next-day in +05:30"  "2026-07-17" \
+     "$(TZ=Asia/Kolkata python3 "$SCAN_PROBE" local_day '2026-07-16T19:00:00Z')"
+t_eq "19:00Z is same-day in UTC"     "2026-07-16" \
+     "$(TZ=UTC python3 "$SCAN_PROBE" local_day '2026-07-16T19:00:00Z')"
+t_eq "19:00Z is same-day in -07:00"  "2026-07-16" \
+     "$(TZ=America/Los_Angeles python3 "$SCAN_PROBE" local_day '2026-07-16T19:00:00Z')"
+t_eq "malformed stamp is not a day"  "" \
+     "$(python3 "$SCAN_PROBE" local_day 'not-a-timestamp')"
+t_eq "01:00 local counts as today (+05:30)" "1:1" \
+     "$(TZ=Asia/Kolkata python3 "$SCAN_PROBE" buckets)"
+t_eq "01:00 local counts as today (UTC)"    "1:1" \
+     "$(TZ=UTC python3 "$SCAN_PROBE" buckets)"
+t_eq "01:00 local counts as today (+12:00)" "1:1" \
+     "$(TZ=Pacific/Auckland python3 "$SCAN_PROBE" buckets)"
 
 # Cleanup fixture
 rm -f "$PROJ_DIR/${FIXTURE_SID}.jsonl"

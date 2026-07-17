@@ -215,8 +215,15 @@ def parse_transcript(jsonl_file, subagent_index=None):
         seq += 1
         return seq
 
-    def flush_tools():
-        """Emit accumulated tool calls as one grouped `tools` block."""
+    def flush_tools(still_open=False):
+        """Emit accumulated tool calls as one grouped `tools` block.
+
+        `still_open` marks a group we flushed only because the file ended, not
+        because anything closed the burst. That group can still gain tools on a
+        later read while keeping this same seq — so a live-tailing client, which
+        asks for `seq > n`, would never hear about the rest of it. Marking it
+        lets the reader resend it; see `open` in the /data contract.
+        """
         nonlocal pending_tools
         if not pending_tools:
             return
@@ -231,6 +238,8 @@ def parse_transcript(jsonl_file, subagent_index=None):
             'tokens': {'out': sum(t.get('tokens_out', 0) for t in pending_tools)},
             'sidechain': any(t.get('sidechain') for t in pending_tools),
         }
+        if still_open:
+            rec['open'] = True
         records.append(rec)
         meta['counts']['tools'] += 1
         pending_tools = []
@@ -413,7 +422,8 @@ def parse_transcript(jsonl_file, subagent_index=None):
             # tool_result, file-history-snapshot) are not emitted as blocks. The
             # informative ones surface as typed `event` records once modelled.
 
-    flush_tools()
+    # Nothing closed this burst — the file just ended. It may still be growing.
+    flush_tools(still_open=True)
 
     # Tool histogram, most-used first.
     meta['tools_breakdown'] = [

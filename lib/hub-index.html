@@ -107,6 +107,10 @@ h1 { font: 650 21px/1.2 var(--sans); letter-spacing: -.014em; margin: 0; }
     background: var(--panel); border: 1px solid var(--edge); border-radius: var(--r); overflow: hidden;
     transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease); }
 .pane:hover { border-color: var(--edge2); box-shadow: var(--shadow); }
+/* Rows whose transcript this hub can't read (codex). They carry no href, so
+   say so on hover instead of looking clickable and doing nothing. */
+.noopen { cursor: default; opacity: .72; }
+.noopen:hover { border-color: var(--edge); box-shadow: none; }
 .pane.cur { outline: 2px solid var(--you); outline-offset: 2px; }
 .pane.turn { border-color: color-mix(in srgb, var(--you) 35%, transparent);
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--you) 22%, transparent); }
@@ -415,6 +419,16 @@ const FEED = { host: '', live: [], recent: [],
 const lim = p => p >= 90 ? 'hot' : p >= 70 ? 'warn' : '';
 const ctxCls = p => p < 10 ? 'hot' : p < 25 ? 'warn' : '';
 const kfmt = n => { n = +n || 0; return n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + 'K' : String(n); };
+// null cost means nobody could price this model, which is not the same as free.
+// Matches the menu bar, which already renders an unpriced session as '–'.
+const cfmt = c => c == null ? '–' : '$' + (+c).toFixed(2);
+// Only claude transcripts are readable: the hub resolves them under
+// ~/.claude/projects, and the reader keys on user/assistant lines that a codex
+// rollout doesn't have. Opening one would render an empty session rather than
+// fail, so these rows don't link at all.
+const openable = s => !s.provider || s.provider === 'claude';
+const noOpenAttrs = s => openable(s) ? '' :
+    ` data-noopen="1" title="${esc(s.provider)} session — transcript isn't readable here"`;
 function prettyModel(id) {
     let s = String(id || '');
     if (s.includes('/')) s = s.split('/')[0];   // foreign providers ("openai/0.142.5") → provider name only
@@ -456,7 +470,7 @@ function adaptFeed(d) {
         state: s.state === 'idle' ? 'idle' : 'working',
         doing: s.state_detail || DOING[s.state] || (s.state ? s.state : 'starting…'),
         ctx_remaining: (v => isNaN(v) ? null : v)(parseInt(s.ctx_remaining, 10)),
-        cost_usd: +s.cost_usd || 0, turns: +s.turns || 0,
+        cost_usd: s.cost_usd == null ? null : +s.cost_usd, turns: +s.turns || 0,
         output_tokens: kfmt(s.output_tokens),
         git_modified: +s.git_modified || 0,
         elapsed: fmtElapsed(s.elapsed), _ageMin: etimeMin(s.elapsed),
@@ -468,7 +482,7 @@ function adaptFeed(d) {
         .filter(r => r.session_id && !liveIds.has(r.session_id))   // a live session's log is also the freshest history file
         .filter(r => (r.cwd_short || r.project) !== 'subagents')   // sub-agent transcripts aren't sessions (scan-side fix waits on the provider work landing)
         .slice(0, 12).map(s => Object.assign({}, s, {
-        state: 'ended', cost_usd: +s.cost_usd || 0, turns: +s.turns || 0,
+        state: 'ended', cost_usd: s.cost_usd == null ? null : +s.cost_usd, turns: +s.turns || 0,
         model: prettyModel(s.model), git_branch: '',
         ago: relTime(s.modified),
         _ageMin: s.modified ? Math.max(0, (Date.now() - new Date(s.modified).getTime()) / 60000) : 9e9,
@@ -591,7 +605,7 @@ function paneHTML(s, hit) {
         const lines = tailLinesFor(s);
         tail = lines.map((l, i) => lineHTML(l, i === lines.length - 1 ? ' cursorline' : '')).join('');
     }
-    return `<a class="pane ${kind}" href="/s/${encodeURIComponent(s.session_id)}${hit && hit.seq ? `#r${hit.seq}&q=${encodeURIComponent(hit.w)}` : ''}" data-sid="${esc(s.session_id)}" data-screen-label="session ${esc(s.cwd_short)}">` +
+    return `<a class="pane ${kind}${openable(s) ? '' : ' noopen'}"${openable(s) ? ` href="/s/${encodeURIComponent(s.session_id)}${hit && hit.seq ? `#r${hit.seq}&q=${encodeURIComponent(hit.w)}` : ''}"` : ''}${noOpenAttrs(s)} data-sid="${esc(s.session_id)}" data-screen-label="session ${esc(s.cwd_short)}">` +
         `<div class="p-head"><span class="p-st"></span><span class="p-title">${esc(s.cwd_short)}</span>` +
         `<span class="p-model">${esc(s.model)}</span>` +
         `<span class="p-state">${yourTurn ? 'your turn' : 'working'}</span>` +
@@ -601,20 +615,20 @@ function paneHTML(s, hit) {
         (s.mcp_down ? `<div class="p-alert">${ic('alert')}MCP down: ${esc(s.mcp_down)}</div>` : '') +
         `<div class="p-foot">` +
         (s.ctx_remaining != null ? `<span class="ctx ${ctxCls(s.ctx_remaining)}"><span class="bar"><i style="width:${s.ctx_remaining}%"></i></span>ctx ${s.ctx_remaining}%</span>` : '') +
-        `<span>↑${esc(s.output_tokens)}</span><span>$${s.cost_usd.toFixed(2)}</span>` +
+        `<span>↑${esc(s.output_tokens)}</span><span>${cfmt(s.cost_usd)}</span>` +
         `<span>${s.turns}t</span>` +
         (s.subagent_count ? `<span>↳${s.subagent_count}</span>` : '') +
         (s.git_branch ? `<span class="branch">⎇ ${esc(s.git_branch)}${s.git_modified ? ` <span class="mod">*${s.git_modified}</span>` : ''}</span>` : '') +
         `</div></a>`;
 }
 function endedPaneHTML(s, hit) {
-    return `<a class="pane ended" href="/s/${encodeURIComponent(s.session_id)}${hit && hit.seq ? `#r${hit.seq}&q=${encodeURIComponent(hit.w)}` : ''}" data-sid="${esc(s.session_id)}" data-peek="1">` +
+    return `<a class="pane ended${openable(s) ? '' : ' noopen'}"${openable(s) ? ` href="/s/${encodeURIComponent(s.session_id)}${hit && hit.seq ? `#r${hit.seq}&q=${encodeURIComponent(hit.w)}` : ''}"` : ''}${noOpenAttrs(s)} data-sid="${esc(s.session_id)}" data-peek="1">` +
         `<div class="p-head"><span class="p-st"></span><span class="p-title">${esc(s.cwd_short)}</span>` +
         `<span class="p-model">${esc(s.model)}</span><span class="p-state">ended</span>` +
         `<span class="p-el">${esc(s.ago)}</span></div>` +
         `<div class="p-tail" data-tail="${esc(s.session_id)}">` + tailLinesFor(s).map(l => lineHTML(l)).join('') + `</div>` +
         (hit ? hitHTML(hit) : '') +
-        `<div class="p-foot"><span>${s.turns}t</span><span>$${s.cost_usd.toFixed(2)}</span>` +
+        `<div class="p-foot"><span>${s.turns}t</span><span>${cfmt(s.cost_usd)}</span>` +
         (s.git_branch ? `<span class="branch">⎇ ${esc(s.git_branch)}</span>` : '') + `</div></a>`;
 }
 
@@ -622,7 +636,7 @@ function endedPaneHTML(s, hit) {
 function rowHTML(s, hit) {
     const yourTurn = s.state === 'idle', ended = s.state === 'ended';
     const kind = ended ? 'ended' : yourTurn ? 'turn' : 'working';
-    return `<a class="trow ${kind}" href="/s/${encodeURIComponent(s.session_id || '')}${hit && hit.seq ? `#r${hit.seq}&q=${encodeURIComponent(hit.w)}` : ''}" data-sid="${esc(s.session_id || '')}" data-peek="1">` +
+    return `<a class="trow ${kind}${openable(s) ? '' : ' noopen'}"${openable(s) ? ` href="/s/${encodeURIComponent(s.session_id || '')}${hit && hit.seq ? `#r${hit.seq}&q=${encodeURIComponent(hit.w)}` : ''}"` : ''}${noOpenAttrs(s)} data-sid="${esc(s.session_id || '')}" data-peek="1">` +
         `<span class="st"></span>` +
         `<span class="c-dir">${esc(s.cwd_short)}</span>` +
         `<span class="c-model">${esc(s.model)}</span>` +
@@ -630,7 +644,7 @@ function rowHTML(s, hit) {
         `<span class="doing"> · ${esc(ended ? 'finished ' + (s.ago || '') : yourTurn ? (s.last_prompt || '').slice(0, 56) + '…' : (s.doing || ''))}</span></span>` +
         (ended || s.ctx_remaining == null ? `<span class="c-ctx">—</span>` :
             `<span class="c-ctx ${ctxCls(s.ctx_remaining)}"><span class="gauge"><i style="width:${s.ctx_remaining}%"></i></span>${s.ctx_remaining}%</span>`) +
-        `<span class="c-cost">$${s.cost_usd.toFixed(2)}</span>` +
+        `<span class="c-cost">${cfmt(s.cost_usd)}</span>` +
         `<span class="c-turns">${s.turns}t</span>` +
         `<span class="c-branch">${s.git_branch ? `⎇ ${esc(s.git_branch)}${s.git_modified ? ` <span class="mod">*${s.git_modified}</span>` : ''}` : ''}</span>` +
         `<span class="c-el">${esc(ended ? s.ago : s.elapsed)}</span>` +
@@ -646,7 +660,7 @@ function showPeek(el) {
     if (!s) { hidePeek(); return; }
     const same = hpkSid === sid && hpk.classList.contains('on');
     hpkSid = sid;
-    if (!tails[sid]) primeTail(sid);   // ended rows load their tail on first hover
+    if (!tails[sid] && openable(s)) primeTail(sid);   // ended rows load their tail on first hover
     const lines = tailLinesFor(s);
     const loading = tails[sid] && tails[sid].loading && !lines.length;
     hpk.innerHTML = `<div class="hd"><b>${esc(s.cwd_short)}</b><span>${s.state === 'idle' ? 'your turn' : s.state}</span></div>` +
@@ -845,6 +859,7 @@ function renderBoard(q) {
         const matched = new Set(lm.concat(rm).map(x => x.s.session_id));
         const liveIds = new Set(FEED.live.map(s => s.session_id));
         const cand = FEED.live.concat(FEED.recent)
+            .filter(openable)   // the hub can't read a codex transcript to search it
             .filter(s => s.session_id && !matched.has(s.session_id) && fieldsPass(sessionAttrs(s), pq))
             .filter(s => { const f = FT[s.session_id];
                 return !f || (!f.failed && liveIds.has(s.session_id) && f.revalidatedFor !== q); })
@@ -927,13 +942,13 @@ async function pollFeed() {
             // Prime every tail BEFORE first paint (time-capped): panes filling
             // in after render is the layout jump the owner flagged. With the
             // SWR cache this wait is ~one revalidate round-trip on reopens.
-            const all = FEED.live.concat(FEED.recent).map(s => primeTail(s.session_id));
+            const all = FEED.live.concat(FEED.recent).filter(openable).map(s => primeTail(s.session_id));
             await Promise.race([Promise.allSettled(all), new Promise(r2 => setTimeout(r2, 1800))]);
             booted = true; lastHash = feedHash();
             setMode(FEED.live.length || FEED.recent.length ? 'normal' : 'empty');
             return;
         }
-        for (const s of FEED.live.concat(FEED.recent)) primeTail(s.session_id);   // no-op once primed
+        for (const s of FEED.live.concat(FEED.recent).filter(openable)) primeTail(s.session_id);   // no-op once primed
         const h = feedHash();
         if (mode === 'empty' && (FEED.live.length || FEED.recent.length)) { lastHash = h; setMode('normal'); }
         else if (mode === 'normal' && h !== lastHash) { lastHash = h; render(); }

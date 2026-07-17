@@ -41,13 +41,15 @@ import socketserver
 import urllib.parse
 
 # transcript.py lives next to this file — import it so /data can parse a session
-# directly (~64ms for a 10MB log) instead of shelling out per request.
+# directly instead of shelling out per request.
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+transcript_import_error = None
 try:
     import transcript
-except Exception:
+except Exception as _e:            # a broken transcript.py must not stop the index
     transcript = None
+    transcript_import_error = f"{type(_e).__name__}: {_e}"
 
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 SCAN_SCRIPT = os.path.join(HERE, "scan.sh")
@@ -103,24 +105,40 @@ _scan_lock = threading.Lock()
 def run_scan(max_age=2.0):
     """The menu bar's scan output, cached briefly so polling clients are cheap.
 
-    A full scan is ~185ms; several phone/desktop clients polling the index a
-    few times a second would otherwise stack up. One cache shared under a lock
-    collapses that to one scan per `max_age` window.
+    A full scan takes a second or more on a busy machine, and several phone and
+    desktop clients poll the index a few times a second. The lock covers the
+    scan itself, not just the cache read: releasing it first meant every client
+    that missed the cache launched its own scan, so a cache miss cost N scans at
+    once instead of one that the rest then shared.
     """
-    now = time.time()
     with _scan_lock:
-        if _scan_cache["data"] is not None and now - _scan_cache["at"] < max_age:
+        if (_scan_cache["data"] is not None
+                and time.time() - _scan_cache["at"] < max_age):
             return _scan_cache["data"]
-    try:
-        out = subprocess.run(["bash", SCAN_SCRIPT], capture_output=True,
-                             text=True, timeout=12).stdout
-        data = json.loads(out)
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        data = {"live": [], "history": [], "limits": {}, "aggregates": {}}
-    with _scan_lock:
+        try:
+            proc = subprocess.run(["bash", SCAN_SCRIPT], capture_output=True,
+                                  text=True, timeout=20)
+            # A scan that died after printing still prints. Without this, a
+            # crash that flushed valid JSON on its way out is indistinguishable
+            # from a healthy scan, and gets cached as one.
+            if proc.returncode != 0:
+                raise RuntimeError(f"scan.sh exited {proc.returncode}: "
+                                   f"{proc.stderr.strip()[:200]}")
+            data = json.loads(proc.stdout)
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError,
+                RuntimeError) as e:
+            # A scan that failed is not a machine with nothing running. Caching
+            # the empty fallback would state that as fact for the next window,
+            # which reads exactly like a quiet afternoon.
+            sys.stderr.write(f"hub: scan failed ({type(e).__name__}); "
+                             f"keeping the last good result\n")
+            if _scan_cache["data"] is not None:
+                return _scan_cache["data"]
+            return {"live": [], "history": [], "limits": {}, "aggregates": {},
+                    "scan_error": type(e).__name__}
         _scan_cache["at"] = time.time()
         _scan_cache["data"] = data
-    return data
+        return data
 
 
 def resolve_session_jsonl(session_id):
@@ -128,12 +146,29 @@ def resolve_session_jsonl(session_id):
 
     Sessions live at ~/.claude/projects/<project-slug>/<session-id>.jsonl. The
     id alone is unique, so a recursive glob finds it without knowing the slug.
+
+    If that uniqueness ever breaks, take the freshest rather than whatever the
+    filesystem happened to list first — glob order is not defined, so the old
+    hits[0] could serve a different session's transcript on one request and its
+    twin on the next, with nothing to show anything was wrong.
     """
     if not session_id or not re.match(r"^[\w-]+$", session_id):
         return None
     hits = glob.glob(os.path.join(PROJECTS_DIR, "**", f"{session_id}.jsonl"),
                      recursive=True)
-    return hits[0] if hits else None
+    # `**` follows symlinked directories, so a single planted link under
+    # projects/ would make this server — reachable from every device on the
+    # tailnet — serve any .jsonl on the disk. Resolve and re-check the root.
+    root = os.path.realpath(PROJECTS_DIR)
+    hits = [h for h in hits
+            if os.path.realpath(h).startswith(root + os.sep)]
+    if not hits:
+        return None
+    if len(hits) > 1:
+        sys.stderr.write(f"hub: {len(hits)} transcripts share id {session_id}; "
+                         f"serving the most recently written\n")
+        hits.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return hits[0]
 
 
 def sessions_payload():
@@ -149,6 +184,8 @@ def sessions_payload():
         live.append({
             "session_id": inst.get("session_id", ""),
             "pid": inst.get("pid"),
+            # Only claude transcripts are readable here — see _serve_app.
+            "provider": inst.get("provider", "claude"),
             "model": inst.get("model", ""),
             "cwd_short": inst.get("cwd_short", ""),
             "cwd": inst.get("cwd", ""),
@@ -173,6 +210,7 @@ def sessions_payload():
     for h in scan.get("history", []):
         recent.append({
             "session_id": h.get("session_id", ""),
+            "provider": h.get("provider", "claude"),
             "model": h.get("model", ""),
             "cwd_short": h.get("project", ""),
             "turns": h.get("turns", 0),
@@ -224,7 +262,10 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        qs = urllib.parse.parse_qs(parsed.query)
+        # keep_blank_values: without it `?since=` is dropped from the dict
+        # entirely and reads as "no cursor given", so a client that sent an
+        # empty cursor silently got the whole transcript instead of a 400.
+        qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
 
         if path in ("/", "/index.html"):
             return self._serve_index()
@@ -276,16 +317,24 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
         try:
             result = transcript.parse_transcript(target)
         except Exception as e:
-            return self._json(500, {"error": f"parse failed: {e}"})
+            # The detail goes to the log, not the response — a parser exception
+            # carries absolute paths and stack fragments.
+            sys.stderr.write(f"hub: parse failed for {sid}: {type(e).__name__}: {e}\n")
+            return self._json(500, {"error": "transcript could not be parsed"})
 
         since = (qs.get("since") or [None])[0]
         if since is not None:
             try:
                 s = int(since)
-                result["records"] = [r for r in result["records"] if r["seq"] > s]
-                result["meta"]["since"] = s
             except ValueError:
-                pass
+                return self._json(400, {"error": f"since must be an integer, got {since!r}"})
+            # A tools group flushed at EOF keeps its seq while still gaining
+            # tools, so `seq > s` alone would hide everything appended to a
+            # group the client has already seen. Resend it and let the client
+            # swap it in place.
+            result["records"] = [r for r in result["records"]
+                                 if r["seq"] > s or r.get("open")]
+            result["meta"]["since"] = s
         self._json(200, result)
 
 
@@ -323,8 +372,27 @@ def main(argv):
     scope = "tailnet (reachable from your other devices)" if host == tn \
         else "localhost only (Tailscale down — start it for phone access)"
     sys.stderr.write(f"claude hub: http://{host}:{port}/  — {scope}\n")
+    if transcript is None:
+        # Say it now. Otherwise the first person to open a session finds out,
+        # via a 500, that transcripts have been dark since startup.
+        sys.stderr.write(f"  WARNING: transcript.py failed to import — sessions "
+                         f"will not open. {transcript_import_error}\n")
     if tn and host == tn:
         sys.stderr.write(f"  on your phone: http://{tn}:{port}/\n")
+
+    # Also serve loopback so local links (the menu bar's http://127.0.0.1 URL, a
+    # browser on this Mac) work even when the primary bind is the tailnet IP. A
+    # second socket on a distinct address keeps the tailnet scoping intact —
+    # unlike 0.0.0.0, it does NOT expose the hub to the LAN / public wifi.
+    if host not in ("127.0.0.1", "0.0.0.0", "localhost"):
+        import threading
+        try:
+            loop_httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), HubHandler)
+            threading.Thread(target=loop_httpd.serve_forever, daemon=True).start()
+            sys.stderr.write(f"  on this Mac:   http://127.0.0.1:{port}/\n")
+        except OSError as e:
+            sys.stderr.write(f"  (loopback co-bind failed: {e})\n")
+
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

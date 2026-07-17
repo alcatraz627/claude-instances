@@ -1161,6 +1161,33 @@ function ingestNew(recs) {
     }
     setTimeout(() => { document.querySelectorAll('.newmark').forEach(nm => nm.style.opacity = '0'); }, 5000);
 }
+/* A tools group flushed while the agent is still mid-burst keeps its seq and
+   gains tools on later polls, so the server resends it under a seq we already
+   have. Swap the grown copy in place. Only real growth counts as activity —
+   treating every resend as activity would mean the idle check below never
+   fires and the session looks permanently busy. */
+function refreshOpen(recs) {
+    let grew = false, changed = false;
+    for (const r of recs) {
+        const i = state.records.findIndex(x => x.seq === r.seq);
+        if (i < 0) continue;
+        const before = (state.records[i].tools || []).length;
+        const after = (r.tools || []).length;
+        if (after === before) continue;
+        // Take the server's version either way. Only growth is activity, but a
+        // group that shrank (a rewritten transcript) must not stay frozen at
+        // its historical peak for the life of the page.
+        state.records[i] = r;
+        changed = true;
+        if (after > before) grew = true;
+    }
+    if (changed) {
+        buildChapters();
+        rerenderChapter(state.chapters.length - 1);
+        renderOutline(); updateSpine(); rebuildTimeline();
+    }
+    return grew;
+}
 async function pollLive() {
     if (document.hidden || pollBusy) return;   // don't stack polls; idle tabs stay quiet
     pollBusy = true;
@@ -1169,14 +1196,17 @@ async function pollLive() {
         if (!res.ok) throw new Error(res.status);
         const data = await res.json();
         state.meta = data.meta; window.SESSION.meta = data.meta;
-        if (data.records.length) {
-            lastSeq = data.records[data.records.length - 1].seq;
+        const fresh = data.records.filter(r => r.seq > lastSeq);
+        const grew = refreshOpen(data.records.filter(r => r.seq <= lastSeq));
+        if (fresh.length) {
+            lastSeq = fresh[fresh.length - 1].seq;
             if (state.mode !== 'normal') {
-                state.records.push(...data.records);
+                state.records.push(...fresh);
                 setMode('normal');
-            } else ingestNew(data.records);
-            quietPolls = 0; setLiveState('working');
-        } else if (++quietPolls >= 2 && state.mode === 'normal') setLiveState('yourturn');
+            } else ingestNew(fresh);
+        }
+        if (fresh.length || grew) { quietPolls = 0; setLiveState('working'); }
+        else if (++quietPolls >= 2 && state.mode === 'normal') setLiveState('yourturn');
     } catch (e) { /* transient poll failure: keep what's on screen, retry next tick */ }
     finally { pollBusy = false; }
 }

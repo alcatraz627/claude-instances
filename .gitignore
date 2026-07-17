@@ -5,6 +5,9 @@ native/.build-info
 # Claude agent scratch files
 _*.claude.md
 
+# Playwright MCP browser artifacts (screenshots, snapshots, console logs)
+**/.playwright-mcp/
+
 # macOS
 .DS_Store
 

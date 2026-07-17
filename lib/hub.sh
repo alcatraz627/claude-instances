@@ -51,13 +51,25 @@ cmd_start() {
     local pid=$!
     echo "$pid" > "$PID_FILE"
     disown 2>/dev/null || true
-    # wait for the port to accept connections
-    for _ in $(seq 1 20); do
-        nc -z 127.0.0.1 "$PORT" 2>/dev/null && break
+    # Wait until OUR pid is the one listening. `nc -z` only proves somebody is:
+    # when a stale hub already held the port, this one died on "address in use"
+    # while nc succeeded instantly against the old one, and the start was
+    # reported as a success that had actually served stale code for hours.
+    local ok=""
+    for _ in $(seq 1 40); do
+        kill -0 "$pid" 2>/dev/null || break                     # it died; stop waiting
+        if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | grep -qx "$pid"; then
+            ok=1; break
+        fi
         sleep 0.1
     done
-    if ! is_running || ! nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
+    if [[ -z "$ok" ]]; then
+        local holder
+        holder=$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)
         echo "${c_yel}hub failed to start — see $LOG${c_rst}" >&2
+        if [[ -n "$holder" && "$holder" != "$pid" ]]; then
+            echo "  port $PORT is already held by pid $holder — stop it first" >&2
+        fi
         tail -3 "$LOG" 2>/dev/null >&2 || true
         return 1
     fi
