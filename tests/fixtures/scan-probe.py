@@ -1,6 +1,7 @@
 """Exposes scan.sh's cost functions to the test suite — they live in an embedded
 heredoc, so they cannot be imported. Ops: estimate | read_cost | tokens |
-agg_sum | poison_scan."""
+agg_sum | poison_scan | agg_window | agg_cache_reuse | agg_cache_corrupt |
+agg_cache_shape | agg_cache_atomic."""
 import io, os, sys, json, contextlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -20,6 +21,36 @@ def load():
 
 def fmt(v):
     return "None" if v is None else repr(round(v, 4) if isinstance(v, float) else v)
+
+
+def _load_agg(projects_dir, cache_path):
+    """Exec the embedded module against a synthetic tree + a private summary
+    cache (argv[6]). The real codex tree on this machine must not leak into
+    the counting ops, so the provider list is trimmed to claude."""
+    src = open(SCAN, errors="replace").read().splitlines()
+    a = next(i for i, l in enumerate(src) if l.startswith("python3 - ")) + 1
+    b = next(i for i, l in enumerate(src) if l.strip() == "PYEOF")
+    ns = {"__name__": "aggmod"}
+    sys.argv = ["scan", projects_dir, "/tmp/x", "/tmp/y", "/tmp/z", "1", cache_path]
+    with contextlib.redirect_stdout(io.StringIO()):
+        exec(compile("\n".join(src[a:b]), "scan.sh:embedded", "exec"), ns)
+    ns["PROVIDERS"][:] = [p for p in ns["PROVIDERS"] if p["name"] == "claude"]
+    return ns
+
+
+def _mk_sessions(root, n):
+    """n one-turn sessions (10 in / 5 out each) under root/projects."""
+    d = os.path.join(root, "projects", "-tmp-agg")
+    os.makedirs(d, exist_ok=True)
+    paths = []
+    for i in range(n):
+        p = os.path.join(d, f"cafe{i:04d}-0000-4000-8000-000000000000.jsonl")
+        with open(p, "w") as fh:
+            fh.write(json.dumps({"type": "assistant", "message": {
+                "model": "claude-opus-4-8",
+                "usage": {"input_tokens": 10, "output_tokens": 5}}}) + "\n")
+        paths.append(p)
+    return paths
 
 
 def main(argv):
@@ -149,6 +180,183 @@ def main(argv):
             print(fmt(round(sum(s.get("cost_usd") or 0 for s in sessions), 4)))
         except TypeError as e:
             print(f"ERROR:{type(e).__name__}")
+    elif op == "agg_window":
+        # THE R1 assertion: the display list caps at 20 rows; the aggregates
+        # must still see every session in the window.
+        import tempfile, shutil
+        n = int(argv[1])
+        root = tempfile.mkdtemp(prefix="aggwin-")
+        try:
+            _mk_sessions(root, n)
+            ns2 = _load_agg(os.path.join(root, "projects"),
+                            os.path.join(root, "cache", "s.json"))
+            agg = ns2["get_aggregate_history"]()
+            hist = ns2["get_session_history"]()
+            a = ns2["compute_aggregates"](agg)
+            print(f"{len(agg)}:{len(hist)}:{a['today']['sessions']}:{a['today']['tokens_out']}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "agg_e2e":
+        # The wiring, not the function: the five unit guards all call
+        # get_aggregate_history directly, so none of them would notice the
+        # assemble block quietly reverting to compute_aggregates(history).
+        # This runs the WHOLE scan and asserts on the shipped JSON. HOME is
+        # redirected at the temp root so the real codex tree can't pollute
+        # the counts.
+        import tempfile, shutil
+        n = int(argv[1])
+        root = tempfile.mkdtemp(prefix="agge2e-")
+        old_home = os.environ.get("HOME")
+        try:
+            _mk_sessions(root, n)
+            os.environ["HOME"] = root
+            src = open(SCAN, errors="replace").read().splitlines()
+            a = next(i for i, l in enumerate(src) if l.startswith("python3 - ")) + 1
+            b = next(i for i, l in enumerate(src) if l.strip() == "PYEOF")
+            sys.argv = ["scan", os.path.join(root, "projects"), "/tmp/x", "/tmp/y",
+                        "/tmp/z", "0", os.path.join(root, "cache", "s.json")]
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                exec(compile("\n".join(src[a:b]), "scan.sh:embedded", "exec"),
+                     {"__name__": "e2emod"})
+            out = json.loads(buf.getvalue())
+            print(f"{out['aggregates']['today']['sessions']}:{len(out['history'])}")
+        finally:
+            if old_home is not None:
+                os.environ["HOME"] = old_home
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "agg_sessions_only":
+        # Sub-agent transcripts (<sid>/subagents/**.jsonl) live inside a
+        # session's directory tree but are workers, not sessions. Recursing
+        # into them counted 379 alongside a week's 265 real sessions, and
+        # double-counted their tokens on top.
+        import tempfile, shutil
+        root = tempfile.mkdtemp(prefix="aggnest-")
+        try:
+            _mk_sessions(root, 3)
+            d = os.path.join(root, "projects", "-tmp-agg",
+                             "cafe0000-0000-4000-8000-000000000000", "subagents")
+            os.makedirs(d)
+            for i in range(2):
+                with open(os.path.join(d, f"agent-x{i}.jsonl"), "w") as fh:
+                    fh.write(json.dumps({"type": "assistant", "message": {
+                        "model": "claude-opus-4-8",
+                        "usage": {"input_tokens": 100, "output_tokens": 100}}}) + "\n")
+            ns2 = _load_agg(os.path.join(root, "projects"),
+                            os.path.join(root, "cache", "s.json"))
+            agg = ns2["get_aggregate_history"]()
+            hist = ns2["get_session_history"]()
+            a = ns2["compute_aggregates"](agg)
+            print(f"{len(agg)}:{len(hist)}:{a['today']['tokens_out']}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "agg_cache_reuse":
+        # Unchanged files must come from the cache, and only the file that
+        # grew may re-parse.
+        import tempfile, shutil
+        n = int(argv[1])
+        root = tempfile.mkdtemp(prefix="aggreuse-")
+        try:
+            paths = _mk_sessions(root, n)
+            ns2 = _load_agg(os.path.join(root, "projects"),
+                            os.path.join(root, "cache", "s.json"))
+            calls = {"n": 0}
+            real = ns2["PROVIDERS"][0]["parse_session"]
+            def counting(fp):
+                calls["n"] += 1
+                return real(fp)
+            ns2["PROVIDERS"][0]["parse_session"] = counting
+            ns2["get_aggregate_history"](); c1 = calls["n"]; calls["n"] = 0
+            ns2["get_aggregate_history"](); c2 = calls["n"]; calls["n"] = 0
+            with open(paths[0], "a") as fh:
+                fh.write(json.dumps({"type": "assistant", "message": {
+                    "model": "claude-opus-4-8",
+                    "usage": {"input_tokens": 1, "output_tokens": 1}}}) + "\n")
+            rows = ns2["get_aggregate_history"](); c3 = calls["n"]
+            print(f"{c1}:{c2}:{c3}:{len(rows)}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "agg_cache_corrupt":
+        # A damaged cache means a rebuild — never a crash, never a fabricated
+        # summary — and the scan leaves a valid file behind.
+        import tempfile, shutil
+        n = int(argv[1])
+        root = tempfile.mkdtemp(prefix="aggcor-")
+        try:
+            _mk_sessions(root, n)
+            cache = os.path.join(root, "cache", "s.json")
+            os.makedirs(os.path.dirname(cache))
+            with open(cache, "w") as fh:
+                fh.write('{"broken')
+            ns2 = _load_agg(os.path.join(root, "projects"), cache)
+            rows = ns2["get_aggregate_history"]()
+            with open(cache) as fh:
+                json.load(fh)
+            print(f"{len(rows)}:REPAIRED")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "agg_cache_shape":
+        # Valid JSON, hostile shapes: a matching (mtime,size) key with a
+        # garbage summary must re-parse — never crash, never enter the totals.
+        # A cached path that no longer exists must be pruned by the rewrite.
+        import tempfile, shutil
+        n = int(argv[1])
+        root = tempfile.mkdtemp(prefix="aggshape-")
+        try:
+            paths = _mk_sessions(root, n)
+            cache = os.path.join(root, "cache", "s.json")
+            os.makedirs(os.path.dirname(cache))
+            st0 = os.stat(paths[0])
+            with open(cache, "w") as fh:
+                json.dump({
+                    paths[0]: {"mtime_ns": st0.st_mtime_ns, "size": st0.st_size,
+                               "summary": {"model": 5, "turns": "ten",
+                                           "tokens_in": None, "tokens_out": []}},
+                    paths[1]: ["not", "a", "dict"],
+                    "/nonexistent/x.jsonl": {"mtime_ns": 1, "size": 1,
+                                             "summary": {"model": "opus", "turns": 1,
+                                                         "tokens_in": 1, "tokens_out": 1}},
+                }, fh)
+            ns2 = _load_agg(os.path.join(root, "projects"), cache)
+            rows = ns2["get_aggregate_history"]()
+            a = ns2["compute_aggregates"](rows)
+            with open(cache) as fh:
+                saved = json.load(fh)
+            pruned = "PRUNED" if "/nonexistent/x.jsonl" not in saved else "STALE"
+            print(f"{len(rows)}:{a['today']['tokens_out']}:{pruned}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "agg_cache_atomic":
+        # save must be tmp+rename: a dump that dies mid-write leaves the
+        # previous cache byte-identical and no tmp litter behind.
+        import tempfile, shutil
+        n = int(argv[1])
+        root = tempfile.mkdtemp(prefix="aggatom-")
+        try:
+            _mk_sessions(root, n)
+            cache = os.path.join(root, "cache", "s.json")
+            ns2 = _load_agg(os.path.join(root, "projects"), cache)
+            ns2["get_aggregate_history"]()
+            with open(cache, "rb") as fh:
+                before = fh.read()
+            real_json = ns2["json"]
+            class Poison:
+                def __getattr__(self, k):
+                    return getattr(real_json, k)
+                @staticmethod
+                def dump(obj, fh):
+                    fh.write('{"torn')
+                    raise OSError("disk full")
+            ns2["json"] = Poison()
+            ns2["save_summary_cache"]({"x": 1})
+            ns2["json"] = real_json
+            with open(cache, "rb") as fh:
+                after = fh.read()
+            litter = [f for f in os.listdir(os.path.dirname(cache)) if ".tmp." in f]
+            print(("ATOMIC" if before == after else "TORN")
+                  + ":" + ("CLEAN" if not litter else "LITTER"))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
     else:
         print(f"unknown op {op!r}", file=sys.stderr)
         return 2

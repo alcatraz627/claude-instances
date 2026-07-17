@@ -7,7 +7,9 @@
 # Live instances: discovered via pgrep + process info + statusline metrics.
 # History: enumerated from ~/.claude/projects/*/*.jsonl.
 # Limits: read from cached ~/.claude/widgets/.limits.json if present.
-# Aggregates: today/week session stats, model breakdown.
+# Aggregates: today/week session stats, model breakdown — computed over the
+#   full window via the ~/.claude/widgets/.session-summaries.json cache, not
+#   over the 20-row display list.
 #
 # Flags:
 #   --quick   Skip history, events, aggregates (fast path for 5s polling)
@@ -18,10 +20,11 @@ PROJECTS_DIR="${HOME}/.claude/projects"
 LIMITS_CACHE="${HOME}/.claude/widgets/.limits.json"
 EVENTS_FILE="${HOME}/.claude/events.jsonl"
 STATUSLINE_DIR="/tmp"
+SUMMARY_CACHE="${HOME}/.claude/widgets/.session-summaries.json"
 QUICK_MODE=0
 [[ "${1:-}" == "--quick" ]] && QUICK_MODE=1
 
-python3 - "$PROJECTS_DIR" "$LIMITS_CACHE" "$EVENTS_FILE" "$STATUSLINE_DIR" "$QUICK_MODE" <<'PYEOF'
+python3 - "$PROJECTS_DIR" "$LIMITS_CACHE" "$EVENTS_FILE" "$STATUSLINE_DIR" "$QUICK_MODE" "$SUMMARY_CACHE" <<'PYEOF'
 import sys, json, os, subprocess, re, math
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -31,6 +34,9 @@ limits_cache = sys.argv[2]
 events_file = sys.argv[3]
 statusline_dir = sys.argv[4]
 quick_mode = sys.argv[5] == '1'
+# Absent (probe contexts that predate it) means no persistence: the aggregate
+# walk still works, it just re-parses every scan.
+summary_cache = sys.argv[6] if len(sys.argv) > 6 else ''
 
 home = os.path.expanduser('~')
 
@@ -699,13 +705,29 @@ def claude_proc_meta(cmdline):
     return {'model_hint': model_hint, 'resume_id': resume_id}
 
 def claude_transcript_iter():
-    """Yield every claude session transcript path (~/.claude/projects/*/*.jsonl)."""
+    """Yield every claude session transcript path (~/.claude/projects/<dir>/<sid>.jsonl).
+
+    Top level of each project dir only, deliberately: a session's own
+    directory tree holds sub-agent transcripts (<sid>/subagents/**.jsonl).
+    Those are workers inside a session, not sessions — recursing counted
+    hundreds of them as sessions and their tokens twice.
+    """
     if not os.path.isdir(projects_dir):
         return
-    for root, dirs, files in os.walk(projects_dir):
-        for f in files:
-            if f.endswith('.jsonl') and not f.startswith('.'):
-                yield os.path.join(root, f)
+    try:
+        project_dirs = list(os.scandir(projects_dir))
+    except OSError:
+        return
+    for proj in project_dirs:
+        if not proj.is_dir():
+            continue
+        try:
+            entries = list(os.scandir(proj.path))
+        except OSError:
+            continue
+        for e in entries:
+            if e.is_file() and e.name.endswith('.jsonl') and not e.name.startswith('.'):
+                yield e.path
 
 def claude_parse_session(filepath):
     """One finished session's summary for the history list: model, turns, tokens.
@@ -1301,15 +1323,7 @@ def get_session_history(max_sessions=20):
             if len(segs) > 2:
                 project_display = '/'.join(segs[-2:])
 
-        # Shorten model
-        model_short = model
-        if 'opus' in model:
-            model_short = 'opus'
-        elif 'sonnet' in model:
-            model_short = 'sonnet'
-        elif 'haiku' in model:
-            model_short = 'haiku'
-
+        model_short = short_model(model)
         cost_usd = estimate_cost(model_short, total_input, total_output)
 
         # Cache model for event enrichment
@@ -1456,6 +1470,114 @@ def compute_aggregates(history):
         'model_breakdown': model_counts,
     }
 
+# ─── Aggregate window (summary cache) ────────────────────────────
+#
+# The history list caps at 20 because it is a list of rows; totals labeled
+# "today" and "week" must see every session in their window or they are
+# confident falsehoods (148 real sessions once read as 19). Walking the whole
+# window is only affordable through a per-file summary cache: parse results
+# keyed by (mtime_ns, size), so unchanged transcripts never re-parse.
+#
+# The cache is a file on disk and therefore untrusted input, same doctrine as
+# token_count: any damage — bad JSON, wrong shape, non-int counts — means
+# re-parsing the real transcript, never crashing and never trusting garbage.
+
+def short_model(model):
+    """Family name ('opus') out of a full model id ('claude-opus-4-8')."""
+    for family in ('opus', 'sonnet', 'haiku'):
+        if family in model:
+            return family
+    return model
+
+def _valid_summary(s):
+    return (isinstance(s, dict)
+            and isinstance(s.get('model'), str)
+            and all(isinstance(s.get(k), int) and not isinstance(s.get(k), bool)
+                    for k in ('turns', 'tokens_in', 'tokens_out')))
+
+def load_summary_cache():
+    """Last scan's per-file summaries, or {} when absent or damaged."""
+    try:
+        with open(summary_cache, 'r') as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+def save_summary_cache(cache):
+    """Write the cache atomically (tmp + rename), best-effort.
+
+    A failed write costs the next scan a re-parse; it must never cost the
+    scan its output, so errors are swallowed and the tmp file cleaned up.
+    """
+    if not summary_cache:
+        return
+    tmp = f"{summary_cache}.tmp.{os.getpid()}"
+    try:
+        os.makedirs(os.path.dirname(summary_cache), exist_ok=True)
+        with open(tmp, 'w') as f:
+            json.dump(cache, f)
+        os.replace(tmp, summary_cache)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+def get_aggregate_history(window_days=7):
+    """Every provider session in the aggregate window, as minimal rows for
+    compute_aggregates. Only new or changed files pay a parse."""
+    now_local = datetime.now().astimezone()
+    cutoff = (now_local - timedelta(days=window_days)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    # An hour of slack so a DST-shifted midnight can't exclude a session that
+    # compute_aggregates would still bucket into the week.
+    cutoff_epoch = cutoff.timestamp() - 3600
+
+    cache = load_summary_cache()
+    fresh = {}
+    rows = []
+    for provider in PROVIDERS:
+        for filepath in provider['transcript_iter']():
+            try:
+                st = os.stat(filepath)
+            except OSError:
+                continue
+            if st.st_mtime < cutoff_epoch:
+                continue
+            ent = cache.get(filepath)
+            summary = None
+            if (isinstance(ent, dict) and ent.get('mtime_ns') == st.st_mtime_ns
+                    and ent.get('size') == st.st_size
+                    and _valid_summary(ent.get('summary'))):
+                summary = ent['summary']
+            if summary is None:
+                parsed = provider['parse_session'](filepath)
+                if not parsed:
+                    continue
+                summary = {
+                    'model': parsed.get('model') or 'unknown',
+                    'turns': parsed.get('turns', 0),
+                    'tokens_in': parsed.get('tokens_in', 0),
+                    'tokens_out': parsed.get('tokens_out', 0),
+                }
+            fresh[filepath] = {'mtime_ns': st.st_mtime_ns, 'size': st.st_size,
+                               'summary': summary}
+            model_short = short_model(summary['model'])
+            rows.append({
+                'modified': datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                'model': model_short,
+                'turns': summary['turns'],
+                'tokens_in': summary['tokens_in'],
+                'tokens_out': summary['tokens_out'],
+                'cost_usd': estimate_cost(model_short, summary['tokens_in'], summary['tokens_out']),
+            })
+    # Rewriting from scratch prunes files that are gone or aged out; skip the
+    # write when nothing changed (this runs on every dashboard poll).
+    if fresh != cache:
+        save_summary_cache(fresh)
+    return rows
+
 # ─── Limits ──────────────────────────────────────────────────────
 
 def get_limits():
@@ -1571,7 +1693,8 @@ else:
     history = get_session_history()
     recent_events, deep_events = get_recent_events()
     limits = get_limits()
-    aggregates = compute_aggregates(history)
+    # Not compute_aggregates(history): totals must see past the display cap.
+    aggregates = compute_aggregates(get_aggregate_history())
 
     output['history'] = history
     output['recent_events'] = recent_events

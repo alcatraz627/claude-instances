@@ -663,6 +663,31 @@ t_eq "01:00 local counts as today (UTC)"    "1:1" \
 t_eq "01:00 local counts as today (+12:00)" "1:1" \
      "$(TZ=Pacific/Auckland python3 "$SCAN_PROBE" buckets)"
 
+# ── Aggregate window (R1) ────────────────────────────────────────────────────
+#
+# The header's totals used to be computed over the 20-row display list, so
+# "today: 19 sessions" really meant "however many of the newest 20 were
+# today's" — 148 real sessions read as 19. The aggregates now walk the whole
+# window through a per-file summary cache; the display list stays capped
+# because it is a list of rows, not a total.
+
+t_section "aggregate window (R1)"
+
+t_eq "aggregates see past the display cap"  "25:20:25:125" \
+     "$(python3 "$SCAN_PROBE" agg_window 25)"
+t_eq "the shipped output walks the window"  "25:20" \
+     "$(python3 "$SCAN_PROBE" agg_e2e 25)"
+t_eq "sub-agent transcripts are not sessions" "3:3:15" \
+     "$(python3 "$SCAN_PROBE" agg_sessions_only)"
+t_eq "unchanged files come from the cache"  "3:0:1:3" \
+     "$(python3 "$SCAN_PROBE" agg_cache_reuse 3)"
+t_eq "corrupt cache rebuilds and repairs"   "3:REPAIRED" \
+     "$(python3 "$SCAN_PROBE" agg_cache_corrupt 3)"
+t_eq "wrong-shape cache entries re-parse"   "3:15:PRUNED" \
+     "$(python3 "$SCAN_PROBE" agg_cache_shape 3)"
+t_eq "cache write is atomic, tmp cleaned"   "ATOMIC:CLEAN" \
+     "$(python3 "$SCAN_PROBE" agg_cache_atomic 3)"
+
 # Cleanup fixture
 rm -f "$PROJ_DIR/${FIXTURE_SID}.jsonl"
 rmdir "$PROJ_DIR" 2>/dev/null || true
