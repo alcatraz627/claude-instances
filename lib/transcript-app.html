@@ -851,8 +851,8 @@ function ledgerHTML(run, key) {
                 return `<div class="evrow${err ? ' err' : ''}">${err ? '▲' : '·'} ${esc(r.text)}<span class="ts">${esc(r.ts || '')}</span></div>`;
             }
             return r.tools.map((t, i) => {
-                const tkey = r.seq + ':' + i, topen = state.expanded.has(tkey);
-                return `<button class="trow${AGENT(t) ? ' agent' : ''}" data-key="${tkey}" aria-expanded="${topen}">` +
+                const tkey = r.id + ':' + i, topen = state.expanded.has(tkey);
+                return `<button class="trow${AGENT(t) ? ' agent' : ''}" data-key="${esc(tkey)}" aria-expanded="${topen}">` +
                     `<span class="fold">${topen ? '▾' : '▸'}</span><span class="tn">${esc(t.name)}</span>` +
                     `<span class="tp">${prevHTML(t)}</span>` +
                     (t.tokens_out ? `<span class="tk">↑${kfmt(t.tokens_out)}</span>` : '') + `</button>` +
@@ -860,7 +860,7 @@ function ledgerHTML(run, key) {
             }).join('');
         }).join('') + `</div>`;
     }
-    return `<div class="ledger"><button class="lg-row" data-lg="${key}" aria-expanded="${open}">` +
+    return `<div class="ledger"><button class="lg-row" data-lg="${esc(key)}" aria-expanded="${open}">` +
         `<span class="lg-ico">${ic('gear')}</span><span class="lg-sum">${sum.html}</span>` +
         `<svg class="icon lg-chev" style="width:12px;height:12px"><use href="#i-chev"/></svg></button>${body}</div>`;
 }
@@ -888,7 +888,7 @@ function chapterHTML(c, i) {
     h += `</div></header>`;
     // items: passages + ledgers (consecutive tools/events group into one ledger)
     let run = [];
-    const flush = () => { if (run.length) { h += runHTML(run, 'lg:' + run[0].seq); run = []; } };
+    const flush = () => { if (run.length) { h += runHTML(run, 'lg:' + run[0].id); run = []; } };
     for (const r of c.items) {
         // mode/permission events stay visible outside the fold; other events group into the ledger
         if (r.role === 'tools' || (r.role === 'event' && !/mode/i.test(r.text || ''))) { run.push(r); continue; }
@@ -900,9 +900,9 @@ function chapterHTML(c, i) {
             continue;
         }
         if (r.role === 'user') { // injected (command expansion / skill preamble) — annotation, not chapter
-            const ik = 'inj:' + r.seq, iopen = state.expanded.has(ik);
+            const ik = 'inj:' + r.id, iopen = state.expanded.has(ik);
             const lines = String(r.text || '').split('\n').length;
-            h += `<div class="injected"><button class="inj-row" data-key="${ik}" aria-expanded="${iopen}">` +
+            h += `<div class="injected"><button class="inj-row" data-key="${esc(ik)}" aria-expanded="${iopen}">` +
                 `<span class="fold">${iopen ? '▾' : '▸'}</span>injected · skill preamble · ${lines} lines` +
                 (r.system_reminders ? ` · ${r.system_reminders} reminders` : '') + `</button>` +
                 (iopen ? `<div class="inj-body"><div class="content" data-md data-raw="${esc(r.text)}"></div></div>` : '') + `</div>`;
@@ -1134,8 +1134,17 @@ document.addEventListener('keydown', e => {
     else if (e.key === ']') $('#chNext').click();
 });
 
-/* ================= live — poll /data?since=<lastSeq> and append in place */
-let liveTimer = null, lastSeq = 0, quietPolls = 0, pollBusy = false;
+/* ================= live — poll /data?after_id=<lastId> and merge by id.
+   seq is positional (a mid-file rewrite renumbers it); identity is r.id. */
+let liveTimer = null, lastId = null, quietPolls = 0, pollBusy = false;
+/* The cursor must never park ON an open group: one that grows and closes
+   between two polls falls out of both the open-resend and the after-cursor
+   buckets, and that growth is lost forever. Anchor at the last CLOSED record
+   so an open group keeps being fetched until it has been seen closed. */
+function lastClosedId(arr) {
+    for (let i = arr.length - 1; i >= 0; i--) if (!arr[i].open) return arr[i].id;
+    return null;
+}
 function setLiveState(kind) {
     const el = $('#tbLive');
     el.className = 'tb-live ' + (kind === 'working' ? 'working' : kind === 'yourturn' ? 'yourturn' : '');
@@ -1169,7 +1178,7 @@ function ingestNew(recs) {
 function refreshOpen(recs) {
     let grew = false, changed = false;
     for (const r of recs) {
-        const i = state.records.findIndex(x => x.seq === r.seq);
+        const i = state.records.findIndex(x => x.id === r.id);
         if (i < 0) continue;
         const before = (state.records[i].tools || []).length;
         const after = (r.tools || []).length;
@@ -1192,14 +1201,27 @@ async function pollLive() {
     if (document.hidden || pollBusy) return;   // don't stack polls; idle tabs stay quiet
     pollBusy = true;
     try {
-        const res = await fetch(API + 'data?since=' + lastSeq, { cache: 'no-store' });
+        const res = await fetch(API + 'data' + (lastId ? '?after_id=' + encodeURIComponent(lastId) : ''), { cache: 'no-store' });
         if (!res.ok) throw new Error(res.status);
         const data = await res.json();
         state.meta = data.meta; window.SESSION.meta = data.meta;
-        const fresh = data.records.filter(r => r.seq > lastSeq);
-        const grew = refreshOpen(data.records.filter(r => r.seq <= lastSeq));
+        if (data.meta && data.meta.cursor_reset) {
+            /* The cursor names a record that no longer exists (rewritten
+               transcript). Adopt the server's set wholesale — expansion keys
+               are id-based, so open folds survive the reconcile. */
+            state.records = data.records;
+            window.SESSION.records = data.records;
+            lastId = lastClosedId(data.records);
+            buildChapters(); renderChapters(); renderOutline(); updateSpine(); rebuildTimeline();
+            quietPolls = 0; setLiveState('working');
+            return;
+        }
+        const known = new Set(state.records.map(x => x.id));
+        const fresh = data.records.filter(r => !known.has(r.id));
+        const grew = refreshOpen(data.records.filter(r => known.has(r.id)));
         if (fresh.length) {
-            lastSeq = fresh[fresh.length - 1].seq;
+            const anchor = lastClosedId(fresh);
+            if (anchor) lastId = anchor;
             if (state.mode !== 'normal') {
                 state.records.push(...fresh);
                 setMode('normal');
@@ -1286,8 +1308,8 @@ function ledgerRowsHTML(run) {
             return `<div class="evrow${err ? ' err' : ''}">${err ? '▲' : '·'} ${esc(r.text)}<span class="ts">${esc(r.ts || '')}</span></div>`;
         }
         return r.tools.map((t, i) => {
-            const tkey = r.seq + ':' + i, topen = state.expanded.has(tkey);
-            return `<button class="trow${AGENT(t) ? ' agent' : ''}" data-key="${tkey}" aria-expanded="${topen}">` +
+            const tkey = r.id + ':' + i, topen = state.expanded.has(tkey);
+            return `<button class="trow${AGENT(t) ? ' agent' : ''}" data-key="${esc(tkey)}" aria-expanded="${topen}">` +
                 `<span class="fold">${topen ? '▾' : '▸'}</span><span class="tn">${esc(t.name)}</span>` +
                 `<span class="tp">${prevHTML(t)}</span>` +
                 (t.tokens_out ? `<span class="tk">↑${kfmt(t.tokens_out)}</span>` : '') + `</button>` +
@@ -1412,7 +1434,7 @@ async function boot() {
         TITLE = (data.meta.ai_title || '').trim() || 'Claude Code session';
         document.title = TITLE;
         $('#tbTitle').textContent = TITLE;
-        lastSeq = data.records.length ? data.records[data.records.length - 1].seq : 0;
+        lastId = lastClosedId(data.records);
         setMode(data.records.length ? 'normal' : 'empty');
         startLive();
         checkLiveness();

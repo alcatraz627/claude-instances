@@ -323,6 +323,23 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
             return self._json(500, {"error": "transcript could not be parsed"})
 
         since = (qs.get("since") or [None])[0]
+        after_id = (qs.get("after_id") or [None])[0]
+        if since is not None and after_id is not None:
+            return self._json(400, {"error": "since and after_id are mutually exclusive"})
+        if after_id is not None:
+            if not after_id:
+                return self._json(400, {"error": "after_id must be a record id"})
+            recs = result["records"]
+            idx = next((i for i, r in enumerate(recs) if r.get("id") == after_id), None)
+            if idx is None:
+                # The cursor names a record that no longer exists (a rewritten
+                # transcript). Send everything, flagged, so the client
+                # reconciles by id instead of trusting a broken cursor.
+                result["meta"]["cursor_reset"] = True
+            else:
+                result["records"] = ([r for r in recs[:idx + 1] if r.get("open")]
+                                     + recs[idx + 1:])
+            result["meta"]["after_id"] = after_id
         if since is not None:
             try:
                 s = int(since)

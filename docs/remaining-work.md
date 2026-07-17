@@ -123,40 +123,36 @@ serves the stale cached summary (the make/rsync tradeoff — transcripts only
 append), and a `.jsonl` directly in the projects root is not scanned (none
 exists; Claude Code always creates a project dir).
 
-## R2 — `seq` is positional but the client treats it as identity
+## R2 — `seq` is positional but the client treats it as identity — DONE 2026-07-17
 
-**The bug.** `next_seq()` in transcript.py numbers records by position on every
-parse. Insert a line mid-file and every later seq shifts: the client's `lastSeq`
-then points at a different record. Reproduced by a reviewer in a real browser —
-the tools group **duplicates** (rendered at both the stale and the new seq) and
-the genuinely-new record is **silently dropped** (it is neither `seq > lastSeq`
-nor `open`).
+Designed then shipped per `docs/20260717-r2-stable-record-identity.md` (read it
+for the identity table and the honest limits). Every record now carries `id`
+alongside `seq`: line uuids for user/assistant/hook records, the first
+member's `toolu_*` id for tool groups, an anchored-ordinal scheme for
+mode-change events (their real lines carry no uuid AND no timestamp — the
+first cut collided on live data as `mode::auto`). `/data` gained an
+`after_id` cursor (unknown id → full set + `meta.cursor_reset`); the client
+merges, cursors, and keys expansion state by id; `data-seq` and `#r<seq>`
+anchors deliberately stay positional. Ids originate in untrusted transcript
+bytes, so every id-bearing DOM attribute goes through `esc()`.
 
-**Two things you must know before you touch it** (both tested; the reviewer's
-report did not establish either):
+The adversarial gate (report:
+`.claude/output/20260717-r2-validation/report.md`) confirmed ids unique across
+418 real transcripts / 103,933 records and found two MAJORs, both closed:
 
-1. **It is not caused by the `open`-resend change.** The OLD filter (`seq > n`)
-   and the NEW one (`seq > n or open`) fail *identically* against the same
-   renumber — 2 tools groups, dropped message, both. Do not "fix" it by
-   reverting the live-tail work.
-2. **It is unreachable today.** Claude Code appends; a mid-file insert needs a
-   rewrite. This is latent, not active. That is why it was filed rather than
-   improvised at the end of a long session.
+- **Grow-and-close gap** (pre-existing, also in the old `since` path): a tools
+  group that gains tools AND closes between two polls fell out of both the
+  open-resend and after-cursor buckets — growth lost forever. Fix: the client
+  cursor never parks ON an open group (`lastClosedId`), so an open group keeps
+  being fetched until seen closed. Probe scenario pins it.
+- **Mode-ordinal reassignment** under a mid-run rewrite re-renders shifted
+  flips once (no data loss, unreachable today) — resolved as a documented
+  honest limit; position-free identity for identical repeated events is
+  impossible in principle.
 
-**The fix.** Records need a stable identity that survives a re-parse. The
-transcript's own `uuid` per line is the obvious candidate (check it is present
-and stable across resume/compaction before committing to it — read a real
-transcript, don't assume). Then:
-- `transcript.py` emits `id` alongside `seq` (keep `seq` for ordering/anchors —
-  `data-seq` and `#r<seq>` deep links depend on it, see `transcript-app.html`
-  around the chapter/outline code).
-- `/data`'s cursor becomes id-based, or `since` keeps meaning "position" but the
-  client keys its merge on `id`.
-- `transcript-app.html`: `refreshOpen`'s `findIndex(x => x.seq === r.seq)` and
-  `pollLive`'s fresh/tail split key on `id`. `state.expanded` uses
-  `seq + ':' + i` — that must move too or expansion state breaks on renumber.
-
-This is a contract change across three files. Design it, don't patch it.
+`since-probe.py` is the executable spec of the whole contract: 15 checks, each
+watched red first. Note for R3.6: `transcript.py --since` still lacks the
+`open`-resend treatment, unchanged by R2 as designed.
 
 ## R3 — Small and known
 

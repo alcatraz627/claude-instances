@@ -35,6 +35,7 @@ import sys
 import os
 import json
 import glob
+import zlib
 from collections import Counter
 from datetime import datetime
 
@@ -182,6 +183,8 @@ def parse_transcript(jsonl_file, subagent_index=None):
 
     records = []
     pending_tools = []           # consecutive tool-only turns, grouped on flush
+    last_line_uuid = ''          # anchor for records whose lines carry no uuid
+    mode_id_counts = {}          # (anchor, mode) ordinals for repeated flips
     tool_counter = Counter()
     seq = 0
 
@@ -215,6 +218,16 @@ def parse_transcript(jsonl_file, subagent_index=None):
         seq += 1
         return seq
 
+    def rec_id(line_uuid, prefix, ts_iso, payload):
+        """A record's identity, stable across re-parses whatever happens to the
+        file around it. `seq` is positional and renumbers on any mid-file
+        rewrite; identity comes from the source line's uuid, or failing that
+        from the content itself (crc, never a per-process salted hash)."""
+        if line_uuid:
+            return line_uuid
+        crc = zlib.crc32(str(payload).encode('utf-8', 'replace')) & 0xffffffff
+        return f"{prefix}:{ts_iso}:{crc:08x}"
+
     def flush_tools(still_open=False):
         """Emit accumulated tool calls as one grouped `tools` block.
 
@@ -227,8 +240,14 @@ def parse_transcript(jsonl_file, subagent_index=None):
         nonlocal pending_tools
         if not pending_tools:
             return
+        # The group's identity is its FIRST member: a group flushed `open`
+        # keeps gaining tools, but in an append-only file its first member
+        # never changes — so the id stays put while the group grows.
+        first = pending_tools[0]
         rec = {
             'seq': next_seq(),
+            'id': first.get('id') or rec_id(first.get('line_uuid', ''), 't',
+                                            first.get('ts_iso', ''), first.get('name', '')),
             'role': 'tools',
             'kind': 'tools',
             'ts': pending_tools[-1].get('ts', ''),
@@ -255,6 +274,9 @@ def parse_transcript(jsonl_file, subagent_index=None):
                 continue
 
             msg_type = obj.get('type', '')
+            line_uuid = obj.get('uuid') or ''
+            if line_uuid:
+                last_line_uuid = line_uuid
             ts_iso = obj.get('timestamp', '')
             ts = _fmt_ts(ts_iso)
             ts_full = _fmt_ts_full(ts_iso)
@@ -274,8 +296,17 @@ def parse_transcript(jsonl_file, subagent_index=None):
                 if pm and pm != meta['permission_mode']:
                     meta['permission_mode'] = pm
                     flush_tools()
+                    # mode lines carry no uuid AND no timestamp (verified on
+                    # real transcripts: {type, mode, sessionId} only), so the
+                    # identity anchors to the last uuid-bearing line, with an
+                    # ordinal for repeated identical flips under one anchor.
+                    mode_base = f"mode:{last_line_uuid}:{pm}"
+                    mode_n = mode_id_counts.get(mode_base, 0)
+                    mode_id_counts[mode_base] = mode_n + 1
                     records.append({
-                        'seq': next_seq(), 'role': 'event', 'kind': 'event',
+                        'seq': next_seq(),
+                        'id': mode_base if mode_n == 0 else f"{mode_base}:{mode_n}",
+                        'role': 'event', 'kind': 'event',
                         'event_type': 'mode-change', 'cls': 'mode',
                         'text': f"permission mode → {pm}",
                         'ts': ts, 'ts_full': ts_full, 'ts_iso': ts_iso,
@@ -295,7 +326,9 @@ def parse_transcript(jsonl_file, subagent_index=None):
                         meta['hook_errors'] += len(he)
                         flush_tools()
                         records.append({
-                            'seq': next_seq(), 'role': 'event', 'kind': 'event',
+                            'seq': next_seq(),
+                            'id': rec_id(line_uuid, 'hook', ts_iso, f"{hc}:{len(he)}:{pc}"),
+                            'role': 'event', 'kind': 'event',
                             'event_type': 'hook-summary',
                             'cls': 'err' if (he or pc) else 'hooks',
                             'hook_count': hc,
@@ -328,7 +361,9 @@ def parse_transcript(jsonl_file, subagent_index=None):
                 if content.strip():
                     sysrem = content.count('<system-reminder>')
                     records.append({
-                        'seq': next_seq(), 'role': 'user', 'kind': 'user',
+                        'seq': next_seq(),
+                        'id': rec_id(line_uuid, 'u', ts_iso, content),
+                        'role': 'user', 'kind': 'user',
                         'text': content.strip(),
                         'system_reminders': sysrem,
                         'ts': ts, 'ts_full': ts_full, 'ts_iso': ts_iso,
@@ -374,6 +409,7 @@ def parse_transcript(jsonl_file, subagent_index=None):
                         call = {
                             'name': tname,
                             'id': block.get('id'),
+                            'line_uuid': line_uuid,
                             'message_id': msg_id,
                             'input': tinp,
                             'preview': tool_preview(tname, tinp),
@@ -400,7 +436,9 @@ def parse_transcript(jsonl_file, subagent_index=None):
                 if text_part.strip():
                     flush_tools()
                     records.append({
-                        'seq': next_seq(), 'role': 'assistant', 'kind': 'assistant',
+                        'seq': next_seq(),
+                        'id': rec_id(line_uuid, 'a', ts_iso, text_part),
+                        'role': 'assistant', 'kind': 'assistant',
                         'text': text_part.strip(),
                         'message_id': msg_id,
                         'model': meta['model'],
