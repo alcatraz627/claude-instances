@@ -513,7 +513,10 @@ def main(argv):
 
     result = parse_transcript(target)
     if since is not None:
-        result['records'] = [r for r in result['records'] if r['seq'] > since]
+        # Same contract as the hub's /data: a group flushed open keeps its
+        # seq while still growing, so the tail must resend it.
+        result['records'] = [r for r in result['records']
+                             if r['seq'] > since or r.get('open')]
         result['meta']['since'] = since
 
     json.dump(result, sys.stdout, ensure_ascii=False)

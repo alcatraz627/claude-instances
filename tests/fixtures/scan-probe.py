@@ -387,6 +387,59 @@ def main(argv):
                   + ":" + ("CLEAN" if not litter else "LITTER"))
         finally:
             shutil.rmtree(root, ignore_errors=True)
+    elif op == "codex_none":
+        # codex rollouts carry no usage keys at all: unknown must read as
+        # None, never as "used nothing" — and the aggregate sums must
+        # tolerate the None without crashing or fabricating.
+        import tempfile, shutil
+        from datetime import datetime, timezone
+        root = tempfile.mkdtemp(prefix="cxnone-")
+        try:
+            f = os.path.join(root, "rollout-1.jsonl")
+            with open(f, "w") as fh:
+                fh.write(json.dumps({"type": "session_meta", "payload": {
+                    "session_id": "cx1", "cwd": "/tmp/x",
+                    "model_provider": "openai", "cli_version": "1.0"}}) + "\n")
+                fh.write(json.dumps({"type": "response_item", "payload": {
+                    "type": "message", "role": "assistant"}}) + "\n")
+            ns2 = load()
+            r = ns2["codex_parse_session"](f)
+            row = {"modified": datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                   "model": "openai/1.0", "turns": r["turns"],
+                   "tokens_in": r["tokens_in"], "tokens_out": r["tokens_out"],
+                   "cost_usd": None}
+            a = ns2["compute_aggregates"]([row])
+            print(f"{r['tokens_in']}:{r['tokens_out']}:{r['turns']}:"
+                  f"{a['today']['tokens_out']}:{a['today']['sessions']}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "tpath_stale":
+        # PID reuse leaves the previous owner's tpath file behind; a pointer
+        # file older than the process itself cannot belong to it.
+        import tempfile, shutil, time as _t
+        pid = 999888
+        root = tempfile.mkdtemp(prefix="tpstale-")
+        tp = f"/tmp/claude-tpath-{pid}"
+        try:
+            target = os.path.join(root, "s.jsonl")
+            with open(target, "w") as fh:
+                fh.write("{}\n")
+            with open(tp, "w") as fh:
+                fh.write(target)
+            ns2 = load()
+            ns2["_proc_elapsed"][str(pid)] = "00:10"
+            fresh = ns2["read_transcript_path"](pid)
+            old = _t.time() - 3600
+            os.utime(tp, (old, old))
+            stale = ns2["read_transcript_path"](pid)
+            print(f"{'OK' if fresh == target else 'FRESH_LOST'}:"
+                  f"{'STALE_IGNORED' if stale == '' else 'STALE_TRUSTED'}")
+        finally:
+            try:
+                os.unlink(tp)
+            except OSError:
+                pass
+            shutil.rmtree(root, ignore_errors=True)
     else:
         print(f"unknown op {op!r}", file=sys.stderr)
         return 2

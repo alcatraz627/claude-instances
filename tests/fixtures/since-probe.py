@@ -242,6 +242,22 @@ check("growth delivered when the group closes in the same gap",
       f"tool ids seen = {sorted(seen)} (want t7,t8,t9) — a cursor parked ON an "
       f"open group loses t8 forever")
 
+# The CLI --since must resend the open group exactly like /data does — it is
+# the documented flag; parity gaps trap whoever reaches for it.
+import subprocess
+res5 = transcript.parse_transcript(F)
+last_seq = res5["records"][-1]["seq"]
+cli = subprocess.run(
+    [sys.executable,
+     os.path.join(os.path.dirname(os.path.abspath(transcript.__file__)), "transcript.py"),
+     F, "--since", str(last_seq)],
+    capture_output=True, text=True)
+cli_recs = json.loads(cli.stdout or '{"records": []}').get("records", [])
+check("--since CLI resends the open group",
+      len(cli_recs) == 1 and cli_recs[0].get("open") is True,
+      f"records={len(cli_recs)} (want the 1 open group), "
+      f"open={cli_recs[0].get('open') if cli_recs else '-'}")
+
 shutil.rmtree(ROOT, ignore_errors=True)
 print("\n" + ("ALL PASS" if not fails else f"FAILURES: {fails}"))
 sys.exit(1 if fails else 0)

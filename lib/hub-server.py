@@ -171,6 +171,30 @@ def resolve_session_jsonl(session_id):
     return hits[0]
 
 
+# Parse results for the live tail, keyed by the bytes' identity. /data is
+# polled every few seconds per open page, and each poll used to re-parse the
+# whole transcript (largest on disk: ~57MB). Bounded: transcripts nobody is
+# watching age out by insertion order. Callers slice on copies, never on the
+# cached object.
+_PARSE_CACHE = {}
+_PARSE_CACHE_MAX = 8
+
+def _parse_cached(target):
+    try:
+        st = os.stat(target)
+    except OSError:
+        return transcript.parse_transcript(target)
+    key = (st.st_mtime_ns, st.st_size)
+    hit = _PARSE_CACHE.get(target)
+    if hit and hit[0] == key:
+        return hit[1]
+    result = transcript.parse_transcript(target)
+    if target not in _PARSE_CACHE and len(_PARSE_CACHE) >= _PARSE_CACHE_MAX:
+        _PARSE_CACHE.pop(next(iter(_PARSE_CACHE)))
+    _PARSE_CACHE[target] = (key, result)
+    return result
+
+
 def sessions_payload():
     """Reshape scan output into the index page's feed: live first, then recent.
 
@@ -304,6 +328,8 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
     def _serve_data(self, sid, qs):
         if transcript is None:
             return self._json(500, {"error": "transcript module unavailable"})
+        # (parse itself goes through _parse_cached — /data is the 5s live
+        # tail, and every poll used to re-parse the whole file.)
         jsonl = resolve_session_jsonl(sid)
         if not jsonl:
             return self._json(404, {"error": f"no transcript for {sid}"})
@@ -315,12 +341,14 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
             if not target:
                 return self._json(404, {"error": f"no sub-agent {agent}"})
         try:
-            result = transcript.parse_transcript(target)
+            parsed = _parse_cached(target)
         except Exception as e:
             # The detail goes to the log, not the response — a parser exception
             # carries absolute paths and stack fragments.
             sys.stderr.write(f"hub: parse failed for {sid}: {type(e).__name__}: {e}\n")
             return self._json(500, {"error": "transcript could not be parsed"})
+        # Slice on shallow copies only: the cached parse must never be mutated.
+        result = {"meta": dict(parsed["meta"]), "records": parsed["records"]}
 
         since = (qs.get("since") or [None])[0]
         after_id = (qs.get("after_id") or [None])[0]

@@ -94,10 +94,30 @@ def read_transcript_path(pid):
     """
     tpath = read_pid_file(pid, 'tpath').strip()
     # A dead session's file lingers until its daemon reaps it; requiring the
-    # transcript to still exist keeps a stale pointer from winning.
+    # transcript to still exist keeps a stale pointer from winning. And a
+    # pointer file OLDER than the process itself cannot have come from this
+    # process — that is a reused pid wearing its predecessor's tpath. The
+    # process age is already primed (one batched ps per scan), so this costs
+    # nothing extra.
+    elapsed = _etime_seconds(_proc_elapsed.get(str(pid), ''))
+    if elapsed is not None:
+        try:
+            f_mtime = os.path.getmtime(os.path.join(statusline_dir, f"claude-tpath-{pid}"))
+            if f_mtime < datetime.now().timestamp() - elapsed - 120:
+                return ''
+        except OSError:
+            pass
     if tpath.endswith('.jsonl') and os.path.isfile(tpath):
         return tpath
     return ''
+
+def _etime_seconds(etime):
+    """ps etime ('[[dd-]hh:]mm:ss') as seconds, or None if unparseable."""
+    m = re.match(r'^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$', (etime or '').strip())
+    if not m:
+        return None
+    d, h, mn, s = (int(x) if x else 0 for x in m.groups())
+    return ((d * 24 + h) * 60 + mn) * 60 + s
 
 # ─── Cost reader ───────────────────────────────────────────────
 
@@ -122,36 +142,38 @@ def read_cost(pid):
 
 # ─── Tab title reader ──────────────────────────────────────────
 
-def read_tab_title(session_id):
-    """Read tab title from /tmp/claude-tab-topic-<uuid> files.
+_tab_topics = None
 
-    Tab topic files use the Claude session UUID as the key.
-    We try to match by reading .session_id companion files.
+def read_tab_title(session_id):
+    """Tab title for a session, from the /tmp/claude-tab-topic-* registry.
+
+    The registry is scanned ONCE per process and reused — a scan is a fresh
+    process, so it can never go stale across scans. It used to re-list all of
+    /tmp per live instance and again per event.
     """
+    global _tab_topics
     if not session_id:
         return ''
-
-    # Strategy: scan /tmp/claude-tab-topic-*.session_id files for matching session
-    # Then read the corresponding topic file
-    try:
-        for f in os.listdir('/tmp'):
-            if f.startswith('claude-tab-topic-') and f.endswith('.session_id'):
-                sid_path = os.path.join('/tmp', f)
+    if _tab_topics is None:
+        _tab_topics = {}
+        try:
+            for f in os.listdir('/tmp'):
+                if not (f.startswith('claude-tab-topic-') and f.endswith('.session_id')):
+                    continue
                 try:
-                    with open(sid_path, 'r') as sf:
+                    with open(os.path.join('/tmp', f), 'r') as sf:
                         stored_sid = sf.read().strip()
-                    if stored_sid == session_id:
-                        # Found match — read the topic file
-                        topic_base = f[:-len('.session_id')]
-                        topic_path = os.path.join('/tmp', topic_base)
-                        if os.path.exists(topic_path):
-                            with open(topic_path, 'r') as tf:
-                                return tf.read().strip()[:60]
+                    topic_path = os.path.join('/tmp', f[:-len('.session_id')])
+                    # isfile, not exists: /tmp is world-writable and a FIFO
+                    # here would block the scan forever.
+                    if stored_sid and os.path.isfile(topic_path):
+                        with open(topic_path, 'r') as tf:
+                            _tab_topics[stored_sid] = tf.read().strip()[:60]
                 except OSError:
                     continue
-    except OSError:
-        pass
-    return ''
+        except OSError:
+            pass
+    return _tab_topics.get(session_id, '')
 
 # ─── Per-cwd git enrichment ────────────────────────────────────
 #
@@ -887,8 +909,11 @@ def codex_parse_session(filepath):
         'model': f"{model_provider}/{cli_version}" if (model_provider or cli_version) else 'unknown',
         'turns': turns,
         'tool_calls': tool_calls,
-        'tokens_in': 0,
-        'tokens_out': 0,
+        # The codex format carries no usage keys at all (verified against real
+        # rollouts). None means "unknown", which is a different fact from 0
+        # ("used nothing") — same doctrine as cost_usd.
+        'tokens_in': None,
+        'tokens_out': None,
         'project_display': project_display,
     }
 
@@ -1324,7 +1349,10 @@ def get_session_history(max_sessions=20):
                 project_display = '/'.join(segs[-2:])
 
         model_short = short_model(model)
-        cost_usd = estimate_cost(model_short, total_input, total_output)
+        # `or 0` because a .get(key, 0) default never fires for codex — the
+        # key exists holding None. Today an unpriced model returns before
+        # touching the counts; this stops relying on that ordering accident.
+        cost_usd = estimate_cost(model_short, total_input or 0, total_output or 0)
 
         # Cache model for event enrichment
         _session_model_cache[session_id] = model_short
@@ -1459,8 +1487,10 @@ def compute_aggregates(history):
         return {
             'sessions': len(sessions),
             'turns': sum(s.get('turns', 0) for s in sessions),
-            'tokens_in': sum(s.get('tokens_in', 0) for s in sessions),
-            'tokens_out': sum(s.get('tokens_out', 0) for s in sessions),
+            # `or 0` skips unknown token counts (codex sessions carry None)
+            # rather than crashing the sum — same shape as cost below.
+            'tokens_in': sum(s.get('tokens_in') or 0 for s in sessions),
+            'tokens_out': sum(s.get('tokens_out') or 0 for s in sessions),
             # `or 0` skips unpriced sessions rather than crashing the sum on a
             # None. The total is therefore a floor when any model has no rate.
             'cost_usd': round(sum(s.get('cost_usd') or 0 for s in sessions), 4),
@@ -1494,11 +1524,18 @@ def short_model(model):
 def _valid_summary(s):
     """A cached summary the scan may trust: right shape, right types, sane
     ranges. Type-valid but range-invalid ints (negative, absurd) re-parse —
-    isinstance alone let tokens_out: 10**300 straight into the day's total."""
+    isinstance alone let tokens_out: 10**300 straight into the day's total.
+    None is legitimate for token counts (codex carries no usage keys):
+    "unknown" is a different fact from 0, and stays distinct in the cache."""
     if not isinstance(s, dict) or not isinstance(s.get('model'), str):
         return False
-    for k in ('turns', 'tokens_in', 'tokens_out'):
+    v = s.get('turns')
+    if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v <= 10**12:
+        return False
+    for k in ('tokens_in', 'tokens_out'):
         v = s.get(k)
+        if v is None:
+            continue
         if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v <= 10**12:
             return False
     return True
@@ -1581,7 +1618,8 @@ def get_aggregate_history(window_days=7):
                 'turns': summary['turns'],
                 'tokens_in': summary['tokens_in'],
                 'tokens_out': summary['tokens_out'],
-                'cost_usd': estimate_cost(model_short, summary['tokens_in'], summary['tokens_out']),
+                'cost_usd': estimate_cost(model_short, summary['tokens_in'] or 0,
+                                          summary['tokens_out'] or 0),
             })
     # Rewriting from scratch prunes files that are gone or aged out; skip the
     # write when nothing changed (this runs on every dashboard poll).

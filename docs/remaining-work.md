@@ -154,9 +154,21 @@ The adversarial gate (report:
 watched red first. Note for R3.6: `transcript.py --since` still lacks the
 `open`-resend treatment, unchanged by R2 as designed.
 
-## R3 — Small and known
+## R3 — Small and known — DONE 2026-07-17
 
-Each is self-contained; none needs design.
+All seven shipped, each guard watched red first; gate verdict PASS-WITH-NOTES
+(findings: `.claude/output/20260717-r3-validation/findings.md`). Notes acted
+on: the `estimate_cost` call in `get_session_history` now passes `or 0`
+explicitly instead of relying on the unpriced-model check firing before
+`math.isfinite(None)` could crash, and the gate's behavioral cache probe was
+promoted into the suite (`tests/fixtures/hub-cache-probe.py`) — it catches the
+in-place-mutation regression a string grep cannot. R3.7 shipped as the cheap
+version (tpath mtime vs the already-primed process age, 120s slack; statusline
+rewrites tpath per render, so a false rejection needs a pointer a full
+lifetime stale). Known residue from validation: the live hub's log history
+moved to an unlinked inode (its pidfile was briefly deleted and restored
+during a race test); resolves at the next natural hub restart. The original
+table follows for provenance.
 
 | # | what | where | note |
 |---|---|---|---|

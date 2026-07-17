@@ -17,8 +17,15 @@ set -euo pipefail
 PORT="${CLAUDE_HUB_PORT:-5400}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER="$SCRIPT_DIR/hub-server.py"
-PID_FILE="/tmp/claude-hub.pid"
-LOG="/tmp/claude-hub.log"
+# Port-scoped: with a fixed name, `CLAUDE_HUB_PORT=X hub.sh start` said
+# "already running" about the hub on another port and printed a dead URL.
+PID_FILE="/tmp/claude-hub-${PORT}.pid"
+LOG="/tmp/claude-hub-${PORT}.log"
+# A hub started before the port-scoped names may still be running; adopt its
+# pidfile once so stop/restart keep working across the rename.
+if [[ ! -f "$PID_FILE" && "$PORT" == "5400" && -f /tmp/claude-hub.pid ]]; then
+    mv -f /tmp/claude-hub.pid "$PID_FILE" 2>/dev/null || true
+fi
 
 c_dim=$'\033[2m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_cyn=$'\033[36m'; c_rst=$'\033[0m'
 
@@ -75,6 +82,14 @@ cmd_start() {
     fi
     echo "${c_grn}hub started${c_rst} (pid $pid)"
     print_url
+    # The loopback is a SECOND socket when the primary bind is the tailnet
+    # IP; its failure is only a line in the log while the start still
+    # succeeds — so verify the localhost URL just printed actually answers.
+    local host; host="$(resolved_host)"
+    if [[ "$host" != "127.0.0.1" ]] && \
+       ! curl -s -o /dev/null --max-time 2 "http://127.0.0.1:${PORT}/healthz"; then
+        echo "${c_yel}warning: loopback co-bind failed — the 'this Mac' URL above is dead (the tailnet URL works). See $LOG${c_rst}" >&2
+    fi
 }
 
 cmd_stop() {

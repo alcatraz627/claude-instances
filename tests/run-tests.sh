@@ -692,6 +692,19 @@ t_eq "wrong-shape cache entries re-parse"   "3:15:PRUNED" \
 t_eq "cache write is atomic, tmp cleaned"   "ATOMIC:CLEAN" \
      "$(python3 "$SCAN_PROBE" agg_cache_atomic 3)"
 
+t_section "small truths (R3)"
+
+t_eq "codex unknown tokens are None, and total"  "None:None:1:0:1" \
+     "$(python3 "$SCAN_PROBE" codex_none)"
+t_eq "stale tpath pointers are ignored"          "OK:STALE_IGNORED" \
+     "$(python3 "$SCAN_PROBE" tpath_stale)"
+t_grep "hub pidfile is port-scoped"      lib/hub.sh 'claude-hub-\$\{PORT\}\.pid'
+t_grep "hub start verifies the loopback" lib/hub.sh 'healthz'
+t_grep "/data parses through the cache"  lib/hub-server.py 'def _parse_cached'
+t_check "/data cache behaves under real HTTP (isolation, no mutation, eviction)" \
+        python3 "$REPO_ROOT/tests/fixtures/hub-cache-probe.py"
+t_grep "tab titles primed once per scan" lib/scan.sh '_tab_topics'
+
 # Cleanup fixture
 rm -f "$PROJ_DIR/${FIXTURE_SID}.jsonl"
 rmdir "$PROJ_DIR" 2>/dev/null || true
