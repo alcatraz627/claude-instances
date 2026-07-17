@@ -1,0 +1,13 @@
+{"timestamp":"2026-07-05T16:07:53.001Z","type":"session_meta","payload":{"session_id":"test-fixture-codex-0000000000001","id":"test-fixture-codex-0000000000001","timestamp":"2026-07-05T16:07:27.098Z","cwd":"/Users/alcatraz627/Code/Claude/fastfetch-explorer","originator":"codex-tui","cli_version":"0.142.5","source":"cli","thread_source":"user","model_provider":"openai","base_instructions":"REDACTED"}}
+{"timestamp":"2026-07-05T16:07:53.002Z","type":"event_msg","payload":{"type":"task_started","turn_id":"019f3309-439b-7cc1-a62f-d2d1c940ee6b","started_at":1783267673,"model_context_window":353400,"collaboration_mode_kind":"default"}}
+{"timestamp":"2026-07-05T16:07:53.005Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"REDACTED"}]}}
+{"timestamp":"2026-07-05T16:07:53.005Z","type":"turn_context","payload":{"turn_id":"019f3309-439b-7cc1-a62f-d2d1c940ee6b","cwd":"/Users/alcatraz627/Code/Claude/fastfetch-explorer","workspace_roots":["/Users/alcatraz627/Code/Claude/fastfetch-explorer"],"current_date":"2026-07-05","model":"gpt-5.1-codex"}}
+{"timestamp":"2026-07-05T16:07:55.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"sample fixture prompt, not real content"}]}}
+{"timestamp":"2026-07-05T16:07:58.000Z","type":"response_item","payload":{"type":"reasoning","content":[{"type":"reasoning_text","text":"sample fixture reasoning"}]}}
+{"timestamp":"2026-07-05T16:08:01.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"ls\"]}","call_id":"call_1"}}
+{"timestamp":"2026-07-05T16:08:01.500Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"sample output"}}
+{"timestamp":"2026-07-05T16:08:04.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"sample fixture assistant reply"}]}}
+{"timestamp":"2026-07-05T16:08:10.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":"sample patch","call_id":"call_2"}}
+{"timestamp":"2026-07-05T16:08:10.500Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_2","output":"sample patch output"}}
+{"timestamp":"2026-07-05T16:08:12.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"sample fixture final reply"}]}}
+{"timestamp":"2026-07-05T16:08:12.100Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"019f3309-439b-7cc1-a62f-d2d1c940ee6b","last_agent_message":null,"completed_at":1783267692}}
