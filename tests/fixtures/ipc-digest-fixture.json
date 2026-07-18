@@ -1,0 +1,31 @@
+{
+  "_comment": "Vendored consumer fixture for the meld digest contract v1 (plan section 5.1). The contract-diff smoke asserts a LIVE digest response is a superset of these fields. ts is a placeholder; state-machine tests generate their own timestamps.",
+  "protocol_version": "PROTOCOL_VERSION_PLACEHOLDER",
+  "contract_version": 1,
+  "ts": "2026-07-18T00:00:00.000Z",
+  "sessions": {
+    "00000000-0000-4000-8000-000000000000": {
+      "aliases": ["example-alias"],
+      "role": null,
+      "liveness_claim": "live",
+      "unread": 0,
+      "owed": [
+        {
+          "corr_id": "msg-example",
+          "kind": "query",
+          "age_s": 0,
+          "reply_by_s": 0,
+          "ask_state": "open"
+        }
+      ],
+      "waiting_on": 0,
+      "orphaned_in_cwd": 0,
+      "oldest_deadline_s": null,
+      "chase_noise_folded": 0
+    },
+    "_unresolved": {
+      "aliases": [],
+      "note": "obligations whose alias has no alias-by-sid entry; bucketed, never dropped"
+    }
+  }
+}

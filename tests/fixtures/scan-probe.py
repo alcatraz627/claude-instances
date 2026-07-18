@@ -387,6 +387,51 @@ def main(argv):
                   + ":" + ("CLEAN" if not litter else "LITTER"))
         finally:
             shutil.rmtree(root, ignore_errors=True)
+    elif op == "digest_states":
+        # The bridge staleness state machine (meld plan v2 section 7): a
+        # digest payload is classified before any value is trusted. Unknown
+        # must never read as 0, and a version we don't speak is SKEW, a
+        # distinct state from unreachable/unknown.
+        import json as _j
+        from datetime import datetime, timezone, timedelta
+        ns2 = load()
+        f = ns2["parse_ipc_digest"]
+        now = datetime.now(timezone.utc)
+        def payload(age_s, cv=1, sessions=None, raw=None):
+            if raw is not None:
+                return raw
+            ts = (now - timedelta(seconds=age_s)).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+            return _j.dumps({"protocol_version": "x", "contract_version": cv,
+                             "ts": ts,
+                             "sessions": sessions if sessions is not None
+                             else {"sid-1": {"unread": 2, "owed": []}}})
+        cases = [
+            f(payload(5))[0],                       # fresh
+            f(payload(60))[0],                      # stale (values still usable)
+            f(payload(200))[0],                     # unknown (too old)
+            f(payload(-120))[0],                    # unknown (future clock skew)
+            f(payload(5, cv=99))[0],                # skew
+            f(payload(5, cv=0))[0],                 # fresh via N-1 tolerance
+            f('{"broken')[0],                       # unknown (malformed)
+            f(payload(0, raw='{"contract_version":1,"ts":"2026-01-01T00:00:00Z","sessions":{"s":{"unread":Infinity}}}'))[0],  # unknown (poison constant)
+            f(payload(5, sessions=[]))[0],          # unknown (wrong shape)
+        ]
+        # The mutation half of the staleness guard: a FRESH payload must carry
+        # its sessions through, or "always unknown" would pass the state list.
+        st, sess = f(payload(5))
+        carried = "CARRIED" if sess.get("sid-1", {}).get("unread") == 2 else "DROPPED"
+        print(":".join(cases) + ":" + carried)
+    elif op == "digest_additive":
+        # Additive direction 1 on today's code: with the ipc binary absent the
+        # join must return quietly (alias '', count 0) — never raise, never
+        # stall. This is the property every later bridge phase must preserve.
+        ns2 = load()
+        ns2["_IPC_BIN"] = "/nonexistent/claude-ipc-gone"
+        try:
+            info = ns2["get_ipc_info"]("00000000-0000-4000-8000-000000000000", False)
+            print("ABSENT_OK" if isinstance(info, dict) or info is None else f"ODD:{type(info).__name__}")
+        except Exception as e:
+            print(f"RAISED:{type(e).__name__}")
     elif op == "codex_none":
         # codex rollouts carry no usage keys at all: unknown must read as
         # None, never as "used nothing" — and the aggregate sums must

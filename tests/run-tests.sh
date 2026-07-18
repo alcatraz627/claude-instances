@@ -706,6 +706,18 @@ t_check "/data cache behaves under real HTTP (isolation, no mutation, eviction)"
         python3 "$REPO_ROOT/tests/fixtures/hub-cache-probe.py"
 t_grep "tab titles primed once per scan" lib/scan.sh '_tab_topics'
 
+t_section "meld bridge (Phase 0)"
+
+# fresh:stale:unknown(old):unknown(future):skew:fresh(N-1):unknown(bad json):
+# unknown(Infinity poison):unknown(wrong shape) + fresh payload carries values
+t_eq "digest state machine classifies before trusting" \
+     "fresh:stale:unknown:unknown:skew:fresh:unknown:unknown:unknown:CARRIED" \
+     "$(python3 "$SCAN_PROBE" digest_states)"
+t_eq "ipc absent degrades to today, never raises"  "ABSENT_OK" \
+     "$(python3 "$SCAN_PROBE" digest_additive)"
+t_check "vendored digest fixture is valid JSON with contract fields" \
+        python3 -c "import json; d=json.load(open('tests/fixtures/ipc-digest-fixture.json')); assert d['contract_version']==1 and 'sessions' in d and '_unresolved' in d['sessions']"
+
 # Cleanup fixture
 rm -f "$PROJ_DIR/${FIXTURE_SID}.jsonl"
 rmdir "$PROJ_DIR" 2>/dev/null || true

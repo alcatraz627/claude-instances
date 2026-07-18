@@ -956,6 +956,50 @@ PROVIDERS = [claude_provider, codex_provider]
 _IPC_BIN = os.path.expanduser('~/Code/Claude/claude-ipc/dist/claude-ipc')
 _IPC_ALIAS_DIR = os.path.expanduser('~/.claude-ipc/alias-by-sid')
 
+# ── ipc digest consumer (meld bridge, Phase 0) ──────────────────────────────
+# The consumer half of the digest contract (docs/20260718-meld-unified-plan.md
+# section 5.1/7) exists BEFORE the producer verb ships: the state machine and
+# its guards are testable entirely from fixtures, so Phase 2 is only wiring a
+# spawn. Doctrine: a payload is untrusted until classified; unknown is never 0.
+
+IPC_CONTRACT_VERSION = 1
+IPC_DIGEST_FRESH_S = 30
+IPC_DIGEST_STALE_S = 120
+
+def parse_ipc_digest(raw, now_ts=None):
+    """Classify a digest payload before any value in it is trusted.
+
+    Returns (state, sessions): state is fresh|stale|skew|unknown, and
+    sessions is populated only for fresh/stale. A version outside {N, N-1}
+    is SKEW — a distinct fact from unknown, because the operator's fix
+    differs (redeploy the stale side vs investigate). Never raises; a bare
+    Infinity/NaN in the bytes is poison, not data.
+    """
+    try:
+        d = json.loads(raw, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(c)))
+    except (ValueError, TypeError):
+        return ('unknown', {})
+    if not isinstance(d, dict):
+        return ('unknown', {})
+    cv = d.get('contract_version')
+    if not isinstance(cv, int) or isinstance(cv, bool) \
+            or cv not in (IPC_CONTRACT_VERSION, IPC_CONTRACT_VERSION - 1):
+        return ('skew', {})
+    try:
+        dt = datetime.fromisoformat((d.get('ts') or '').replace('Z', '+00:00'))
+        now = now_ts if now_ts is not None else datetime.now(timezone.utc).timestamp()
+        age = now - dt.timestamp()
+    except (ValueError, TypeError, AttributeError):
+        return ('unknown', {})
+    # A timestamp more than a minute in the future is a lying clock, and a
+    # payload past the stale ceiling is history; neither may render as now.
+    if age < -60 or age > IPC_DIGEST_STALE_S:
+        return ('unknown', {})
+    sessions = d.get('sessions')
+    if not isinstance(sessions, dict):
+        return ('unknown', {})
+    return ('fresh' if age <= IPC_DIGEST_FRESH_S else 'stale', sessions)
+
 def _ipc_inbox_count(alias):
     try:
         r = subprocess.run([_IPC_BIN, 'count', alias], capture_output=True, text=True, timeout=2)
