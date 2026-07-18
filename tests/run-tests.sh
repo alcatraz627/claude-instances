@@ -68,7 +68,8 @@ SWIFT_OUT=$(mktemp)
 # The bar is split across logical files; compile them as one module (the build).
 if /usr/bin/swiftc -O native/main.swift native/Models.swift native/Palette.swift \
         native/DesignKit.swift native/Actions.swift native/LiveRowView.swift \
-        native/Bar.swift native/Dashboard.swift -o "$SWIFT_OUT" 2>&1; then
+        native/Bar.swift native/Dashboard.swift native/SettingsWindowController.swift \
+        -o "$SWIFT_OUT" 2>&1; then
     t_pass "bar (split into logical files) compiles (-O)"
     rm -f "$SWIFT_OUT"
 else

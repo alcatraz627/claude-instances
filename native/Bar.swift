@@ -5,6 +5,7 @@
 import AppKit
 import Foundation
 import SwiftUI
+import IOKit.pwr_mgt
 
 final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
@@ -16,6 +17,13 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var theMenu: NSMenu!
     private var dashboardController: DashboardController?
     private var settingsController: SettingsWindowController?
+
+    /// Keep Awake: holds an IOKit power assertion so the SYSTEM stays awake
+    /// while remote (claude.ai) sessions run — the display may still sleep
+    /// and the screen may still lock. Persisted so it survives bar restarts.
+    private let keepAwakeKey = "keepAwakeEnabled"
+    private var keepAwakeOn = false
+    private var keepAwakeAssertionID: IOPMAssertionID = 0
 
     /// Tick counter for quick/full scan alternation.
     /// Quick scan (~90ms) runs every 5s. Full scan (~185ms) runs every 6th tick (30s).
@@ -94,6 +102,12 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Kill any other instances of ourselves (dedupe on launch)
         killOtherInstances(myPID: myPID)
+
+        // Re-arm Keep Awake if it was on when the bar last exited — the
+        // assertion dies with the process, the preference should not.
+        if UserDefaults.standard.bool(forKey: keepAwakeKey) {
+            setKeepAwake(true)
+        }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
@@ -1067,6 +1081,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func addActionsSection(_ menu: NSMenu, _ data: ScanResult) {
         addAction(menu, "New Session", #selector(newSession), icon: "plus.circle", key: "n")
         addAction(menu, "Dashboard", #selector(openDashboard), icon: "rectangle.3.group", key: "d")
+        addKeepAwakeItem(menu)
         addAction(menu, "Settings…", #selector(openSettings), icon: "gearshape", key: ",")
         addAction(menu, "Sessions (phone)", #selector(openHubIndex), icon: "iphone")
         addRefreshMenu(menu)
@@ -1180,6 +1195,68 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dlog("refresh \(refreshPaused ? "paused" : "resumed")")
         restartScanTimer()
         if !refreshPaused { refreshData() }
+    }
+
+    // ── Keep Awake (prevent idle system sleep) ───────────────────────────────
+
+    /// Toggle the power assertion that keeps the machine from idle-sleeping.
+    /// PreventUserIdleSystemSleep is deliberate: the display sleeps and the
+    /// screen locks as normal, but the system (and its network) stays up, so
+    /// running Claude sessions keep their remote connection on battery.
+    private func setKeepAwake(_ on: Bool) {
+        if on {
+            var id = IOPMAssertionID(0)
+            let rc = IOPMAssertionCreateWithName(
+                kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+                IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                "claude-instances: keep system awake for remote sessions" as CFString,
+                &id)
+            if rc == kIOReturnSuccess {
+                keepAwakeAssertionID = id
+                keepAwakeOn = true
+                dlog("keep-awake ON (assertion \(id))")
+            } else {
+                keepAwakeOn = false
+                dlog("keep-awake assertion FAILED rc=\(rc)")
+            }
+        } else {
+            if keepAwakeAssertionID != 0 {
+                IOPMAssertionRelease(keepAwakeAssertionID)
+                keepAwakeAssertionID = 0
+            }
+            keepAwakeOn = false
+            dlog("keep-awake OFF")
+        }
+        UserDefaults.standard.set(keepAwakeOn, forKey: keepAwakeKey)
+    }
+
+    @objc private func toggleKeepAwake(_ sender: NSMenuItem) {
+        setKeepAwake(!keepAwakeOn)
+    }
+
+    /// The menu row: addAction style, but stateful — blue bolt + blue label
+    /// while the assertion is held, template icon + base color when off.
+    private func addKeepAwakeItem(_ menu: NSMenu) {
+        let i = NSMenuItem(title: "Keep Awake",
+                           action: #selector(toggleKeepAwake(_:)), keyEquivalent: "")
+        i.target = self
+        i.state = keepAwakeOn ? .on : .off
+        i.attributedTitle = NSAttributedString(string: "  Keep Awake", attributes: [
+            .font: NSFont.systemFont(ofSize: 13),
+            .foregroundColor: keepAwakeOn ? NSColor.systemBlue : NSColor.labelColor,
+        ])
+        if var img = NSImage(systemSymbolName: keepAwakeOn ? "bolt.fill" : "bolt",
+                             accessibilityDescription: nil) {
+            var cfg = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+            if keepAwakeOn {
+                cfg = cfg.applying(.init(paletteColors: [.systemBlue]))
+            }
+            img = img.withSymbolConfiguration(cfg) ?? img
+            img.isTemplate = !keepAwakeOn
+            i.image = img
+        }
+        i.toolTip = "Prevent idle system sleep so remote (claude.ai) sessions stay connected on battery. The display still sleeps and locks normally."
+        menu.addItem(i)
     }
 
     // ── Action handlers ──────────────────────────────────────────────────────

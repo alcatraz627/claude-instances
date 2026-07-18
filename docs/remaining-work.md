@@ -29,11 +29,15 @@ earlier session's provider artifacts) are committed. As of writing, ~20 commits
 were ahead of `origin/main` and the push was pending the owner's per-push
 approval sentinel — check `git status -sb` rather than trusting this line.
 
-**Tests.** `bash tests/run-tests.sh` → **6 failed / 232 passed**. Those 6 are a
-pre-existing baseline (1 `bar FAILED to compile` + 5 SPA greps for `const HUB =`
-/ `function diffBlock` in `transcript-app.html`). They fail on a clean checkout
-too. **A 7th failure is yours.** The suite takes ~90s (it compiles Swift), so
-run it in the background.
+**Tests.** `bash tests/run-tests.sh` → **5 failed / 248 passed** (2026-07-18).
+The 5 are a pre-existing baseline: SPA greps for `const HUB =` /
+`function diffBlock` in `transcript-app.html`; they fail on a clean checkout
+too. **A 6th failure is yours.** The suite takes ~90s (it compiles Swift), so
+run it in the background. History note: the long-standing 6th baseline
+failure, `bar FAILED to compile`, was never a broken bar — the suite's compile
+line was missing `SettingsWindowController.swift` (added to build.sh but not
+the test). Fixed 2026-07-18; the bar is NOT frozen, `bash native/build.sh`
+builds and redeploys it.
 
 **Calling scan.sh's internals.** It is a bash wrapper around an embedded python
 heredoc, so nothing is importable. Use the probe:
