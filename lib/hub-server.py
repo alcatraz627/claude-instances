@@ -226,6 +226,7 @@ def sessions_payload():
             "tab_title": inst.get("tab_title", ""),
             "state": (inst.get("session_state") or {}).get("state", ""),
             "state_detail": (inst.get("session_state") or {}).get("detail", ""),
+            "ipc": inst.get("ipc"),
             "ctx_remaining": sl.get("ctx_remaining", ""),
             "mcp_down": sl.get("mcp_down", ""),
             "focus_file": sl.get("focus_file", ""),

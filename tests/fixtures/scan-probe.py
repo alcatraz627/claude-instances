@@ -387,6 +387,43 @@ def main(argv):
                   + ":" + ("CLEAN" if not litter else "LITTER"))
         finally:
             shutil.rmtree(root, ignore_errors=True)
+    elif op == "ipc_state_field":
+        # Broker silence must be UNKNOWN, never 0: a dead broker and an empty
+        # inbox are different facts (meld PH1, the unknown-not-zero doctrine
+        # applied to the live join).
+        import tempfile, shutil
+        root = tempfile.mkdtemp(prefix="ipcstate-")
+        try:
+            sid = "cafe0000-0000-4000-8000-00000000cafe"
+            with open(os.path.join(root, sid), "w") as fh:
+                fh.write("test-alias")
+            ns2 = load()
+            ns2["_IPC_ALIAS_DIR"] = root
+            ns2["_IPC_BIN"] = "/usr/bin/false"   # exists; broker never answers
+            a = ns2["get_ipc_info"](sid, False)
+            ns2["_IPC_BIN"] = "/bin/echo"        # answers with no digits: empty inbox
+            b = ns2["get_ipc_info"](sid, False)
+            print(f"{a.get('inbox')}:{a.get('state')}:{b.get('inbox')}:{b.get('state')}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "ipc_state_kill":
+        # HUB_IPC_OVERLAY=0 restores the legacy shape exactly: silent zero,
+        # no state key — the Phase-1 kill switch is a real revert.
+        import tempfile, shutil
+        os.environ['HUB_IPC_OVERLAY'] = '0'
+        root = tempfile.mkdtemp(prefix="ipckill-")
+        try:
+            sid = "cafe0000-0000-4000-8000-00000000cafe"
+            with open(os.path.join(root, sid), "w") as fh:
+                fh.write("test-alias")
+            ns2 = load()
+            ns2["_IPC_ALIAS_DIR"] = root
+            ns2["_IPC_BIN"] = "/usr/bin/false"
+            a = ns2["get_ipc_info"](sid, False)
+            print(f"{a.get('inbox')}:{'ABSENT' if 'state' not in a else a.get('state')}")
+        finally:
+            del os.environ['HUB_IPC_OVERLAY']
+            shutil.rmtree(root, ignore_errors=True)
     elif op == "digest_states":
         # The bridge staleness state machine (meld plan v2 section 7): a
         # digest payload is classified before any value is trusted. Unknown

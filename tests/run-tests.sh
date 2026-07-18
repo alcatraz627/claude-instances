@@ -718,6 +718,15 @@ t_eq "ipc absent degrades to today, never raises"  "ABSENT_OK" \
 t_check "vendored digest fixture is valid JSON with contract fields" \
         python3 -c "import json; d=json.load(open('tests/fixtures/ipc-digest-fixture.json')); assert d['contract_version']==1 and 'sessions' in d and '_unresolved' in d['sessions']"
 
+t_section "meld bridge (Phase 1)"
+
+t_eq "broker silence is unknown, never 0"     "None:unreachable:0:fresh" \
+     "$(python3 "$SCAN_PROBE" ipc_state_field)"
+t_eq "kill switch restores the legacy shape"  "0:ABSENT" \
+     "$(python3 "$SCAN_PROBE" ipc_state_kill)"
+t_grep "hub passes the ipc join to cards"     lib/hub-server.py '"ipc": inst.get'
+t_grep "badge goes ? when any read is stale"  lib/hub-index.html "total unknowable"
+
 # Cleanup fixture
 rm -f "$PROJ_DIR/${FIXTURE_SID}.jsonl"
 rmdir "$PROJ_DIR" 2>/dev/null || true

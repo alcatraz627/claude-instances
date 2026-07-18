@@ -1000,13 +1000,23 @@ def parse_ipc_digest(raw, now_ts=None):
         return ('unknown', {})
     return ('fresh' if age <= IPC_DIGEST_FRESH_S else 'stale', sessions)
 
+# Meld Phase 1 kill switch: =0 restores the legacy join shape exactly.
+_IPC_OVERLAY = os.environ.get('HUB_IPC_OVERLAY', '1') != '0'
+
 def _ipc_inbox_count(alias):
+    """Unread count for an alias, honestly: (count, 'fresh') when the broker
+    answered, (None, 'unreachable') when it did not. The old silent 0 made a
+    dead broker indistinguishable from an empty inbox — different facts, and
+    the card must be able to say which one it is showing.
+    """
     try:
         r = subprocess.run([_IPC_BIN, 'count', alias], capture_output=True, text=True, timeout=2)
+        if r.returncode != 0:
+            return (None, 'unreachable')
         digits = ''.join(ch for ch in (r.stdout or '') if ch.isdigit())
-        return int(digits) if digits else 0
+        return (int(digits) if digits else 0, 'fresh')
     except Exception:
-        return 0
+        return (None, 'unreachable')
 
 def get_ipc_info(session_id, quick):
     """This session's ipc identity for the human's widget: its alias (canonical,
@@ -1024,7 +1034,12 @@ def get_ipc_info(session_id, quick):
         return None
     out = {'alias': alias}
     if not quick:
-        out['inbox'] = _ipc_inbox_count(alias)
+        count, state = _ipc_inbox_count(alias)
+        if _IPC_OVERLAY:
+            out['inbox'] = count          # None means the broker didn't say
+            out['state'] = state
+        else:
+            out['inbox'] = count or 0     # legacy shape: silent zero, no state
     return out
 
 
