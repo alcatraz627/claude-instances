@@ -197,12 +197,9 @@ def main(argv):
         finally:
             shutil.rmtree(root, ignore_errors=True)
     elif op == "agg_e2e":
-        # The wiring, not the function: the five unit guards all call
-        # get_aggregate_history directly, so none of them would notice the
-        # assemble block quietly reverting to compute_aggregates(history).
-        # This runs the WHOLE scan and asserts on the shipped JSON. HOME is
-        # redirected at the temp root so the real codex tree can't pollute
-        # the counts.
+        # Asserts the real shipped JSON end-to-end (unlike the unit guards,
+        # which call the function directly), HOME-redirected so the real
+        # codex tree can't pollute the counts.
         import tempfile, shutil
         n = int(argv[1])
         root = tempfile.mkdtemp(prefix="agge2e-")
