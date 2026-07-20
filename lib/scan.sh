@@ -1061,8 +1061,13 @@ def _ipc_digest_prefetch(cwds):
             out, _ = p.communicate(timeout=max(0.05, deadline - _t.time()))
             _ipc_digest_cache[cwd] = _ipc_digest_classify(p.returncode, out)
         except subprocess.TimeoutExpired:
+            # killpg by p.pid directly: start_new_session makes the child its
+            # own group leader, so its pid IS the pgid — and stays valid while
+            # ANY member lives. Resolving getpgid(p.pid) here instead would
+            # raise on the child-already-a-zombie case (fast exit, grandchild
+            # holding the pipe), skip the kill, and orphan the grandchild.
             try:
-                os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                os.killpg(p.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
             try:
@@ -1102,9 +1107,11 @@ def _ipc_from_digest(out, state, sess, age):
     out['role'] = role if isinstance(role, str) else None
     owed = sess.get('owed')
     if isinstance(owed, list):
+        # Known-open-set, not everything-but-terminal: an ask_state this
+        # consumer doesn't recognize is ignored until a deliberate contract
+        # bump, per the coworker-rebuild freeze in the plan's handshake.
         counted = [e for e in owed if isinstance(e, dict)
-                   and isinstance(e.get('ask_state'), str)
-                   and e.get('ask_state') not in ('responded', 'cancelled')]
+                   and e.get('ask_state') in ('open', 'parked')]
         if counted or not owed:
             out['owes'] = len(counted)
             ages = [a for a in (_nn_int(e.get('age_s'), 10**9) for e in counted)
@@ -1229,7 +1236,12 @@ def run_ipc_disagreement_pass(live):
             continue
         p = prev.get(sid)
         streak = p.get('streak', 0) if isinstance(p, dict) else 0
-        streak = streak + 1 if isinstance(streak, int) and streak >= 0 else 1
+        # bool excluded explicitly: JSON true satisfies isinstance(int) and
+        # true+1 == 2, which would buy a first-scan flag past the debounce.
+        if not isinstance(streak, int) or isinstance(streak, bool) \
+                or not 0 <= streak < 10**6:
+            streak = 0
+        streak += 1
         cur[sid] = {'claim': claim, 'kind': kind, 'streak': streak}
         if streak >= 2:
             for inst in live:

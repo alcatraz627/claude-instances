@@ -741,10 +741,12 @@ t_eq "HUB_IPC_OVERLAY=0 stays fully legacy, no digest spawn"  "3:ABSENT:NODIGEST
      "$(python3 "$SCAN_PROBE" digest_overlay_kill)"
 t_eq "hanging digest: capped, honest, no count stacking"      "unreachable:None:NOCOUNT:FAST" \
      "$(python3 "$SCAN_PROBE" digest_hang)"
+t_eq "grandchild holding the pipe: capped AND group-killed"   "unreachable:GC_DEAD:FAST" \
+     "$(python3 "$SCAN_PROBE" digest_grandchild)"
 t_eq "one digest spawn covers a cwd's sessions"               "1:digest:digest" \
      "$(python3 "$SCAN_PROBE" digest_one_spawn)"
-t_eq "disagreements: raw always, flag on 2nd scan, silent on agreement" \
-     "3:NOFLAG:FLAG2:SSTATE_OK" "$(python3 "$SCAN_PROBE" disagree_pass)"
+t_eq "disagreements: raw always, flag on 2nd scan, silent on agreement, poison-proof" \
+     "3:NOFLAG:FLAG2:SSTATE_OK:POISON_OK" "$(python3 "$SCAN_PROBE" disagree_pass)"
 t_check "count parity smoke (SKIP-loud while verb absent)" \
         bash tests/fixtures/ipc-parity-smoke.sh
 t_check "contract diff: live digest superset of fixture (SKIP-loud)" \

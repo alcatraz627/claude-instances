@@ -69,6 +69,7 @@ case "$1" in
     case "{mode}" in
       absent) echo "usage: claude-ipc ..."; exit 2;;
       hang)   sleep 10;;
+      gchild) sleep 10 & echo $! > "{root}/gc.pid"; exit 0;;
       *)      cat "{payload_path}"; exit 0;;
     esac;;
   count) echo 3; exit 0;;
@@ -707,6 +708,40 @@ def main(argv):
                   f"{'FAST' if dt < 4.0 else f'SLOW:{dt:.1f}'}")
         finally:
             shutil.rmtree(root, ignore_errors=True)
+    elif op == "digest_grandchild":
+        # The nastier hang: the direct child exits fast but leaves a
+        # backgrounded grandchild holding the stdout pipe — by kill time the
+        # child is a zombie, so a getpgid-at-kill-time approach never sends
+        # the killpg and orphans the grandchild (gate finding, 2026-07-20).
+        # The cap must still hold AND the whole process group must die.
+        import tempfile, shutil, time as _t, signal as _sig
+        root = tempfile.mkdtemp(prefix="ipcgc-")
+        try:
+            sid = "cafe0000-0000-4000-8000-00000000cafe"
+            stub, marker = _mk_ipc_stub(root, "gchild")
+            ns2 = load()
+            _ipc_env(root, sid, ns2, stub)
+            t0 = _t.time()
+            out = ns2["get_ipc_info"](sid, False, "/tmp/dcwd")
+            dt = _t.time() - t0
+            _t.sleep(0.3)
+            gc_alive = False
+            gcpid = None
+            try:
+                gcpid = int(open(os.path.join(root, "gc.pid")).read().strip())
+                os.kill(gcpid, 0)
+                gc_alive = True
+            except (OSError, ValueError):
+                pass
+            if gc_alive and gcpid:
+                try:
+                    os.kill(gcpid, _sig.SIGKILL)
+                except OSError:
+                    pass
+            print(f"{out.get('state')}:{'GC_DEAD' if not gc_alive else 'GC_ALIVE'}:"
+                  f"{'FAST' if dt < 2.8 else f'SLOW:{dt:.1f}'}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
     elif op == "digest_one_spawn":
         # One digest spawn covers every session in a cwd — that's the
         # subprocess economy the digest buys over N per-alias counts.
@@ -773,7 +808,19 @@ def main(argv):
                      if "disagree" in fa["ipc"] else "NOFLAG2")
             clean = "SSTATE_OK" if (fa["session_state"] == "working"
                                     and "disagree" not in fb["ipc"]) else "LEAKED"
-            print(f"{n_raw}:{flag1}:{flag2}:{clean}")
+            # A poisoned state file must not buy a first-scan flag: JSON true
+            # passes a bare isinstance(int) check (bool is an int in Python)
+            # and true+1 == 2 — the gate proved that skips the debounce.
+            poison_ok = []
+            for bad in (True, 10**20):
+                with open(state, "w") as fh:
+                    json.dump({sa: {"streak": bad}}, fh)
+                lp = mk_live()
+                ns2["run_ipc_disagreement_pass"](lp)
+                pa = next(r for r in lp if r["session_id"] == sa)
+                poison_ok.append("disagree" not in pa["ipc"])
+            poison = "POISON_OK" if all(poison_ok) else "POISON_BYPASS"
+            print(f"{n_raw}:{flag1}:{flag2}:{clean}:{poison}")
         finally:
             shutil.rmtree(root, ignore_errors=True)
     else:
