@@ -155,6 +155,17 @@ waiting_on, state }` where `state ∈ fresh|stale|skew|unreachable` (§7) and
 every numeric is `null` under any state but `fresh`. Swift bar safety:
 additive optional fields only; Codable ignores unknown keys.
 
+`[impl 2026-07-20, instances side]` Two deviations as built, both
+deliberate: (1) the wire keeps the already-shipped field name **`inbox`**
+for what this section calls `unread` — the page reads `inbox`, and renaming
+a live wire field is a stale-reader hazard for zero value; (2) the
+null-unless-fresh sentence above CONTRADICTED §7's "stale → render values
+dimmed", and §7 wins — **stale carries values** (plus `age_s` for the
+"as of" render); skew/unknown/unreachable carry null. Extra fields as
+built: `source: 'digest'` (absent on the count path — its absence IS the
+dark-launch signal), `age_s`, and `disagree {claim, kind, scans}` after the
+§8.4 two-scan debounce.
+
 ### 5.4 contextPtr (deep links) `[m — resolved]`
 No schema change. The hub link derives from the EXISTING
 `contextPtr.sessionId`: `http://<host>:5400/s/<sessionId>`. Record-precise
