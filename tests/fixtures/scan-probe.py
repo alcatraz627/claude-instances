@@ -53,6 +53,62 @@ def _mk_sessions(root, n):
     return paths
 
 
+def _mk_ipc_stub(root, mode, payload_path=""):
+    """A claude-ipc stand-in for the digest wiring tests. 'absent' behaves like
+    today's real binary (help text, exit 2); 'payload' answers digest with the
+    given file; 'hang' sleeps past the cap. count always answers 3, and every
+    invocation's verb lands in calls.log so a probe can assert what was (not)
+    spawned."""
+    marker = os.path.join(root, "calls.log")
+    path = os.path.join(root, "ipc-stub")
+    with open(path, "w") as fh:
+        fh.write(f"""#!/bin/bash
+echo "$1" >> "{marker}"
+case "$1" in
+  digest)
+    case "{mode}" in
+      absent) echo "usage: claude-ipc ..."; exit 2;;
+      hang)   sleep 10;;
+      *)      cat "{payload_path}"; exit 0;;
+    esac;;
+  count) echo 3; exit 0;;
+esac
+exit 0
+""")
+    os.chmod(path, 0o755)
+    return path, marker
+
+
+def _mk_digest_payload(root, sids, age_s=5, cv=1, sess_over=None):
+    """A digest response derived from the VENDORED contract fixture (so the
+    probes and the contract can't silently drift apart), re-stamped to age_s
+    and carrying one session block per sid."""
+    from datetime import datetime, timezone, timedelta
+    with open(os.path.join(HERE, "ipc-digest-fixture.json")) as fh:
+        fx = json.load(fh)
+    base = dict(next(v for k, v in fx["sessions"].items() if k != "_unresolved"))
+    base.update(sess_over or {})
+    ts = (datetime.now(timezone.utc) - timedelta(seconds=age_s)).strftime(
+        '%Y-%m-%dT%H:%M:%S.000Z')
+    payload = {"protocol_version": "x", "contract_version": cv, "ts": ts,
+               "sessions": {**{sid: dict(base) for sid in sids},
+                            "_unresolved": {"aliases": [], "note": ""}}}
+    p = os.path.join(root, f"payload-{age_s}-{cv}.json")
+    with open(p, "w") as fh:
+        json.dump(payload, fh)
+    return p
+
+
+def _ipc_env(root, sid, ns2, stub):
+    """Point the loaded module at a scratch alias dir + the stub binary."""
+    adir = os.path.join(root, "aliases")
+    os.makedirs(adir, exist_ok=True)
+    with open(os.path.join(adir, sid), "w") as fh:
+        fh.write("test-alias")
+    ns2["_IPC_ALIAS_DIR"] = adir
+    ns2["_IPC_BIN"] = stub
+
+
 def main(argv):
     ns = load()
     op = argv[0]
@@ -148,7 +204,10 @@ def main(argv):
         # The whole scan against a poisoned transcript. The unit guards passed
         # while the scan still emitted a bare Infinity through tokens_in, so
         # this asserts on the real output, not on one function.
+        # HUB_IPC_DIGEST=0: this exec runs under the REAL home, and a live
+        # digest verb would let the disagreement pass write real ledger lines.
         import subprocess, tempfile, shutil
+        os.environ["HUB_IPC_DIGEST"] = "0"
         root = tempfile.mkdtemp(prefix="poison-")
         try:
             d = os.path.join(root, "projects", "-tmp-p")
@@ -172,6 +231,7 @@ def main(argv):
             except ValueError as ex:
                 print(f"POISONED:{ex}")
         finally:
+            del os.environ["HUB_IPC_DIGEST"]
             shutil.rmtree(root, ignore_errors=True)
     elif op == "agg_sum":
         # The aggregates sum must survive an unpriced (None) session.
@@ -518,6 +578,203 @@ def main(argv):
                 os.unlink(tp)
             except OSError:
                 pass
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "digest_dark":
+        # The dark launch itself: the real binary today answers `digest` with
+        # help + exit 2. That must leave the card in EXACTLY the legacy
+        # count-path shape (no digest keys) — while proving the digest was
+        # attempted, so the feature lights up the day the peer ships the verb.
+        import tempfile, shutil
+        root = tempfile.mkdtemp(prefix="ipcdark-")
+        try:
+            sid = "cafe0000-0000-4000-8000-00000000cafe"
+            stub, marker = _mk_ipc_stub(root, "absent")
+            ns2 = load()
+            _ipc_env(root, sid, ns2, stub)
+            out = ns2["get_ipc_info"](sid, False, "/tmp/dcwd")
+            calls = open(marker).read().split() if os.path.exists(marker) else []
+            shape = "PH1SHAPE" if set(out) == {"alias", "inbox", "state"} else f"KEYS:{sorted(out)}"
+            print(f"{out.get('inbox')}:{out.get('state')}:{shape}:"
+                  f"{'TRIED' if 'digest' in calls else 'NEVER'}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "digest_live":
+        # A fresh digest response sources the card: unread → inbox, owed
+        # entries with a real ask_state → the obligations fields, and the
+        # per-alias count subprocess is NOT spawned — the digest replaces it.
+        import tempfile, shutil
+        root = tempfile.mkdtemp(prefix="ipclive-")
+        try:
+            sid = "cafe0000-0000-4000-8000-00000000cafe"
+            payload = _mk_digest_payload(root, [sid], age_s=5, sess_over={
+                "unread": 2, "waiting_on": 1, "oldest_deadline_s": 300,
+                "liveness_claim": "live",
+                "owed": [{"corr_id": "m1", "kind": "query", "age_s": 1200,
+                          "reply_by_s": 300, "ask_state": "open"},
+                         {"corr_id": "m2", "kind": "query", "age_s": 5,
+                          "reply_by_s": 0, "ask_state": "responded"}]})
+            stub, marker = _mk_ipc_stub(root, "payload", payload)
+            ns2 = load()
+            _ipc_env(root, sid, ns2, stub)
+            out = ns2["get_ipc_info"](sid, False, "/tmp/dcwd")
+            calls = open(marker).read().split() if os.path.exists(marker) else []
+            print(f"{out.get('source')}:{out.get('state')}:{out.get('inbox')}:"
+                  f"{out.get('owes')}:{out.get('oldest_owed_age_s')}:"
+                  f"{out.get('deadline_s')}:{out.get('waiting_on')}:"
+                  f"{'NOCOUNT' if 'count' not in calls else 'COUNTED'}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "digest_wire_states":
+        # Stale carries dimmed values plus its age (the state machine of plan
+        # section 7 governs; parse_ipc_digest has always returned sessions for
+        # stale); skew and unknown carry nothing but the state.
+        import tempfile, shutil
+        root = tempfile.mkdtemp(prefix="ipcwire-")
+        try:
+            sid = "cafe0000-0000-4000-8000-00000000cafe"
+            ns2 = load()
+            results = []
+            for age, cv in ((60, 1), (5, 99), (300, 1)):
+                payload = _mk_digest_payload(root, [sid], age_s=age, cv=cv,
+                                             sess_over={"unread": 2})
+                stub, _ = _mk_ipc_stub(root, "payload", payload)
+                _ipc_env(root, sid, ns2, stub)
+                ns2["_ipc_digest_cache"].clear()
+                out = ns2["get_ipc_info"](sid, False, "/tmp/dcwd")
+                results.append(out)
+            a, b, c = results
+            hasage = "HASAGE" if isinstance(a.get("age_s"), int) and 40 <= a["age_s"] <= 100 else f"AGE:{a.get('age_s')}"
+            print(f"{a.get('state')}:{a.get('inbox')}:{hasage}:"
+                  f"{b.get('state')}:{b.get('inbox')}:"
+                  f"{c.get('state')}:{c.get('inbox')}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "digest_kill":
+        # HUB_IPC_DIGEST=0 keeps the RETIRED count path alive (reversible
+        # retirement): count sourcing, and the digest is never even spawned.
+        import tempfile, shutil
+        os.environ["HUB_IPC_DIGEST"] = "0"
+        root = tempfile.mkdtemp(prefix="ipckill2-")
+        try:
+            sid = "cafe0000-0000-4000-8000-00000000cafe"
+            payload = _mk_digest_payload(root, [sid], sess_over={"unread": 9})
+            stub, marker = _mk_ipc_stub(root, "payload", payload)
+            ns2 = load()
+            _ipc_env(root, sid, ns2, stub)
+            out = ns2["get_ipc_info"](sid, False, "/tmp/dcwd")
+            calls = open(marker).read().split() if os.path.exists(marker) else []
+            print(f"{out.get('inbox')}:{out.get('state')}:"
+                  f"{'NODIGEST' if 'digest' not in calls else 'SPAWNED'}")
+        finally:
+            del os.environ["HUB_IPC_DIGEST"]
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "digest_overlay_kill":
+        # HUB_IPC_OVERLAY=0 is the outer kill switch and outranks the digest
+        # path: full legacy shape (silent zero, no state key), no digest spawn.
+        import tempfile, shutil
+        os.environ["HUB_IPC_OVERLAY"] = "0"
+        root = tempfile.mkdtemp(prefix="ipcokill-")
+        try:
+            sid = "cafe0000-0000-4000-8000-00000000cafe"
+            payload = _mk_digest_payload(root, [sid], sess_over={"unread": 9})
+            stub, marker = _mk_ipc_stub(root, "payload", payload)
+            ns2 = load()
+            _ipc_env(root, sid, ns2, stub)
+            out = ns2["get_ipc_info"](sid, False, "/tmp/dcwd")
+            calls = open(marker).read().split() if os.path.exists(marker) else []
+            print(f"{out.get('inbox')}:{'ABSENT' if 'state' not in out else out.get('state')}:"
+                  f"{'NODIGEST' if 'digest' not in calls else 'SPAWNED'}")
+        finally:
+            del os.environ["HUB_IPC_OVERLAY"]
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "digest_hang":
+        # A hanging broker must cost the scan the 2s cap ONCE — process-group
+        # killed (a node tree survives a child-only kill), rendered as
+        # 'unreachable', and never followed by a count attempt on top.
+        import tempfile, shutil, time as _t
+        root = tempfile.mkdtemp(prefix="ipchang-")
+        try:
+            sid = "cafe0000-0000-4000-8000-00000000cafe"
+            stub, marker = _mk_ipc_stub(root, "hang")
+            ns2 = load()
+            _ipc_env(root, sid, ns2, stub)
+            t0 = _t.time()
+            out = ns2["get_ipc_info"](sid, False, "/tmp/dcwd")
+            dt = _t.time() - t0
+            calls = open(marker).read().split() if os.path.exists(marker) else []
+            print(f"{out.get('state')}:{out.get('inbox')}:"
+                  f"{'NOCOUNT' if 'count' not in calls else 'COUNTED'}:"
+                  f"{'FAST' if dt < 4.0 else f'SLOW:{dt:.1f}'}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "digest_one_spawn":
+        # One digest spawn covers every session in a cwd — that's the
+        # subprocess economy the digest buys over N per-alias counts.
+        import tempfile, shutil
+        root = tempfile.mkdtemp(prefix="ipcone-")
+        try:
+            sa = "cafe0000-0000-4000-8000-00000000cafa"
+            sb = "cafe0000-0000-4000-8000-00000000cafb"
+            payload = _mk_digest_payload(root, [sa, sb], sess_over={"unread": 1})
+            stub, marker = _mk_ipc_stub(root, "payload", payload)
+            ns2 = load()
+            _ipc_env(root, sa, ns2, stub)
+            with open(os.path.join(ns2["_IPC_ALIAS_DIR"], sb), "w") as fh:
+                fh.write("test-alias-b")
+            a = ns2["get_ipc_info"](sa, False, "/tmp/dcwd")
+            b = ns2["get_ipc_info"](sb, False, "/tmp/dcwd")
+            calls = open(marker).read().split() if os.path.exists(marker) else []
+            print(f"{calls.count('digest')}:{a.get('source')}:{b.get('source')}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "disagree_pass":
+        # Section 8.4: pid-truth vs liveness claim. Raw lines always (offline-
+        # while-live, live-while-gone, live-but-unregistered); agreement stays
+        # silent (the mutation half); the card flag needs 2 consecutive scans;
+        # and the card's own session_state is never touched — the digest's
+        # opinion of liveness must not leak into the physical column.
+        import tempfile, shutil
+        root = tempfile.mkdtemp(prefix="ipcdis-")
+        try:
+            sa = "cafe0000-0000-4000-8000-0000000000aa"   # live, ipc says offline
+            sb = "cafe0000-0000-4000-8000-0000000000bb"   # live, ipc agrees
+            sc = "cafe0000-0000-4000-8000-0000000000cc"   # live, missing from digest
+            gone = "cafe0000-0000-4000-8000-0000000000dd" # ipc says live, no pid
+            ns2 = load()
+            log = os.path.join(root, "raw.jsonl")
+            state = os.path.join(root, "state.json")
+            ns2["_IPC_DISAGREE_LOG"] = log
+            ns2["_IPC_DISAGREE_STATE"] = state
+
+            def mk_live():
+                rows = []
+                for sid in (sa, sb, sc):
+                    rows.append({"session_id": sid, "cwd": "/tmp/dcwd",
+                                 "provider": "claude", "session_state": "working",
+                                 "ipc": {"alias": "x-" + sid[-2:],
+                                         "source": "digest", "state": "fresh"}})
+                return rows
+
+            ns2["_ipc_digest_cache"]["/tmp/dcwd"] = ("fresh", {
+                sa: {"liveness_claim": "offline"},
+                sb: {"liveness_claim": "live"},
+                gone: {"liveness_claim": "live"},
+                "_unresolved": {"aliases": []},
+            }, 2)
+            live1 = mk_live()
+            ns2["run_ipc_disagreement_pass"](live1)
+            n_raw = sum(1 for _ in open(log)) if os.path.exists(log) else 0
+            flag1 = "FLAG1" if any("disagree" in (r.get("ipc") or {}) for r in live1) else "NOFLAG"
+            live2 = mk_live()
+            ns2["run_ipc_disagreement_pass"](live2)
+            fa = next(r for r in live2 if r["session_id"] == sa)
+            fb = next(r for r in live2 if r["session_id"] == sb)
+            flag2 = ("FLAG" + str(fa["ipc"].get("disagree", {}).get("scans"))
+                     if "disagree" in fa["ipc"] else "NOFLAG2")
+            clean = "SSTATE_OK" if (fa["session_state"] == "working"
+                                    and "disagree" not in fb["ipc"]) else "LEAKED"
+            print(f"{n_raw}:{flag1}:{flag2}:{clean}")
+        finally:
             shutil.rmtree(root, ignore_errors=True)
     else:
         print(f"unknown op {op!r}", file=sys.stderr)

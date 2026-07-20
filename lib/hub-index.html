@@ -168,6 +168,8 @@ h1 { font: 650 21px/1.2 var(--sans); letter-spacing: -.014em; margin: 0; }
 .p-foot .ipcchip { color: color-mix(in srgb, var(--meta) 45%, var(--faint)); overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; }
 .p-foot .ipcchip.bad { color: var(--warn, #c90); }
+.p-foot .ipcchip.stale { opacity: .55; }
+.ipcdisagree { color: var(--warn, #c90); margin-left: 3px; cursor: help; }
 .ipcbadge { padding: 1px 7px; border-radius: 9px; background: color-mix(in srgb, var(--surface) 70%, transparent);
     font-weight: 600; }
 .ipcbadge.bad { color: var(--warn, #c90); }
@@ -636,16 +638,17 @@ function paneHTML(s, hit) {
 function ipcBadgeHTML(live) {
     const rows = live.filter(s => s.ipc && s.ipc.alias);
     if (!rows.length) return '';
-    const bad = rows.some(s => s.ipc.state && s.ipc.state !== 'fresh');
-    const tot = rows.reduce((a, s) => a + (s.ipc.inbox || 0), 0);
+    const bad = rows.some(s => (s.ipc.state && s.ipc.state !== 'fresh')
+                               || (s.ipc.state === 'fresh' && !Number.isInteger(s.ipc.inbox)));
+    const tot = rows.reduce((a, s) => a + (Number.isInteger(s.ipc.inbox) ? s.ipc.inbox : 0), 0);
     return `<span class="ipcbadge${bad ? ' bad' : ''}" title="${bad ? 'ipc partially unreachable — total unknowable' : 'unread ipc mail across live sessions'}">📬 ${bad ? '?' : tot}</span>`;
 }
 /* Degraded-duration banner: silent graceful degradation is itself the bug
-   class the meld exists to kill, so a >24h-broken bridge surfaces HERE, on
-   the page the owner actually watches. */
+   class the meld exists to kill, so a >24h-degraded bridge (any non-fresh
+   state) surfaces HERE, on the page the owner actually watches. */
 function ipcDegradedHTML(live) {
     const rows = live.filter(s => s.ipc && s.ipc.alias);
-    const allBad = rows.length > 0 && rows.every(s => s.ipc.state === 'unreachable');
+    const allBad = rows.length > 0 && rows.every(s => s.ipc.state && s.ipc.state !== 'fresh');
     if (allBad) {
         if (!localStorage.ipcDegradedSince) localStorage.ipcDegradedSince = Date.now();
     } else {
@@ -653,17 +656,43 @@ function ipcDegradedHTML(live) {
         return '';
     }
     if (Date.now() - (+localStorage.ipcDegradedSince) < 86400e3) return '';
-    return `<div class="ipcdegraded">ipc bridge unreachable for over 24h — sessions run fine; mail counts are unknown. Runbook: docs/meld-runbook.md</div>`;
+    return `<div class="ipcdegraded">ipc bridge degraded for over 24h — sessions run fine; mail counts are unknown. Runbook: docs/meld-runbook.md</div>`;
 }
-/* The first render of the ipc join: alias, unread when the broker answered,
-   and an honest "?" when it did not — unreachable is a different fact from
-   an empty inbox, and the chip must be able to say which it is showing. */
+function fmtAgeS(s) {
+    if (!Number.isInteger(s) || s < 0) return '?';
+    if (s < 90) return s + 's';
+    if (s < 5400) return Math.round(s / 60) + 'm';
+    return Math.round(s / 3600) + 'h';
+}
+/* The render of the ipc join: alias, unread when the broker answered, an
+   honest "?" when it did not — unreachable is a different fact from an empty
+   inbox. Digest-sourced extras: obligations render only under fresh, a stale
+   read dims and names its age, and a sustained liveness disagreement shows
+   both authorities instead of silently picking one. Every digest number is
+   re-checked client-side (Number.isInteger) before it lands in markup —
+   these values originate in another process's bytes. */
 function ipcChipHTML(s) {
     if (!s.ipc || !s.ipc.alias) return '';
-    const bad = s.ipc.state && s.ipc.state !== 'fresh';
-    const mail = s.ipc.inbox == null ? (bad ? ' ✉?' : '')
-                                     : (s.ipc.inbox > 0 ? ` ✉${s.ipc.inbox}` : '');
-    return `<span class="ipcchip${bad ? ' bad' : ''}" title="ipc: ${esc(s.ipc.alias)}${bad ? ' · ' + esc(s.ipc.state) : ''}">☍ ${esc(s.ipc.alias)}${mail}</span>`;
+    const st = s.ipc.state;
+    const stale = st === 'stale';
+    const bad = st && st !== 'fresh' && !stale;
+    const inboxN = Number.isInteger(s.ipc.inbox) ? s.ipc.inbox : null;
+    const mail = inboxN == null ? (bad || stale ? ' ✉?' : '')
+                                : (inboxN > 0 ? ` ✉${inboxN}` : '');
+    let owes = '';
+    if (st === 'fresh' && Number.isInteger(s.ipc.owes) && s.ipc.owes > 0) {
+        owes = ` · owes ${s.ipc.owes}`;
+        if (Number.isInteger(s.ipc.oldest_owed_age_s)) owes += ` · oldest ${fmtAgeS(s.ipc.oldest_owed_age_s)}`;
+        if (Number.isInteger(s.ipc.deadline_s)) owes += ` · ⏱ ${fmtAgeS(s.ipc.deadline_s)}`;
+    }
+    const dis = s.ipc.disagree
+        ? `<span class="ipcdisagree" title="hub sees this process live; ipc thinks ${esc(s.ipc.disagree.claim || 'it is elsewhere')} (held ${Number.isInteger(s.ipc.disagree.scans) ? s.ipc.disagree.scans : '?'} scans) — pid-truth wins on this page">⚠</span>`
+        : '';
+    const title = `ipc: ${esc(s.ipc.alias)}`
+        + (stale ? ` · stale, as of ${fmtAgeS(s.ipc.age_s)} ago` : '')
+        + (bad ? ' · ' + esc(st) : '')
+        + (Number.isInteger(s.ipc.waiting_on) && s.ipc.waiting_on > 0 ? ` · waiting on ${s.ipc.waiting_on}` : '');
+    return `<span class="ipcchip${bad ? ' bad' : ''}${stale ? ' stale' : ''}" title="${title}">☍ ${esc(s.ipc.alias)}${mail}${owes}</span>${dis}`;
 }
 function endedPaneHTML(s, hit) {
     return `<a class="pane ended${openable(s) ? '' : ' noopen'}"${openable(s) ? ` href="/s/${encodeURIComponent(s.session_id)}${hit && hit.seq ? `#r${hit.seq}&q=${encodeURIComponent(hit.w)}` : ''}"` : ''}${noOpenAttrs(s)} data-sid="${esc(s.session_id)}" data-peek="1">` +

@@ -953,7 +953,9 @@ PROVIDERS = [claude_provider, codex_provider]
 # and goes stale for a session in a long turn (reads "offline" while actively
 # working). This widget's own process-liveness is more accurate — closing that gap
 # by feeding it back to the broker is Direction B.
-_IPC_BIN = os.path.expanduser('~/Code/Claude/claude-ipc/dist/claude-ipc')
+# HUB_IPC_BIN lets a scratch hub or an end-to-end test stand in a stub binary
+# without touching the live broker (validator-isolation doctrine).
+_IPC_BIN = os.environ.get('HUB_IPC_BIN') or os.path.expanduser('~/Code/Claude/claude-ipc/dist/claude-ipc')
 _IPC_ALIAS_DIR = os.path.expanduser('~/.claude-ipc/alias-by-sid')
 
 # ── ipc digest consumer (meld bridge, Phase 0) ──────────────────────────────
@@ -1000,6 +1002,116 @@ def parse_ipc_digest(raw, now_ts=None):
         return ('unknown', {})
     return ('fresh' if age <= IPC_DIGEST_FRESH_S else 'stale', sessions)
 
+# ── ipc digest spawn (meld bridge, the wiring onto the consumer above) ───────
+# One digest call per distinct project cwd per full scan replaces the
+# per-alias `count` subprocess — once the peer's verb answers. Until then the
+# verb fast-fails (help + exit 2) and the feature stays DARK: the count path
+# below keeps running unchanged, so the card never claims "unreachable" while
+# the broker is actually fine. A TIMEOUT is different: the broker consumed our
+# budget, so it renders as 'unreachable' and no count attempt is stacked on
+# top of the already-spent 2 seconds.
+
+IPC_DIGEST_TIMEOUT_S = 2
+
+# Digest sourcing kill switch: =0 keeps the retired per-alias count path
+# (retirement stays reversible; HUB_IPC_OVERLAY=0 below outranks both).
+_IPC_DIGEST_ON = os.environ.get('HUB_IPC_DIGEST', '1') != '0'
+
+_ipc_digest_cache = {}   # cwd -> (state, sessions, age_s) for this scan
+
+def _digest_age_s(raw):
+    """Age of a digest payload's own timestamp, for the dimmed 'as of Ns'
+    render on stale reads. None when the stamp can't be read."""
+    try:
+        d = json.loads(raw)
+        dt = datetime.fromisoformat((d.get('ts') or '').replace('Z', '+00:00'))
+        return max(0, int(datetime.now(timezone.utc).timestamp() - dt.timestamp()))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+def _ipc_digest_classify(rc, out):
+    if rc != 0:
+        return ('dark', {}, None)
+    state, sessions = parse_ipc_digest(out)
+    age = _digest_age_s(out) if state in ('fresh', 'stale') else None
+    return (state, sessions, age)
+
+def _ipc_digest_prefetch(cwds):
+    """Spawn every digest call at once under ONE shared deadline, so K slow
+    cwds cost the scan ~2s total, not 2s each. The cap kills the PROCESS
+    GROUP: the CLI is a node tree, and killing only the direct child leaves
+    grandchildren holding the pipe past the deadline (macOS has no timeout(1)).
+    """
+    import signal
+    import time as _t
+    procs = {}
+    for cwd in cwds:
+        if not cwd or cwd in _ipc_digest_cache:
+            continue
+        try:
+            procs[cwd] = subprocess.Popen(
+                [_IPC_BIN, 'digest', '--project', cwd, '--json'],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, start_new_session=True)
+        except OSError:
+            _ipc_digest_cache[cwd] = ('dark', {}, None)
+    deadline = _t.time() + IPC_DIGEST_TIMEOUT_S
+    for cwd, p in procs.items():
+        try:
+            out, _ = p.communicate(timeout=max(0.05, deadline - _t.time()))
+            _ipc_digest_cache[cwd] = _ipc_digest_classify(p.returncode, out)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            try:
+                p.communicate(timeout=1)
+            except Exception:
+                pass
+            _ipc_digest_cache[cwd] = ('unreachable', {}, None)
+
+def _ipc_digest_for(cwd):
+    if cwd not in _ipc_digest_cache:
+        _ipc_digest_prefetch([cwd])
+    return _ipc_digest_cache.get(cwd, ('dark', {}, None))
+
+def _nn_int(v, cap):
+    """A number from another process is untrusted twice over: right type
+    (int, not bool) AND sane range, or it renders as unknown — never as a
+    fabricated figure."""
+    return v if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= cap else None
+
+def _ipc_from_digest(out, state, sess, age):
+    """Card fields from a classified digest block (plan section 5.3; wire
+    keeps the shipped name 'inbox' where 5.3 says 'unread' — the page reads
+    inbox). Values flow only for fresh/stale; the obligations fields render
+    only from owed entries that carry a real ask_state, which is what keeps
+    them dark until the producer actually ships that field."""
+    out['source'] = 'digest'
+    out['state'] = state
+    if state not in ('fresh', 'stale') or not isinstance(sess, dict):
+        out['inbox'] = None
+        return out
+    if age is not None:
+        out['age_s'] = age
+    out['inbox'] = _nn_int(sess.get('unread'), 10**6)
+    out['waiting_on'] = _nn_int(sess.get('waiting_on'), 10**6)
+    out['deadline_s'] = _nn_int(sess.get('oldest_deadline_s'), 10**9)
+    role = sess.get('role')
+    out['role'] = role if isinstance(role, str) else None
+    owed = sess.get('owed')
+    if isinstance(owed, list):
+        counted = [e for e in owed if isinstance(e, dict)
+                   and isinstance(e.get('ask_state'), str)
+                   and e.get('ask_state') not in ('responded', 'cancelled')]
+        if counted or not owed:
+            out['owes'] = len(counted)
+            ages = [a for a in (_nn_int(e.get('age_s'), 10**9) for e in counted)
+                    if a is not None]
+            out['oldest_owed_age_s'] = max(ages) if ages else None
+    return out
+
 # Meld Phase 1 kill switch: =0 restores the legacy join shape exactly.
 _IPC_OVERLAY = os.environ.get('HUB_IPC_OVERLAY', '1') != '0'
 
@@ -1018,11 +1130,13 @@ def _ipc_inbox_count(alias):
     except Exception:
         return (None, 'unreachable')
 
-def get_ipc_info(session_id, quick):
+def get_ipc_info(session_id, quick, cwd=''):
     """This session's ipc identity for the human's widget: its alias (canonical,
-    from the side-file) and unread mail count (full-scan only). None if the session
-    isn't on ipc. Broker liveness is intentionally omitted — the widget's own
-    process-liveness is truer (Direction B)."""
+    from the side-file) and mail state (full-scan only). None if the session
+    isn't on ipc. Mail sourcing is a lattice: the digest contract when the
+    peer's verb answers, the per-alias count when it doesn't (dark), the
+    legacy silent-zero shape under HUB_IPC_OVERLAY=0. The broker's liveness
+    opinion never drives the card — it only feeds the disagreement pass."""
     if not session_id or not os.path.exists(_IPC_BIN):
         return None
     try:
@@ -1033,14 +1147,101 @@ def get_ipc_info(session_id, quick):
     if not alias:
         return None
     out = {'alias': alias}
-    if not quick:
-        count, state = _ipc_inbox_count(alias)
-        if _IPC_OVERLAY:
-            out['inbox'] = count          # None means the broker didn't say
-            out['state'] = state
-        else:
-            out['inbox'] = count or 0     # legacy shape: silent zero, no state
+    if quick:
+        return out
+    if _IPC_OVERLAY and _IPC_DIGEST_ON and cwd:
+        state, sessions, age = _ipc_digest_for(cwd)
+        if state != 'dark':
+            return _ipc_from_digest(out, state, sessions.get(session_id), age)
+    count, cstate = _ipc_inbox_count(alias)
+    if _IPC_OVERLAY:
+        out['inbox'] = count          # None means the broker didn't say
+        out['state'] = cstate
+    else:
+        out['inbox'] = count or 0     # legacy shape: silent zero, no state
     return out
+
+# ── ipc disagreement pass (plan section 8.4) ─────────────────────────────────
+
+_IPC_DISAGREE_LOG = os.path.expanduser('~/.claude/widgets/.ipc-disagreements.jsonl')
+_IPC_DISAGREE_STATE = os.path.expanduser('~/.claude/widgets/.ipc-disagreement-state.json')
+
+def run_ipc_disagreement_pass(live):
+    """Where the two systems' views of liveness differ, say so — never decide.
+    The scan's process table is the physical authority; the digest carries
+    ipc's heartbeat-based view. Every disagreement lands as one RAW jsonl
+    line (the deferred-oracle gate of plan section 13 reads that stream); a
+    card is only flagged once the same disagreement holds for 2 consecutive
+    scans, so registration races don't flash warnings at the owner.
+
+    Runs only when at least one cwd produced a usable digest this scan — a
+    dark or unreachable bridge is no evidence of agreement, so it must not
+    reset anyone's streak."""
+    usable = {c: v for c, v in _ipc_digest_cache.items()
+              if v[0] in ('fresh', 'stale')}
+    if not usable:
+        return
+    live_sids = {i.get('session_id') for i in live if i.get('session_id')}
+    events = []   # (sid, pid_truth, claim, kind)
+    for cwd, (state, sessions, _age) in usable.items():
+        for sid, sess in sessions.items():
+            if sid == '_unresolved' or not isinstance(sess, dict):
+                continue
+            claim = sess.get('liveness_claim')
+            if claim not in ('live', 'idle', 'offline'):
+                continue
+            if sid in live_sids and claim == 'offline':
+                events.append((sid, 'live', claim, 'stale-registration'))
+            elif sid not in live_sids and claim in ('live', 'idle'):
+                events.append((sid, 'gone', claim, 'stale-registration'))
+    for inst in live:
+        sid = inst.get('session_id')
+        ipc = inst.get('ipc') or {}
+        if not sid or not ipc.get('alias') or ipc.get('source') != 'digest':
+            continue
+        entry = usable.get(inst.get('cwd', ''))
+        if entry and entry[0] == 'fresh' and sid not in entry[1]:
+            events.append((sid, 'live', None, 'unregistered-session'))
+    if events:
+        now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        try:
+            with open(_IPC_DISAGREE_LOG, 'a') as fh:
+                for sid, truth, claim, kind in events:
+                    fh.write(json.dumps({
+                        'ts': now_iso, 'sid': sid, 'pid_truth': truth,
+                        'ipc_claim': claim, 'kind': kind, 'raw': True}) + '\n')
+        except OSError:
+            pass
+    try:
+        with open(_IPC_DISAGREE_STATE) as fh:
+            prev = json.load(fh)
+        if not isinstance(prev, dict):
+            prev = {}
+    except (OSError, ValueError):
+        prev = {}
+    cur = {}
+    for sid, truth, claim, kind in events:
+        if sid not in live_sids:
+            continue
+        p = prev.get(sid)
+        streak = p.get('streak', 0) if isinstance(p, dict) else 0
+        streak = streak + 1 if isinstance(streak, int) and streak >= 0 else 1
+        cur[sid] = {'claim': claim, 'kind': kind, 'streak': streak}
+        if streak >= 2:
+            for inst in live:
+                if inst.get('session_id') == sid and inst.get('ipc'):
+                    inst['ipc']['disagree'] = {'claim': claim, 'kind': kind,
+                                               'scans': streak}
+    tmp = _IPC_DISAGREE_STATE + '.tmp.' + str(os.getpid())
+    try:
+        with open(tmp, 'w') as fh:
+            json.dump(cur, fh)
+        os.replace(tmp, _IPC_DISAGREE_STATE)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def _build_claude_instance(pid, cmdline, provider):
@@ -1170,7 +1371,7 @@ def _build_claude_instance(pid, cmdline, provider):
             'pm2_errored': statusline.get('pm2_errored', ''),
         },
         'provider': provider['name'],
-        'ipc': get_ipc_info(session_data['session_id'], quick_mode),
+        'ipc': get_ipc_info(session_data['session_id'], quick_mode, cwd),
     }
 
 def _build_codex_instance(pid, cmdline, provider):
@@ -1287,6 +1488,13 @@ def get_live_instances():
 
         # Ask about the whole fleet once, before building any row.
         prime_process_info([p for p, _, _ in matched])
+
+        # All digest calls launch together under one shared deadline, so the
+        # per-cwd cache is warm before any card asks for it.
+        if not quick_mode and _IPC_OVERLAY and _IPC_DIGEST_ON and os.path.exists(_IPC_BIN):
+            cwds = {_proc_cwds.get(str(p), '')
+                    for p, _, prov in matched if prov['name'] == 'claude'}
+            _ipc_digest_prefetch(sorted(c for c in cwds if c))
 
         for pid, cmdline, provider in matched:
             if provider['name'] == 'claude':
@@ -1779,6 +1987,8 @@ def get_claudew_metrics():
 # ─── Assemble ────────────────────────────────────────────────────
 
 live = get_live_instances()
+if not quick_mode:
+    run_ipc_disagreement_pass(live)
 
 output = {
     'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),

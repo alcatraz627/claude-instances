@@ -727,6 +727,34 @@ t_eq "kill switch restores the legacy shape"  "0:ABSENT" \
 t_grep "hub passes the ipc join to cards"     lib/hub-server.py '"ipc": inst.get'
 t_grep "badge goes ? when any read is stale"  lib/hub-index.html "total unknowable"
 
+t_section "meld bridge (Phase 2)"
+
+t_eq "digest dark-launch: verb absent leaves the legacy shape" "3:fresh:PH1SHAPE:TRIED" \
+     "$(python3 "$SCAN_PROBE" digest_dark)"
+t_eq "fresh digest sources the card, count subprocess retired" "digest:fresh:2:1:1200:300:1:NOCOUNT" \
+     "$(python3 "$SCAN_PROBE" digest_live)"
+t_eq "stale carries dimmed values; skew/unknown carry nothing" "stale:2:HASAGE:skew:None:unknown:None" \
+     "$(python3 "$SCAN_PROBE" digest_wire_states)"
+t_eq "HUB_IPC_DIGEST=0 keeps the retired count path"          "3:fresh:NODIGEST" \
+     "$(python3 "$SCAN_PROBE" digest_kill)"
+t_eq "HUB_IPC_OVERLAY=0 stays fully legacy, no digest spawn"  "3:ABSENT:NODIGEST" \
+     "$(python3 "$SCAN_PROBE" digest_overlay_kill)"
+t_eq "hanging digest: capped, honest, no count stacking"      "unreachable:None:NOCOUNT:FAST" \
+     "$(python3 "$SCAN_PROBE" digest_hang)"
+t_eq "one digest spawn covers a cwd's sessions"               "1:digest:digest" \
+     "$(python3 "$SCAN_PROBE" digest_one_spawn)"
+t_eq "disagreements: raw always, flag on 2nd scan, silent on agreement" \
+     "3:NOFLAG:FLAG2:SSTATE_OK" "$(python3 "$SCAN_PROBE" disagree_pass)"
+t_check "count parity smoke (SKIP-loud while verb absent)" \
+        bash tests/fixtures/ipc-parity-smoke.sh
+t_check "contract diff: live digest superset of fixture (SKIP-loud)" \
+        bash tests/fixtures/ipc-contract-diff.sh
+t_grep "owes line renders only under fresh"       lib/hub-index.html "st === 'fresh'"
+t_grep "stale chips carry their age"              lib/hub-index.html "as of"
+t_grep "disagreement flag names both authorities" lib/hub-index.html "ipc thinks"
+t_check "render path never reads the liveness claim" \
+        bash -c '! rg -q "liveness_claim" lib/hub-index.html'
+
 # Cleanup fixture
 rm -f "$PROJ_DIR/${FIXTURE_SID}.jsonl"
 rmdir "$PROJ_DIR" 2>/dev/null || true
