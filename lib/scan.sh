@@ -1163,8 +1163,12 @@ def get_ipc_info(session_id, quick, cwd=''):
 
 # ── ipc disagreement pass (plan section 8.4) ─────────────────────────────────
 
-_IPC_DISAGREE_LOG = os.path.expanduser('~/.claude/widgets/.ipc-disagreements.jsonl')
-_IPC_DISAGREE_STATE = os.path.expanduser('~/.claude/widgets/.ipc-disagreement-state.json')
+# Both paths take env overrides so a scratch hub or validator run can stub the
+# broker without its disagreement records landing in the live ledger.
+_IPC_DISAGREE_LOG = os.environ.get('HUB_IPC_DISAGREE_LOG') or os.path.expanduser(
+    '~/.claude/widgets/.ipc-disagreements.jsonl')
+_IPC_DISAGREE_STATE = os.environ.get('HUB_IPC_DISAGREE_STATE') or os.path.expanduser(
+    '~/.claude/widgets/.ipc-disagreement-state.json')
 
 def run_ipc_disagreement_pass(live):
     """Where the two systems' views of liveness differ, say so — never decide.
