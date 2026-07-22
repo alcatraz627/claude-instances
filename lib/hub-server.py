@@ -125,16 +125,21 @@ def _refresh_scan_async():
     def worker():
         data = None
         try:
-            data = _do_scan()
-        except (OSError, subprocess.SubprocessError, json.JSONDecodeError,
-                RuntimeError) as e:
-            sys.stderr.write(f"hub: background scan failed ({type(e).__name__}); "
-                             f"keeping the last good result\n")
-        with _scan_lock:
-            if data is not None:
-                _scan_cache["at"] = time.time()
-                _scan_cache["data"] = data
-            _scan_refreshing["on"] = False
+            try:
+                data = _do_scan()
+            except (OSError, subprocess.SubprocessError, json.JSONDecodeError,
+                    RuntimeError) as e:
+                sys.stderr.write(f"hub: background scan failed ({type(e).__name__}); "
+                                 f"keeping the last good result\n")
+        finally:
+            # The flag MUST clear on every exit, including exception classes
+            # nobody predicted — a stuck flag would silently disable refresh
+            # and serve stale forever.
+            with _scan_lock:
+                if data is not None:
+                    _scan_cache["at"] = time.time()
+                    _scan_cache["data"] = data
+                _scan_refreshing["on"] = False
     threading.Thread(target=worker, daemon=True).start()
 
 
