@@ -31,6 +31,7 @@ import os
 import re
 import json
 import glob
+import collections
 import time
 import signal
 import socket
@@ -102,38 +103,67 @@ _scan_cache = {"at": 0.0, "data": None}
 _scan_lock = threading.Lock()
 
 
-def run_scan(max_age=2.0):
-    """The menu bar's scan output, cached briefly so polling clients are cheap.
+_scan_refreshing = {"on": False}
 
-    A full scan takes a second or more on a busy machine, and several phone and
-    desktop clients poll the index a few times a second. The lock covers the
-    scan itself, not just the cache read: releasing it first meant every client
-    that missed the cache launched its own scan, so a cache miss cost N scans at
-    once instead of one that the rest then shared.
+
+def _do_scan():
+    """One real scan.sh run, validated. Raises on anything unhealthy — a scan
+    that died after printing still prints, and a crash that flushed valid JSON
+    on its way out must stay distinguishable from a healthy scan."""
+    proc = subprocess.run(["bash", SCAN_SCRIPT], capture_output=True,
+                          text=True, timeout=20)
+    if proc.returncode != 0:
+        raise RuntimeError(f"scan.sh exited {proc.returncode}: "
+                           f"{proc.stderr.strip()[:200]}")
+    return json.loads(proc.stdout)
+
+
+def _refresh_scan_async():
+    """One background scan; on success it replaces the cache, on failure the
+    stale result simply stays (a failed scan is not a machine with nothing
+    running). Callers set the single-flight flag before spawning."""
+    def worker():
+        data = None
+        try:
+            data = _do_scan()
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError,
+                RuntimeError) as e:
+            sys.stderr.write(f"hub: background scan failed ({type(e).__name__}); "
+                             f"keeping the last good result\n")
+        with _scan_lock:
+            if data is not None:
+                _scan_cache["at"] = time.time()
+                _scan_cache["data"] = data
+            _scan_refreshing["on"] = False
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def run_scan(max_age=2.0):
+    """The menu bar's scan output, served stale-while-revalidate so navigation
+    is never punished by the scan's own latency.
+
+    Fresh enough → serve it. Stale → serve the stale copy IMMEDIATELY and kick
+    exactly one background refresh (single-flight flag; a burst of stale hits
+    must not stampede N scans). Only a true-cold server — nothing cached at
+    all, the first request of the process's life — blocks on the scan, and a
+    cold-start failure returns the honest scan_error shape rather than caching
+    an empty machine as fact.
     """
     with _scan_lock:
         if (_scan_cache["data"] is not None
                 and time.time() - _scan_cache["at"] < max_age):
             return _scan_cache["data"]
+        if _scan_cache["data"] is not None:
+            if not _scan_refreshing["on"]:
+                _scan_refreshing["on"] = True
+                _refresh_scan_async()
+            return _scan_cache["data"]
         try:
-            proc = subprocess.run(["bash", SCAN_SCRIPT], capture_output=True,
-                                  text=True, timeout=20)
-            # A scan that died after printing still prints. Without this, a
-            # crash that flushed valid JSON on its way out is indistinguishable
-            # from a healthy scan, and gets cached as one.
-            if proc.returncode != 0:
-                raise RuntimeError(f"scan.sh exited {proc.returncode}: "
-                                   f"{proc.stderr.strip()[:200]}")
-            data = json.loads(proc.stdout)
+            data = _do_scan()
         except (OSError, subprocess.SubprocessError, json.JSONDecodeError,
                 RuntimeError) as e:
-            # A scan that failed is not a machine with nothing running. Caching
-            # the empty fallback would state that as fact for the next window,
-            # which reads exactly like a quiet afternoon.
             sys.stderr.write(f"hub: scan failed ({type(e).__name__}); "
-                             f"keeping the last good result\n")
-            if _scan_cache["data"] is not None:
-                return _scan_cache["data"]
+                             f"nothing cached yet\n")
             return {"live": [], "history": [], "limits": {}, "aggregates": {},
                     "scan_error": type(e).__name__}
         _scan_cache["at"] = time.time()
@@ -172,12 +202,33 @@ def resolve_session_jsonl(session_id):
 
 
 # Parse results for the live tail, keyed by the bytes' identity. /data is
-# polled every few seconds per open page, and each poll used to re-parse the
-# whole transcript (largest on disk: ~57MB). Bounded: transcripts nobody is
-# watching age out by insertion order. Callers slice on copies, never on the
-# cached object.
-_PARSE_CACHE = {}
-_PARSE_CACHE_MAX = 8
+# polled every few seconds per open page, AND the index fires a peek probe
+# per card on every navigation — ~40 requests across ~20 transcripts. The
+# cache is LRU-bounded at roughly twice a busy fleet, so an ended
+# transcript (whose key never changes again) parses once per server
+# lifetime instead of once per visit; least-recently-watched entries age
+# out. Per-target locks make concurrent peeks of one cold session share a
+# single parse. Callers slice on copies, never on the cached object.
+_PARSE_CACHE = collections.OrderedDict()   # target -> (key, result, src_bytes)
+_PARSE_CACHE_MAX = 48
+# Entries are whole parsed transcripts in RAM, so the entry cap alone is not a
+# memory cap — a fleet of huge files needs a byte bound too. Measured by the
+# SOURCE file size (the parsed form is larger but proportional).
+_PARSE_CACHE_BYTES_MAX = 256 * 1024 * 1024
+_parse_meta = threading.Lock()   # guards _PARSE_CACHE + _parse_locks
+_parse_locks = {}
+
+
+def _parse_cache_evict():
+    """Drop least-recently-used entries until both bounds hold. Caller holds
+    _parse_meta. The newest entry always survives, however large — evicting
+    the thing just parsed would only re-parse it on the next poll."""
+    while len(_PARSE_CACHE) > 1:
+        total = sum(e[2] for e in _PARSE_CACHE.values())
+        if len(_PARSE_CACHE) <= _PARSE_CACHE_MAX and total <= _PARSE_CACHE_BYTES_MAX:
+            break
+        gone, _ = _PARSE_CACHE.popitem(last=False)
+        _parse_locks.pop(gone, None)
 
 def _parse_cached(target):
     try:
@@ -185,14 +236,25 @@ def _parse_cached(target):
     except OSError:
         return transcript.parse_transcript(target)
     key = (st.st_mtime_ns, st.st_size)
-    hit = _PARSE_CACHE.get(target)
-    if hit and hit[0] == key:
-        return hit[1]
-    result = transcript.parse_transcript(target)
-    if target not in _PARSE_CACHE and len(_PARSE_CACHE) >= _PARSE_CACHE_MAX:
-        _PARSE_CACHE.pop(next(iter(_PARSE_CACHE)))
-    _PARSE_CACHE[target] = (key, result)
-    return result
+    with _parse_meta:
+        hit = _PARSE_CACHE.get(target)
+        if hit and hit[0] == key:
+            _PARSE_CACHE.move_to_end(target)
+            return hit[1]
+        lock = _parse_locks.setdefault(target, threading.Lock())
+    with lock:
+        # A racer may have finished this exact parse while we waited.
+        with _parse_meta:
+            hit = _PARSE_CACHE.get(target)
+            if hit and hit[0] == key:
+                _PARSE_CACHE.move_to_end(target)
+                return hit[1]
+        result = transcript.parse_transcript(target)
+        with _parse_meta:
+            _PARSE_CACHE[target] = (key, result, st.st_size)
+            _PARSE_CACHE.move_to_end(target)
+            _parse_cache_evict()
+        return result
 
 
 def sessions_payload():
@@ -266,20 +328,22 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass  # quiet; the hub is a background service
 
-    def _send(self, code, body, ctype):
+    def _send(self, code, body, ctype, cache="no-store", etag=None):
         if isinstance(body, str):
             body = body.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache)
+        if etag:
+            self.send_header("ETag", etag)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def _json(self, code, obj):
+    def _json(self, code, obj, cache="no-store", etag=None):
         self._send(code, json.dumps(obj, ensure_ascii=False),
-                   "application/json; charset=utf-8")
+                   "application/json; charset=utf-8", cache=cache, etag=etag)
 
     def _html(self, code, html):
         self._send(code, html, "text/html; charset=utf-8")
@@ -341,6 +405,21 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
             target = transcript._resolve_agent_file(jsonl, agent)
             if not target:
                 return self._json(404, {"error": f"no sub-agent {agent}"})
+        # Conditional GET: the response is a pure function of (file bytes,
+        # query), so the bytes' identity is an honest ETag and an unchanged
+        # transcript answers 304 with no parse and no body. Ended sessions —
+        # most of the index's peek traffic — never change again, making their
+        # repeat peeks free. A stat race with the parse below can at worst
+        # tag a response with a just-superseded etag; the next poll re-fetches.
+        etag = None
+        try:
+            st = os.stat(target)
+            etag = f'"{st.st_mtime_ns}-{st.st_size}"'
+        except OSError:
+            pass
+        if etag and self.headers.get("If-None-Match") == etag:
+            return self._send(304, b"", "application/json; charset=utf-8",
+                              cache="no-cache", etag=etag)
         try:
             parsed = _parse_cached(target)
         except Exception as e:
@@ -381,7 +460,7 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
             result["records"] = [r for r in result["records"]
                                  if r["seq"] > s or r.get("open")]
             result["meta"]["since"] = s
-        self._json(200, result)
+        self._json(200, result, cache="no-cache", etag=etag)
 
 
 def main(argv):

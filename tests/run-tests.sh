@@ -503,7 +503,7 @@ t_grep "blank query values are kept"        lib/hub-server.py 'keep_blank_values
 t_grep "symlinks cannot escape the root"    lib/hub-server.py 'startswith\(root \+ os.sep\)'
 t_grep "a shrunk group is not frozen"       lib/transcript-app.html 'if \(after === before\) continue'
 
-t_grep "scan runs under the lock, once"     lib/hub-server.py 'The lock covers the'
+t_grep "stale scans refresh single-flight"  lib/hub-server.py 'single-flight'
 t_grep "a failed scan keeps the last good"  lib/hub-server.py 'keeping the last good result'
 t_grep "broken transcript.py warns at boot" lib/hub-server.py 'WARNING: transcript.py failed to import'
 t_grep "parser errors do not reach clients" lib/hub-server.py 'transcript could not be parsed'
@@ -704,6 +704,8 @@ t_grep "hub start verifies the loopback" lib/hub.sh 'healthz'
 t_grep "/data parses through the cache"  lib/hub-server.py 'def _parse_cached'
 t_check "/data cache behaves under real HTTP (isolation, no mutation, eviction)" \
         python3 "$REPO_ROOT/tests/fixtures/hub-cache-probe.py"
+t_check "repeat navigation stays cheap (LRU fleet cache, single-flight, 304s, stale-serve)" \
+        python3 "$REPO_ROOT/tests/fixtures/hub-perf-probe.py"
 t_grep "tab titles primed once per scan" lib/scan.sh '_tab_topics'
 
 t_section "meld bridge (Phase 0)"

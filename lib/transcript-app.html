@@ -801,7 +801,7 @@ const _subFetching = new Set(), _subFailed = new Set();
 function fetchSubagent(agentId) {
     if (_subFetching.has(agentId) || _subFailed.has(agentId)) return;
     _subFetching.add(agentId);
-    fetch(API + 'data?agent=' + encodeURIComponent(agentId), { cache: 'no-store' })
+    fetch(API + 'data?agent=' + encodeURIComponent(agentId), { cache: 'no-cache' })
         .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
         .then(d => { window.SESSION.subagents[agentId] = d; renderChapters(); renderOutline(); updateSpine(); })
         .catch(() => _subFailed.add(agentId))
@@ -1201,7 +1201,7 @@ async function pollLive() {
     if (document.hidden || pollBusy) return;   // don't stack polls; idle tabs stay quiet
     pollBusy = true;
     try {
-        const res = await fetch(API + 'data' + (lastId ? '?after_id=' + encodeURIComponent(lastId) : ''), { cache: 'no-store' });
+        const res = await fetch(API + 'data' + (lastId ? '?after_id=' + encodeURIComponent(lastId) : ''), { cache: 'no-cache' });
         if (!res.ok) throw new Error(res.status);
         const data = await res.json();
         state.meta = data.meta; window.SESSION.meta = data.meta;
@@ -1424,7 +1424,7 @@ setLiveState('working');
 async function boot() {
     setMode('loading');
     try {
-        const res = await fetch(API + 'data', { cache: 'no-store' });
+        const res = await fetch(API + 'data', { cache: 'no-cache' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
         window.SESSION.meta = data.meta;

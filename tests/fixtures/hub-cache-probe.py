@@ -114,7 +114,7 @@ for i in range(12):
     sid = f"ev{i:04d}0000-0000-4000-8000-000000000000"
     mk_session(sid, 1, f"ev{i}")
     fetch(sid)
-check("cache never exceeds max entries (8)", len(hub._PARSE_CACHE) <= hub._PARSE_CACHE_MAX,
+check("cache never exceeds the module's max entries", len(hub._PARSE_CACHE) <= hub._PARSE_CACHE_MAX,
       f"len={len(hub._PARSE_CACHE)}")
 
 # ---- Test 5: adversarial mtime/size collision (crafted, not organic) ----

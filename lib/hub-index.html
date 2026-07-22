@@ -571,10 +571,10 @@ async function primeTail(sid) {
     try {
         let from = tails[sid].lastSeq;
         if (!cached) {
-            const probe = await (await fetch(`/s/${encodeURIComponent(sid)}/data?since=2000000000`, { cache: 'no-store' })).json();
+            const probe = await (await fetch(`/s/${encodeURIComponent(sid)}/data?since=2000000000`, { cache: 'no-cache' })).json();
             from = Math.max(0, ((probe.meta && probe.meta.total_records) || 0) - TAIL_PRIME);
         }
-        const d = await (await fetch(`/s/${encodeURIComponent(sid)}/data?since=${from}`, { cache: 'no-store' })).json();
+        const d = await (await fetch(`/s/${encodeURIComponent(sid)}/data?since=${from}`, { cache: 'no-cache' })).json();
         ingestTail(sid, d.records);
         saveTailCache(sid);
         refreshTailDOM(sid);                     // …revalidated after
@@ -801,7 +801,7 @@ async function fetchFT(sid) {
     if (f.loading) return;
     f.loading = true;
     try {
-        const res = await fetch(`/s/${encodeURIComponent(sid)}/data${f.maxSeq ? `?since=${f.maxSeq}` : ''}`, { cache: 'no-store' });
+        const res = await fetch(`/s/${encodeURIComponent(sid)}/data${f.maxSeq ? `?since=${f.maxSeq}` : ''}`, { cache: 'no-cache' });
         if (!res.ok) throw 0;
         const d = await res.json();
         for (const r of d.records || []) {
@@ -1035,7 +1035,7 @@ async function pollTails() {
         const sid = s.session_id, t = tails[sid];
         if (!sid || !t || t.loading) continue;
         try {
-            const d = await (await fetch(`/s/${encodeURIComponent(sid)}/data?since=${t.lastSeq}`, { cache: 'no-store' })).json();
+            const d = await (await fetch(`/s/${encodeURIComponent(sid)}/data?since=${t.lastSeq}`, { cache: 'no-cache' })).json();
             if (d.records && d.records.length) { ingestTail(sid, d.records); saveTailCache(sid); refreshTailDOM(sid); }
         } catch (e) {}
     }
