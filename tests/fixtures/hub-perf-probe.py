@@ -98,6 +98,43 @@ hub._PARSE_CACHE_BYTES_MAX = 256 * 1024 * 1024
 for sid in sids[:5]:
     http_get(f"/s/{sid}/data")
 
+# ---- Test 1c: eviction is LRU, not FIFO — a re-touched entry survives an
+# eviction a FIFO would have handed it (the gate proved the fleet test alone
+# cannot see ordering; this is the discriminating case) ----
+hub._PARSE_CACHE_MAX = 3
+hub._PARSE_CACHE.clear()
+lr = [f"1c{i:04d}00-0000-4000-8000-000000000000" for i in range(4)]
+for i, sid in enumerate(lr[:3]):
+    write_session(sid, 1, f"lr{i}")
+    http_get(f"/s/{sid}/data")
+http_get(f"/s/{lr[0]}/data")            # re-touch the oldest
+write_session(lr[3], 1, "lr3")
+http_get(f"/s/{lr[3]}/data")            # forces one eviction
+_parse_calls["n"] = 0
+http_get(f"/s/{lr[0]}/data")
+survived = _parse_calls["n"] == 0
+http_get(f"/s/{lr[1]}/data")
+evicted = _parse_calls["n"] == 1
+expect("LRU keeps the re-touched entry and evicts the cold one",
+       survived and evicted, f"touched-reparsed={not survived} cold-cached={not evicted}")
+hub._PARSE_CACHE_MAX = 48
+
+# ---- Test 1d: transcript paths resolve once, not once per request — the
+# recursive projects-tree glob must not run again for a known session ----
+_glob_calls = {"n": 0}
+_real_glob = hub.glob.glob
+def _counting_glob(*a, **kw):
+    _glob_calls["n"] += 1
+    return _real_glob(*a, **kw)
+hub.glob.glob = _counting_glob
+sidG = "1d000000-0000-4000-8000-000000000000"
+write_session(sidG, 1, "g")
+http_get(f"/s/{sidG}/data")
+_glob_calls["n"] = 0
+http_get(f"/s/{sidG}/data")
+expect("a known session's repeat request runs zero tree globs",
+       _glob_calls["n"] == 0, f"globs={_glob_calls['n']}")
+
 # ---- Test 2: concurrent peeks of one uncached session share one parse ----
 sidX = "cafe0000-0000-4000-8000-0000000000ee"
 write_session(sidX, 30, "X")
@@ -127,6 +164,15 @@ if etag:
     st3, h3, b3 = http_get(f"/s/{sidX}/data", {"If-None-Match": etag})
     expect("a grown file ignores the stale ETag and answers 200 fresh",
            st3 == 200 and h3.get("ETag") not in (None, etag), f"status={st3}")
+    # The ETag names the RESPONSE, not the file: carrying the base URL's tag
+    # to a sliced query must never buy a 304 (a false one returns an empty
+    # body where filtered records belong — the gate proved it over HTTP).
+    st4, h4, _ = http_get(f"/s/{sidX}/data?since=999999")
+    st5, _, _ = http_get(f"/s/{sidX}/data?since=999999",
+                         {"If-None-Match": h3.get("ETag") or ""})
+    expect("a base-URL ETag against a sliced query answers 200, never 304",
+           st4 == 200 and st5 == 200 and h4.get("ETag") != h3.get("ETag"),
+           f"plain={st4} crossed={st5}")
 
 # ---- Test 4: stale /api/sessions serves instantly, one background refresh ----
 SLOW = os.path.join(ROOT, "slow-scan.sh")
@@ -172,6 +218,30 @@ dt = time.time() - t0
 expect("cold start blocks once and returns the real scan, never a fabricated empty",
        dt >= 0.7 and hub._scan_cache["data"].get("marker") == "burst",
        f"took {dt:.2f}s cache-marker={(hub._scan_cache['data'] or {}).get('marker')}")
+
+# ---- Test 7: a scan emitting invalid UTF-8 must not wedge the refresher —
+# text=True raises UnicodeDecodeError (outside the original caught tuple),
+# and a stuck single-flight flag would serve stale forever with no recovery.
+with open(SLOW, "wb") as f:
+    f.write(b'#!/bin/bash\necho x >> "' + CNT.encode() + b'"\nprintf "\\xff\\xfe garbage"\n')
+os.chmod(SLOW, 0o755)
+hub._scan_cache["data"] = {"live": [], "marker": "stale-snapshot"}
+hub._scan_cache["at"] = time.time() - 60
+n_before = len(open(CNT).read().split()) if os.path.exists(CNT) else 0
+http_get("/api/sessions")
+deadline = time.time() + 4
+while time.time() < deadline and hub._scan_refreshing["on"]:
+    time.sleep(0.1)
+flag_cleared = not hub._scan_refreshing["on"]
+hub._scan_cache["at"] = time.time() - 60
+http_get("/api/sessions")
+time.sleep(1.0)
+n_after = len(open(CNT).read().split()) if os.path.exists(CNT) else 0
+expect("a garbage-emitting scan clears the flag and later refreshes retry",
+       flag_cleared and n_after >= n_before + 2
+       and hub._scan_cache["data"].get("marker") == "stale-snapshot",
+       f"flag_cleared={flag_cleared} scans={n_after - n_before} "
+       f"marker={hub._scan_cache['data'].get('marker')}")
 
 print()
 print("SUMMARY:", "ALL PASS" if not fails else f"{len(fails)} FAILED: {fails}")

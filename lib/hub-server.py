@@ -40,6 +40,7 @@ import subprocess
 import http.server
 import socketserver
 import urllib.parse
+import zlib
 
 # transcript.py lives next to this file — import it so /data can parse a session
 # directly instead of shelling out per request.
@@ -127,8 +128,11 @@ def _refresh_scan_async():
         try:
             try:
                 data = _do_scan()
-            except (OSError, subprocess.SubprocessError, json.JSONDecodeError,
+            except (OSError, subprocess.SubprocessError, ValueError,
                     RuntimeError) as e:
+                # ValueError covers json.JSONDecodeError AND the
+                # UnicodeDecodeError a text=True subprocess raises when the
+                # scan emits invalid UTF-8 — the gate proved that class real.
                 sys.stderr.write(f"hub: background scan failed ({type(e).__name__}); "
                                  f"keeping the last good result\n")
         finally:
@@ -165,7 +169,7 @@ def run_scan(max_age=2.0):
             return _scan_cache["data"]
         try:
             data = _do_scan()
-        except (OSError, subprocess.SubprocessError, json.JSONDecodeError,
+        except (OSError, subprocess.SubprocessError, ValueError,
                 RuntimeError) as e:
             sys.stderr.write(f"hub: scan failed ({type(e).__name__}); "
                              f"nothing cached yet\n")
@@ -174,6 +178,9 @@ def run_scan(max_age=2.0):
         _scan_cache["at"] = time.time()
         _scan_cache["data"] = data
         return data
+
+
+_jsonl_paths = {}   # session id -> resolved transcript path
 
 
 def resolve_session_jsonl(session_id):
@@ -189,6 +196,13 @@ def resolve_session_jsonl(session_id):
     """
     if not session_id or not re.match(r"^[\w-]+$", session_id):
         return None
+    # A transcript never moves once written, so the recursive walk over the
+    # whole projects tree is paid once per session, not once per request —
+    # the index fires ~40 peek requests per navigation, and each was a full
+    # tree glob. A vanished file falls through to a fresh walk.
+    hit = _jsonl_paths.get(session_id)
+    if hit and os.path.exists(hit):
+        return hit
     hits = glob.glob(os.path.join(PROJECTS_DIR, "**", f"{session_id}.jsonl"),
                      recursive=True)
     # `**` follows symlinked directories, so a single planted link under
@@ -203,6 +217,7 @@ def resolve_session_jsonl(session_id):
         sys.stderr.write(f"hub: {len(hits)} transcripts share id {session_id}; "
                          f"serving the most recently written\n")
         hits.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    _jsonl_paths[session_id] = hits[0]
     return hits[0]
 
 
@@ -233,7 +248,12 @@ def _parse_cache_evict():
         if len(_PARSE_CACHE) <= _PARSE_CACHE_MAX and total <= _PARSE_CACHE_BYTES_MAX:
             break
         gone, _ = _PARSE_CACHE.popitem(last=False)
-        _parse_locks.pop(gone, None)
+        # A lock still HELD belongs to a parse in flight; dropping it would
+        # let a second reader mint a fresh lock and parse the same file
+        # concurrently. Held locks stay; the entry's next eviction cleans up.
+        lk = _parse_locks.get(gone)
+        if lk is None or not lk.locked():
+            _parse_locks.pop(gone, None)
 
 def _parse_cached(target):
     try:
@@ -419,7 +439,13 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
         etag = None
         try:
             st = os.stat(target)
-            etag = f'"{st.st_mtime_ns}-{st.st_size}"'
+            # The query shapes the body (since/after_id/agent slicing), so it
+            # belongs in the validator: an ETag naming only the file would let
+            # any client that carries it across query strings receive a false
+            # 304. Browsers key per-URL and never hit this; intermediaries and
+            # hand-rolled clients can.
+            qcrc = zlib.crc32(self.path.encode("utf-8", "surrogatepass"))
+            etag = f'"{st.st_mtime_ns}-{st.st_size}-{qcrc:08x}"'
         except OSError:
             pass
         if etag and self.headers.get("If-None-Match") == etag:
