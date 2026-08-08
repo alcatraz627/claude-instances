@@ -15,12 +15,14 @@ if [ $rc -ne 0 ]; then
     exit 0
 fi
 
-printf '%s' "$out" | python3 - "$FIXTURE" <<'PY'
-import json, sys
+# The digest travels in an env var: a heredoc feeds python's stdin the script
+# itself, so `printf | python3 - <<PY` silently hands json.load an empty stream.
+DIGEST_JSON="$out" python3 - "$FIXTURE" <<'PY'
+import json, os, sys
 with open(sys.argv[1]) as fh:
     fx = json.load(fh)
 try:
-    live = json.load(sys.stdin)
+    live = json.loads(os.environ["DIGEST_JSON"])
 except ValueError as e:
     print(f"digest emitted non-JSON: {e}")
     sys.exit(1)

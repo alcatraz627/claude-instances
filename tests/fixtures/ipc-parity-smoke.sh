@@ -15,11 +15,13 @@ if [ $rc -ne 0 ]; then
     exit 0
 fi
 
-printf '%s' "$out" | python3 - "$BIN" <<'PY'
-import json, subprocess, sys
+# The digest travels in an env var: a heredoc feeds python's stdin the script
+# itself, so `printf | python3 - <<PY` silently hands json.load an empty stream.
+DIGEST_JSON="$out" python3 - "$BIN" <<'PY'
+import json, os, subprocess, sys
 bin_ = sys.argv[1]
 try:
-    d = json.load(sys.stdin)
+    d = json.loads(os.environ["DIGEST_JSON"])
 except ValueError as e:
     print(f"digest emitted non-JSON: {e}")
     sys.exit(1)
@@ -34,8 +36,12 @@ alias = sess["aliases"][0]
 r = subprocess.run([bin_, "count", alias], capture_output=True, text=True, timeout=5)
 digits = "".join(c for c in (r.stdout or "") if c.isdigit())
 single = int(digits) if digits else 0
-if sess["unread"] != single:
-    print(f"PARITY MISMATCH: digest unread={sess['unread']} vs count={single} for {alias}")
+# count sees the raw mailbox; digest folds chase notices out of unread and
+# reports them in chase_noise_folded (docs/contracts/hub-digest.md).
+expected = sess["unread"] + (sess.get("chase_noise_folded") or 0)
+if expected != single:
+    print(f"PARITY MISMATCH: digest unread={sess['unread']}+folded="
+          f"{expected} vs count={single} for {alias}")
     sys.exit(1)
-print(f"PARITY OK: {alias} unread={single} agrees across both verbs")
+print(f"PARITY OK: {alias} unread+folded={expected} agrees with count={single}")
 PY
