@@ -62,6 +62,10 @@ button, select { font: inherit; cursor: pointer; -webkit-tap-highlight-color: tr
     border: 1.5px solid currentColor; opacity: 0; animation: pulse 2s var(--ease) infinite; }
 @keyframes pulse { 0% { transform: scale(.4); opacity: .8; } 70%,100% { transform: scale(1.1); opacity: 0; } }
 .chip.turn { color: var(--you); background: var(--you-soft); }
+.chip.refresh { color: var(--faint); background: color-mix(in srgb, var(--faint) 10%, transparent); }
+.chip.refresh .pulse { animation: refreshPulse 1.2s ease-in-out infinite; }
+@keyframes refreshPulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .chip.refresh .pulse { animation: none; } }
 .tbtn { height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 11px;
     border: 1px solid var(--edge); border-radius: 999px; background: transparent; color: var(--dim);
     font: 600 12px var(--sans); transition: all var(--t-fast) var(--ease); }
@@ -369,6 +373,7 @@ h1 { font: 650 21px/1.2 var(--sans); letter-spacing: -.014em; margin: 0; }
   <span class="tb-sp"></span>
   <span class="chip live" id="chipLive"></span>
   <span class="chip turn" id="chipTurn"></span>
+  <span class="chip refresh" id="chipRefresh" style="display:none"><span class="pulse"></span>refreshing…</span>
   <select class="tbtn" id="sortSel" title="Sort within groups">
     <option value="urgency">sort: urgency</option>
     <option value="recency">sort: recency</option>
@@ -1006,12 +1011,21 @@ function feedHash() {
         + '|' + JSON.stringify(FEED.recent.map(s => [s.session_id, s.ago]))
         + '|' + JSON.stringify([FEED.limits, FEED.aggregates]);
 }
+let refreshRepoll = 0;
+function setRefreshCue(on) {
+    $('#chipRefresh').style.display = on ? '' : 'none';
+    // A stale serve means fresh data is about one scan away. One quick re-poll
+    // clears the cue and the stale numbers in ~1.5s instead of a full interval.
+    if (on && !refreshRepoll) refreshRepoll = setTimeout(() => { refreshRepoll = 0; pollFeed(); }, 1500);
+}
 async function pollFeed() {
     if (document.hidden && booted) return;
     try {
         const r = await fetch('/api/sessions', { cache: 'no-store' });
         if (!r.ok) throw new Error(r.status);
-        adaptFeed(await r.json());
+        const d = await r.json();
+        setRefreshCue(!!d.refreshing);
+        adaptFeed(d);
         if (!booted) {
             pruneTailCache();
             // Prime every tail BEFORE first paint (time-capped): panes filling

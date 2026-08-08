@@ -106,6 +106,9 @@ _scan_lock = threading.Lock()
 
 _scan_refreshing = {"on": False}
 
+# A stale serve younger than this is routine SWR churn, not worth a cue.
+_STALE_CUE_AGE_S = 15.0
+
 
 def _do_scan():
     """One real scan.sh run, validated. Raises on anything unhealthy — a scan
@@ -157,16 +160,22 @@ def run_scan(max_age=2.0):
     all, the first request of the process's life — blocks on the scan, and a
     cold-start failure returns the honest scan_error shape rather than caching
     an empty machine as fact.
+
+    Returns (data, refreshing): True only when the stale copy being served is
+    old enough to mislead (> _STALE_CUE_AGE_S, i.e. after tab-hidden or sleep),
+    so the UI can say so. Routine 2-5s SWR churn stays silent: with a visible
+    tab polling every 5s, nearly every serve is technically stale.
     """
     with _scan_lock:
         if (_scan_cache["data"] is not None
                 and time.time() - _scan_cache["at"] < max_age):
-            return _scan_cache["data"]
+            return _scan_cache["data"], False
         if _scan_cache["data"] is not None:
+            age = time.time() - _scan_cache["at"]
             if not _scan_refreshing["on"]:
                 _scan_refreshing["on"] = True
                 _refresh_scan_async()
-            return _scan_cache["data"]
+            return _scan_cache["data"], age > _STALE_CUE_AGE_S
         try:
             data = _do_scan()
         except (OSError, subprocess.SubprocessError, ValueError,
@@ -174,10 +183,10 @@ def run_scan(max_age=2.0):
             sys.stderr.write(f"hub: scan failed ({type(e).__name__}); "
                              f"nothing cached yet\n")
             return {"live": [], "history": [], "limits": {}, "aggregates": {},
-                    "scan_error": type(e).__name__}
+                    "scan_error": type(e).__name__}, False
         _scan_cache["at"] = time.time()
         _scan_cache["data"] = data
-        return data
+        return data, False
 
 
 _jsonl_paths = {}   # session id -> resolved transcript path
@@ -288,7 +297,7 @@ def sessions_payload():
     Live rows carry the rich at-a-glance fields (ctx, state, last prompt, cost);
     history rows are leaner. Both expose the session_id the index links to.
     """
-    scan = run_scan()
+    scan, refreshing = run_scan()
     live = []
     for inst in scan.get("live", []):
         sl = inst.get("statusline") or {}
@@ -337,6 +346,7 @@ def sessions_payload():
         "recent": recent,
         "limits": scan.get("limits", {}),
         "aggregates": scan.get("aggregates", {}),
+        "refreshing": refreshing,
     }
 
 
