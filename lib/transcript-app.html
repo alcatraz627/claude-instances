@@ -325,6 +325,9 @@ main { flex: 1; min-width: 0; padding: 0 20px 30vh; }
 .sk { border-radius: var(--r); background: linear-gradient(90deg, var(--well) 25%, var(--sel) 40%, var(--well) 60%);
     background-size: 200% 100%; animation: shimmer 1.4s linear infinite; }
 @keyframes shimmer { to { background-position: -200% 0; } }
+.anchor-miss { display: flex; align-items: center; gap: 10px; margin: 12px 0; padding: 10px 14px; border: 1px solid var(--edge); border-left: 3px solid var(--edge2); border-radius: var(--r); color: var(--dim); font-size: 12.5px; }
+.anchor-miss b { font-weight: 650; }
+.anchor-miss button { margin-left: auto; height: 26px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--edge); background: transparent; color: var(--dim); cursor: pointer; }
 .errbanner { display: flex; align-items: center; gap: 12px; margin: 40px 0; padding: 14px 16px;
     border: 1px solid color-mix(in srgb, var(--err) 40%, transparent); border-left: 3px solid var(--err);
     border-radius: var(--r); background: var(--err-soft); font-size: 14px; }
@@ -1010,10 +1013,25 @@ function applyHash() {
         const ch = state.chapters.findIndex(c => c.firstSeq <= seq && (c.items.length ? c.items[c.items.length - 1].seq >= seq : c.firstSeq === seq));
         if (ch >= 0) el = document.querySelector(`.chapter[data-ch="${ch}"]`);
     }
-    if (el) el.classList.add('linked');
+    if (!el) { showAnchorMiss(seq); return; }   // dead deep link: calm notice, no jump
+    clearAnchorMiss();
+    el.classList.add('linked');
     jumpToSeq(seq);
     if (m[2]) highlightIn(el, decodeURIComponent(m[2]));
 }
+/* A #r<seq> that matches nothing (older run, trimmed transcript) gets a quiet
+   dismissible row above the chapters instead of a silent no-op. */
+function showAnchorMiss(seq) {
+    clearAnchorMiss();
+    const n = document.createElement('div');
+    n.className = 'anchor-miss'; n.id = 'anchorMiss';
+    n.innerHTML = `<span>Record <b>#r${seq}</b> isn't in this transcript. ` +
+        `The link may come from an older or trimmed run.</span><button>dismiss</button>`;
+    n.querySelector('button').onclick = clearAnchorMiss;
+    const host = document.querySelector('#chapters') || document.body;
+    host.prepend(n);
+}
+function clearAnchorMiss() { document.getElementById('anchorMiss')?.remove(); }
 addEventListener('hashchange', applyHash);
 function updateSpine() {
     document.querySelectorAll('#spine span').forEach((s, i) => {
