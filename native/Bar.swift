@@ -23,6 +23,11 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// and the screen may still lock. Persisted so it survives bar restarts.
     private let keepAwakeKey = "keepAwakeEnabled"
     private var keepAwakeOn = false
+
+    // Kanban board server state — nil until the first probe answers.
+    private var kanbanUp: Bool?
+    private var kanbanBusy = false
+    private weak var kanbanItem: NSMenuItem?
     private var keepAwakeAssertionID: IOPMAssertionID = 0
 
     /// Tick counter for quick/full scan alternation.
@@ -418,6 +423,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // off immediately so the user sees freshest possible data without
         // waiting up to `refreshInterval` seconds.
         if !refreshPaused { refreshData() }
+        probeKanban()
     }
 
     func menuDidClose(_ menu: NSMenu) {
@@ -1082,6 +1088,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         addAction(menu, "New Session", #selector(newSession), icon: "plus.circle", key: "n")
         addAction(menu, "Dashboard", #selector(openDashboard), icon: "rectangle.3.group", key: "d")
         addKeepAwakeItem(menu)
+        addKanbanItem(menu)
         addAction(menu, "Settings…", #selector(openSettings), icon: "gearshape", key: ",")
         addAction(menu, "Sessions (phone)", #selector(openHubIndex), icon: "iphone")
         addRefreshMenu(menu)
@@ -1257,6 +1264,89 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         i.toolTip = "Prevent idle system sleep so remote (claude.ai) sessions stay connected on battery. The display still sleeps and locks normally."
         menu.addItem(i)
+    }
+
+    // ── Kanban board server (pm2 "kanban", :5106) ────────────────────────────
+    // The bar IS the on/off surface: no launchd, off after reboot by design.
+
+    private func addKanbanItem(_ menu: NSMenu) {
+        let i = NSMenuItem(title: "Kanban Board",
+                           action: #selector(toggleKanban(_:)), keyEquivalent: "")
+        i.target = self
+        styleKanbanItem(i)
+        kanbanItem = i
+        menu.addItem(i)
+    }
+
+    /// Shared styling for build and in-place refresh, keep-awake's pattern:
+    /// green filled icon while serving, template icon + base color when off.
+    private func styleKanbanItem(_ i: NSMenuItem) {
+        let up = kanbanUp == true
+        i.state = up ? .on : .off
+        i.isEnabled = !kanbanBusy
+        let suffix = kanbanBusy ? "   …" : (kanbanUp == nil ? "" : (up ? "   on :5106" : "   off"))
+        i.attributedTitle = NSAttributedString(string: "  Kanban Board\(suffix)", attributes: [
+            .font: NSFont.systemFont(ofSize: 13),
+            .foregroundColor: up ? NSColor.systemGreen : NSColor.labelColor,
+        ])
+        if var img = NSImage(systemSymbolName: up ? "rectangle.split.3x1.fill" : "rectangle.split.3x1",
+                             accessibilityDescription: nil) {
+            var cfg = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+            if up {
+                cfg = cfg.applying(.init(paletteColors: [.systemGreen]))
+            }
+            img = img.withSymbolConfiguration(cfg) ?? img
+            img.isTemplate = !up
+            i.image = img
+        }
+        i.toolTip = up
+            ? "The kanban board is serving on http://localhost:5106 — click to stop it."
+            : "Start the kanban board server (pm2, port 5106). It stays off across reboots; this menu is where it comes back."
+    }
+
+    /// One cheap liveness probe; async so the menu never waits on it.
+    private func probeKanban() {
+        guard !kanbanBusy, let url = URL(string: "http://127.0.0.1:5106/api/boards") else { return }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 1.0
+        URLSession.shared.dataTask(with: req) { [weak self] _, resp, _ in
+            let up = (resp as? HTTPURLResponse)?.statusCode == 200
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.kanbanUp = up
+                if let item = self.kanbanItem { self.styleKanbanItem(item) }
+            }
+        }.resume()
+    }
+
+    @objc private func toggleKanban(_ sender: NSMenuItem) {
+        guard !kanbanBusy else { return }
+        let stopping = kanbanUp == true
+        kanbanBusy = true
+        styleKanbanItem(sender)
+        dlog("kanban: \(stopping ? "stop" : "start")")
+        // zsh -lc so pm2 resolves from the login PATH (GUI apps don't get it).
+        let cmd = stopping
+            ? "pm2 stop kanban"
+            : "pm2 start kanban 2>/dev/null || pm2 start bun --name kanban -- \"$HOME/.claude/scripts/kanban/server.ts\" --port 5106"
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        task.arguments = ["-lc", cmd]
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError  = FileHandle.nullDevice
+        task.terminationHandler = { [weak self] _ in
+            // Give the server a beat to bind or release the port, then re-probe.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                guard let self = self else { return }
+                self.kanbanBusy = false
+                self.probeKanban()
+            }
+        }
+        do { try task.run() } catch {
+            derr("kanban toggle failed: \(fmtErr(error))")
+            kanbanBusy = false
+            probeKanban()
+        }
     }
 
     // ── Action handlers ──────────────────────────────────────────────────────
