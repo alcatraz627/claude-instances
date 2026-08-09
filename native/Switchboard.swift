@@ -35,9 +35,12 @@ enum Guards {
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: SwitchboardPaths.hooksDir)
         else { return [] }
         var found = Set<String>()
-        // Matches ".no-foo", ".allow-bar", ".baz-off" as they appear in hook source.
+        // Sentinels are not all flat: several hooks read one directory deeper
+        // (atone/.gate-off, atone/.add-warn-off), and a missed sentinel is a
+        // muted guard that never appears, which is the failure this group exists
+        // to prevent. The optional path segment is what catches those.
         let re = try? NSRegularExpression(
-            pattern: #"\.claude/(\.(?:no|allow)-[a-z0-9-]+|\.[a-z0-9-]+-(?:off|gate|guard))"#)
+            pattern: #"\.claude/((?:[a-z0-9-]+/)?(?:\.(?:no|allow)-[a-z0-9-]+|\.[a-z0-9-]+-(?:off|gate|guard)))"#)
         for f in files where f.hasSuffix(".sh") {
             guard let body = try? String(contentsOfFile: SwitchboardPaths.hooksDir + "/" + f,
                                          encoding: .utf8) else { continue }
@@ -61,7 +64,9 @@ enum Guards {
             let path = SwitchboardPaths.gccRoot + "/" + sentinel
             guard fm.fileExists(atPath: path) else { return nil }
             let when = (try? fm.attributesOfItem(atPath: path)[.creationDate]) as? Date
-            var name = sentinel
+            // A sentinel may carry a directory ("atone/.gate-off"); the readable
+            // name comes from the basename with its marker prefix stripped.
+            var name = (sentinel as NSString).lastPathComponent
             for prefix in [".no-", ".allow-"] where name.hasPrefix(prefix) {
                 name = String(name.dropFirst(prefix.count))
             }
@@ -136,12 +141,16 @@ enum SettingsFlag: String, CaseIterable {
 }
 
 enum Settings {
-    static func read() -> [String: Any] {
+    /// nil means absent, unreadable, or not a JSON object. Distinct from an
+    /// empty object, which is a legitimate config.
+    static func readObject() -> [String: Any]? {
         guard let d = FileManager.default.contents(atPath: SwitchboardPaths.settingsJSON),
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any]
-        else { return [:] }
+        else { return nil }
         return o
     }
+
+    static func read() -> [String: Any] { readObject() ?? [:] }
 
     static func bool(_ f: SettingsFlag) -> Bool {
         read()[f.rawValue] as? Bool ?? false
@@ -160,23 +169,48 @@ enum Settings {
     @discardableResult
     static func write(key: String, value: Any) -> Bool {
         let path = SwitchboardPaths.settingsJSON
-        var obj = read()
-        guard !obj.isEmpty else { return false }   // never create from nothing
+        // Never invent a config: refuse when the file is absent or unreadable.
+        // A valid but empty object is a real config and may be written to, which
+        // an isEmpty check alone could not tell apart.
+        guard FileManager.default.contents(atPath: path) != nil else { return false }
+        guard var obj = readObject() else { return false }
         obj[key] = value
         guard let out = try? JSONSerialization.data(withJSONObject: obj,
                                                     options: [.prettyPrinted, .sortedKeys])
         else { return false }
-        let backup = path + ".bak-" + String(Int(Date().timeIntervalSince1970))
-        try? FileManager.default.copyItem(atPath: path, toPath: backup)
         let tmp = path + ".tmp-\(getpid())"
         guard (try? out.write(to: URL(fileURLWithPath: tmp), options: .atomic)) != nil else { return false }
+
+        // Back up only once the replacement is staged and about to happen, so a
+        // write that fails leaves no backup behind.
+        let backup = path + backupTag + String(Int(Date().timeIntervalSince1970))
+        try? FileManager.default.copyItem(atPath: path, toPath: backup)
         do {
             _ = try FileManager.default.replaceItemAt(URL(fileURLWithPath: path),
                                                       withItemAt: URL(fileURLWithPath: tmp))
+            pruneBackups()
             return true
         } catch {
             try? FileManager.default.removeItem(atPath: tmp)
+            try? FileManager.default.removeItem(atPath: backup)
             return false
+        }
+    }
+
+    /// Our own backups carry a tag so pruning can never touch the ones other
+    /// tools leave beside settings.json (bak-cligating, bak-pushgate, and so on).
+    static let backupTag = ".bak-switchboard-"
+
+    static let backupsKept = 5
+
+    private static func pruneBackups() {
+        let dir = (SwitchboardPaths.settingsJSON as NSString).deletingLastPathComponent
+        let prefix = (SwitchboardPaths.settingsJSON as NSString).lastPathComponent + backupTag
+        guard let all = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return }
+        let mine = all.filter { $0.hasPrefix(prefix) }.sorted()
+        guard mine.count > backupsKept else { return }
+        for stale in mine.prefix(mine.count - backupsKept) {
+            try? FileManager.default.removeItem(atPath: dir + "/" + stale)
         }
     }
 }

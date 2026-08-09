@@ -45,6 +45,22 @@ try? "[ -f \"$HOME/.claude/.allow-fable-subagents\" ]".write(
 check("deliberate policy lift is not listed as muted",
       !Guards.muted().contains { $0.sentinel == ".allow-fable-subagents" })
 
+// Regression: a sentinel one directory deeper was invisible, so a muted guard
+// never appeared. Found by the validation gate 2026-08-10.
+try? fm.createDirectory(atPath: fixture + "/atone", withIntermediateDirectories: true)
+try? "[ -f \"$HOME/.claude/atone/.gate-off\" ] && exit 0".write(
+    toFile: fixture + "/scripts/hooks/nested.sh", atomically: true, encoding: .utf8)
+check("discovers a nested sentinel", Guards.knownSentinels().contains("atone/.gate-off"),
+      Guards.knownSentinels().joined(separator: ","))
+fm.createFile(atPath: fixture + "/atone/.gate-off", contents: nil)
+let nested = Guards.muted().first { $0.sentinel == "atone/.gate-off" }
+check("a nested sentinel reads as muted", nested != nil)
+check("its display name drops the directory", nested?.name == "gate-off", nested?.name ?? "nil")
+if let n = nested {
+    check("re-arm deletes a nested sentinel",
+          Guards.rearm(n) && !fm.fileExists(atPath: fixture + "/atone/.gate-off"))
+}
+
 print("\n── push approvals ──")
 fm.createFile(atPath: fixture + "/.push-approved-DEADSESSION", contents: nil)
 fm.createFile(atPath: fixture + "/.push-approved-LIVESESSION", contents: nil)
@@ -79,8 +95,41 @@ check("every untouched key survives",
       && (after["env"] as? [String: Any])?["STATUSLINE_PROFILE"] as? String == "custom"
       && after["skipAutoPermissionPrompt"] as? Bool == true,
       "\(after.keys.sorted())")
-check("a backup was written", (try? fm.contentsOfDirectory(atPath: fixture))?.contains { $0.hasPrefix("settings.json.bak-") } == true)
+check("a backup was written", (try? fm.contentsOfDirectory(atPath: fixture))?.contains { $0.contains(Settings.backupTag) } == true)
 check("no temp file left behind", (try? fm.contentsOfDirectory(atPath: fixture))?.contains { $0.contains(".tmp-") } == false)
+
+// Regressions from the validation gate: backups grew without bound, were left
+// behind by writes that failed, and pruning must never touch other tools' files.
+fm.createFile(atPath: fixture + "/settings.json.bak-cligating-20260521", contents: Data("other tool".utf8))
+for i in 0..<9 { _ = Settings.write(key: "effortLevel", value: "high"); _ = i; usleep(1_100_000) }
+let backupsNow = ((try? fm.contentsOfDirectory(atPath: fixture)) ?? []).filter { $0.contains(Settings.backupTag) }
+check("backups are capped", backupsNow.count <= Settings.backupsKept, "\(backupsNow.count) kept")
+check("another tool's backup is never pruned",
+      fm.fileExists(atPath: fixture + "/settings.json.bak-cligating-20260521"))
+
+let ro = fixture + "/ro"
+try? fm.createDirectory(atPath: ro, withIntermediateDirectories: true)
+try! seedData.write(to: URL(fileURLWithPath: ro + "/settings.json"))
+try? fm.setAttributes([.posixPermissions: 0o444], ofItemAtPath: ro + "/settings.json")
+try? fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: ro)
+SwitchboardPaths.gccRoot = ro
+let roOK = Settings.write(key: "effortLevel", value: "low") == false
+let roClean = ((try? fm.contentsOfDirectory(atPath: ro)) ?? []).filter { $0 != "settings.json" }.isEmpty
+check("a failed write leaves no backup or temp", roOK && roClean,
+      ((try? fm.contentsOfDirectory(atPath: ro)) ?? []).joined(separator: ","))
+try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ro)
+SwitchboardPaths.gccRoot = fixture
+
+// A valid but empty config is a real config, distinct from an unreadable one.
+let emptyCfg = fixture + "/emptycfg"
+try? fm.createDirectory(atPath: emptyCfg, withIntermediateDirectories: true)
+try! Data("{}".utf8).write(to: URL(fileURLWithPath: emptyCfg + "/settings.json"))
+SwitchboardPaths.gccRoot = emptyCfg
+check("a valid empty config can be written to", Settings.write(key: "effortLevel", value: "low"))
+check("and reads back", Settings.effortLevel() == "low")
+try! Data("not json".utf8).write(to: URL(fileURLWithPath: emptyCfg + "/settings.json"))
+check("an unreadable config is still refused", Settings.write(key: "x", value: 1) == false)
+SwitchboardPaths.gccRoot = fixture
 
 // Refuse to invent a config where none exists. The directory must EXIST with the
 // file missing: pointing at a missing directory proves nothing, because the write

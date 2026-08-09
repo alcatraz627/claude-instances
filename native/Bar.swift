@@ -1454,15 +1454,17 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let m = NSMenu()
         m.autoenablesItems = false
         let f = DateFormatter(); f.dateFormat = "d MMM"
-        for g in sbSnapshot.muted {
-            let when = g.mutedAt.map { "muted \(f.string(from: $0))" } ?? "muted"
-            addSBRow(m, SBRow(label: g.name, badge: .off, note: when,
-                              onClick: { [weak self] in
-                                  Guards.rearm(g)
-                                  self?.refreshSnapshot()
-                              },
-                              tip: "Click to re-arm this guard. Muting again stays a deliberate touch in a shell."))
+        let rows = sbSnapshot.muted.map { g in
+            SBRow(label: g.name, badge: .off,
+                  note: g.mutedAt.map { "muted \(f.string(from: $0))" } ?? "muted",
+                  onClick: { [weak self] in
+                      Guards.rearm(g)
+                      self?.refreshSnapshot()
+                  },
+                  tip: "Click to re-arm this guard. Muting again stays a deliberate touch in a shell.")
         }
+        let column = sbLabelColumn(rows)
+        for r in rows { addSBRow(m, r, labelColumn: column) }
         m.addItem(.separator())
         addSBNote(m, "Click re-arms. Muting stays a deliberate touch.")
         return m
@@ -1471,17 +1473,19 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func sbPromptsMenu() -> NSMenu {
         let m = NSMenu()
         m.autoenablesItems = false
-        for flag in SettingsFlag.allCases where flag.isSuppressor {
+        // The row reads as the PROMPT, not the skip, so "on" always means the
+        // safer state and a stray click can only add friction.
+        let rows = SettingsFlag.allCases.filter { $0.isSuppressor }.map { flag -> SBRow in
             let suppressed = sbSnapshot.prompts[flag] ?? false
-            // The row reads as the PROMPT, not the skip, so "on" always means
-            // the safer state and a stray click can only add friction.
-            addSBRow(m, SBRow(label: flag.label,
-                              badge: suppressed ? .off : .on(menuGreen),
-                              note: suppressed ? "suppressed" : "asks first",
-                              onClick: { [weak self] in self?.sbTogglePrompt(flag, suppressed: suppressed) },
-                              tip: suppressed ? "Click to bring this confirmation back."
-                                              : "This prompt is active. Suppressing it will ask for confirmation."))
+            return SBRow(label: flag.label,
+                         badge: suppressed ? .off : .on(menuGreen),
+                         note: suppressed ? "suppressed" : "asks first",
+                         onClick: { [weak self] in self?.sbTogglePrompt(flag, suppressed: suppressed) },
+                         tip: suppressed ? "Click to bring this confirmation back."
+                                         : "This prompt is active. Suppressing it will ask for confirmation.")
         }
+        let column = sbLabelColumn(rows)
+        for r in rows { addSBRow(m, r, labelColumn: column) }
         m.addItem(.separator())
         addSBNote(m, "Restoring a prompt is one click. Suppressing one asks.")
         return m
@@ -1609,9 +1613,21 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// One rail row: label, badge, consequence. Every metric derives from
     /// BarFont.scaled so the rail survives the Display Sizing multiplier.
-    private func addSBRow(_ menu: NSMenu, _ r: SBRow) {
+    /// Widest label in a group, so the rail is sized by its content instead of a
+    /// constant that silently clips when a label grows. "Permission prompts"
+    /// already overran the old 112pt column at the default scale.
+    private func sbLabelColumn(_ rows: [SBRow]) -> CGFloat {
+        let widest = rows.map { r -> CGFloat in
+            let f = NSTextField(labelWithString: r.label)
+            f.font = BarFont.body
+            return ceil(f.attributedStringValue.size().width)
+        }.max() ?? BarFont.scaled(112)
+        return min(max(widest + BarFont.scaled(12), BarFont.scaled(96)), BarFont.scaled(190))
+    }
+
+    private func addSBRow(_ menu: NSMenu, _ r: SBRow, labelColumn: CGFloat? = nil) {
         let padL   = BarFont.scaled(18)
-        let labelW = BarFont.scaled(112)
+        let labelW = labelColumn ?? BarFont.scaled(112)
         let badgeW = BarFont.scaled(40)
         let noteW  = BarFont.scaled(140)
         let h      = BarFont.scaled(26)
@@ -1709,10 +1725,11 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ("SESSION",  sbSessionRows()),
             ("FEED",     sbFeedRows()),
         ]
+        let column = sbLabelColumn(groups.flatMap { $0.1 })
         for (i, g) in groups.enumerated() where !g.1.isEmpty {
             if i > 0 { m.addItem(.separator()) }
             addSwitchboardHeader(m, g.0)
-            for row in g.1 { addSBRow(m, row) }
+            for row in g.1 { addSBRow(m, row, labelColumn: column) }
             if g.0 == "COST" { m.addItem(effortStripItem()) }
             if g.0 == "FEED" { m.addItem(cadenceStripItem()) }
         }
