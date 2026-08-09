@@ -1,0 +1,124 @@
+// Drives the real Switchboard state layer headlessly: reads against ground
+// truth, mutations against a throwaway fixture tree, and the row click path.
+// Run: bash tests/fixtures/switchboard-probe.sh
+import AppKit
+
+var failures: [String] = []
+func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+    print(String(format: "  %@ %@%@", ok ? "PASS" : "FAIL", name,
+                 detail.isEmpty ? "" : "   (\(detail))"))
+    if !ok { failures.append(name) }
+}
+
+// ── Fixture tree: every mutation runs here, never against the real config ────
+let fixture = NSTemporaryDirectory() + "sb-probe-\(getpid())"
+let fm = FileManager.default
+try? fm.createDirectory(atPath: fixture + "/scripts/hooks", withIntermediateDirectories: true)
+
+// A hook that looks for two sentinels, so discovery is exercised on real syntax.
+try? """
+#!/bin/bash
+[ -f "$HOME/.claude/.no-fixture-gate" ] && exit 0
+[ -f "$HOME/.claude/.fixture-thing-off" ] && exit 0
+""".write(toFile: fixture + "/scripts/hooks/fake-hook.sh", atomically: true, encoding: .utf8)
+
+let realRoot = SwitchboardPaths.gccRoot
+SwitchboardPaths.gccRoot = fixture
+
+print("\n── guard discovery + re-arm ──")
+let known = Guards.knownSentinels()
+check("discovers sentinels by reading hooks", known.contains(".no-fixture-gate") && known.contains(".fixture-thing-off"),
+      known.joined(separator: ","))
+check("no sentinel file means nothing muted", Guards.muted().isEmpty)
+
+fm.createFile(atPath: fixture + "/.no-fixture-gate", contents: nil)
+let muted = Guards.muted()
+check("an existing sentinel reads as muted", muted.count == 1 && muted.first?.name == "fixture-gate",
+      muted.map { $0.name }.joined())
+check("re-arm deletes the sentinel", Guards.rearm(muted[0]) && !fm.fileExists(atPath: fixture + "/.no-fixture-gate"))
+check("re-arm on an armed guard is a no-op, not a crash", Guards.rearm(muted[0]) == false)
+
+// The policy lift must never appear as something to undo.
+fm.createFile(atPath: fixture + "/.allow-fable-subagents", contents: nil)
+try? "[ -f \"$HOME/.claude/.allow-fable-subagents\" ]".write(
+    toFile: fixture + "/scripts/hooks/fable.sh", atomically: true, encoding: .utf8)
+check("deliberate policy lift is not listed as muted",
+      !Guards.muted().contains { $0.sentinel == ".allow-fable-subagents" })
+
+print("\n── push approvals ──")
+fm.createFile(atPath: fixture + "/.push-approved-DEADSESSION", contents: nil)
+fm.createFile(atPath: fixture + "/.push-approved-LIVESESSION", contents: nil)
+let approvals = PushApprovals.armed(liveSessionIDs: ["LIVESESSION"])
+check("both approvals found", approvals.count == 2)
+check("dead session flagged not-live", approvals.contains { $0.sessionID == "DEADSESSION" && !$0.sessionIsLive })
+check("live session flagged live", approvals.contains { $0.sessionID == "LIVESESSION" && $0.sessionIsLive })
+if let dead = approvals.first(where: { $0.sessionID == "DEADSESSION" }) {
+    check("clear removes the approval", PushApprovals.clear(dead) && !fm.fileExists(atPath: fixture + "/.push-approved-DEADSESSION"))
+}
+
+print("\n── settings.json write safety ──")
+let seed: [String: Any] = [
+    "alwaysThinkingEnabled": true, "effortLevel": "xhigh",
+    "skipAutoPermissionPrompt": true,
+    "enabledPlugins": ["a@m": true, "b@m": false],
+    "env": ["STATUSLINE_PROFILE": "custom"],
+    "unrelatedKey": "must survive",
+]
+let seedData = try! JSONSerialization.data(withJSONObject: seed, options: .prettyPrinted)
+try! seedData.write(to: URL(fileURLWithPath: fixture + "/settings.json"))
+
+check("reads a bool flag", Settings.bool(.alwaysThinking) == true)
+check("reads the effort enum", Settings.effortLevel() == "xhigh")
+check("write returns true", Settings.write(key: "effortLevel", value: "medium"))
+check("written value round-trips", Settings.effortLevel() == "medium")
+
+let after = Settings.read()
+check("every untouched key survives",
+      after["unrelatedKey"] as? String == "must survive"
+      && (after["enabledPlugins"] as? [String: Any])?.count == 2
+      && (after["env"] as? [String: Any])?["STATUSLINE_PROFILE"] as? String == "custom"
+      && after["skipAutoPermissionPrompt"] as? Bool == true,
+      "\(after.keys.sorted())")
+check("a backup was written", (try? fm.contentsOfDirectory(atPath: fixture))?.contains { $0.hasPrefix("settings.json.bak-") } == true)
+check("no temp file left behind", (try? fm.contentsOfDirectory(atPath: fixture))?.contains { $0.contains(".tmp-") } == false)
+
+// Refuse to invent a config where none exists. The directory must EXIST with the
+// file missing: pointing at a missing directory proves nothing, because the write
+// then fails on the absent parent rather than on the guard. (Caught by mutation:
+// deleting the guard left that weaker version of this check green.)
+let emptyRoot = fixture + "/empty-root"
+try? fm.createDirectory(atPath: emptyRoot, withIntermediateDirectories: true)
+SwitchboardPaths.gccRoot = emptyRoot
+check("refuses to create settings.json when the dir exists but the file does not",
+      Settings.write(key: "x", value: 1) == false
+      && !fm.fileExists(atPath: emptyRoot + "/settings.json"))
+SwitchboardPaths.gccRoot = fixture
+
+print("\n── row click path (the defect class that shipped inert) ──")
+var clicks = 0
+let row = MenuRowView(frame: NSRect(x: 0, y: 0, width: 240, height: 26))
+row.onClick = { clicks += 1 }
+let ev = NSEvent.mouseEvent(with: .leftMouseUp, location: NSPoint(x: 60, y: 12),
+                            modifierFlags: [], timestamp: 0, windowNumber: 0,
+                            context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+row.mouseUp(with: ev)
+check("an enabled row fires", clicks == 1)
+row.rowEnabled = false
+row.mouseUp(with: ev)
+check("a disabled row stays inert", clicks == 1)
+
+print("\n── reads against the real config (no mutation) ──")
+SwitchboardPaths.gccRoot = realRoot
+let realMuted = Guards.muted()
+let shellCount = Services.shell("/bin/zsh", ["-lc",
+    "ls -a \(realRoot) | grep -E '^\\.(no|allow)-|-off$' | grep -v fable | wc -l"])
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+check("muted count matches the shell's view", String(realMuted.count) == shellCount,
+      "swift=\(realMuted.count) shell=\(shellCount)")
+check("settings.json parses", !Settings.read().isEmpty)
+
+try? fm.removeItem(atPath: fixture)
+print("\n" + (failures.isEmpty
+      ? "ALL PASS (\(failures.count) failures)"
+      : "FAILURES: " + failures.joined(separator: ", ")))
+exit(failures.isEmpty ? 0 : 1)
