@@ -1253,8 +1253,9 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func buildSwitchboard() -> NSMenu {
         let m = NSMenu()
+        m.autoenablesItems = false   // matches the main menu; we own enablement
         switchboardMenu = m
-        refreshSwitchboard()
+        rebuildSwitchboard()         // synchronous: the menu must be populated on return
         return m
     }
 
@@ -1276,9 +1277,10 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let badgeW = BarFont.scaled(46)
         let noteW  = BarFont.scaled(126)
         let h      = BarFont.scaled(26)
-        let v = NSView(frame: NSRect(x: 0, y: 0,
-                                     width: padL + labelW + badgeW + noteW + BarFont.scaled(14),
-                                     height: h))
+        let v = MenuRowView(frame: NSRect(x: 0, y: 0,
+                                          width: padL + labelW + badgeW + noteW + BarFont.scaled(14),
+                                          height: h))
+        v.rowEnabled = enabled
 
         let name = NSTextField(labelWithString: r.label)
         name.font = BarFont.body
@@ -1300,8 +1302,12 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             width: noteW, height: noteH)
         v.addSubview(note)
 
-        let item = NSMenuItem(title: r.label, action: action, keyEquivalent: "")
-        item.target = self
+        // The view owns the mouse, so the click is wired here, not via the
+        // item's action (a view-based item never sends one).
+        let item = NSMenuItem(title: r.label, action: nil, keyEquivalent: "")
+        v.onClick = { [weak self] in
+            _ = self?.perform(action, with: item)
+        }
         item.view = v
         item.isEnabled = enabled
         item.toolTip = tip
@@ -1350,6 +1356,12 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Rebuild the switchboard's rows in place. A toggle changes state while the
     /// submenu is on screen, and its rows are views, so restyling is not enough.
     private func refreshSwitchboard() {
+        // Hop a tick: a row triggers this from inside its own mouseUp, and
+        // replacing the view mid-event is not safe.
+        DispatchQueue.main.async { [weak self] in self?.rebuildSwitchboard() }
+    }
+
+    private func rebuildSwitchboard() {
         guard let m = switchboardMenu else { return }
         m.removeAllItems()
         let rows = switchboardRows

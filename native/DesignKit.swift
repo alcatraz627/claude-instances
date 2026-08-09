@@ -154,6 +154,58 @@ func makeStateBadge(_ text: String, tint: NSColor?) -> NSView {
     return v
 }
 
+// ── Clickable menu row ───────────────────────────────────────────────────────
+// An NSMenuItem with a custom `view` never sends its action: the view owns the
+// mouse. Any interactive row must therefore handle the click itself, and draw
+// its own hover highlight, since AppKit highlights only standard items.
+// Verified by probe before this class existed.
+
+final class MenuRowView: NSView {
+    var onClick: (() -> Void)?
+    var rowEnabled = true
+    /// Keep the menu up after a click so several switches can be flipped in one
+    /// visit. Set false for rows that navigate or act once.
+    var staysOpen = true
+
+    private var hovered = false
+    private var trackingAreaRef: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = trackingAreaRef { removeTrackingArea(t) }
+        let t = NSTrackingArea(rect: bounds,
+                               options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                               owner: self, userInfo: nil)
+        addTrackingArea(t)
+        trackingAreaRef = t
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        guard rowEnabled else { return }
+        hovered = true
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hovered = false
+        needsDisplay = true
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard rowEnabled else { return }
+        if !staysOpen { enclosingMenuItem?.menu?.cancelTracking() }
+        onClick?()
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard hovered else { return }
+        NSColor.labelColor.withAlphaComponent(0.09).setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 5, dy: 1),
+                     xRadius: 5, yRadius: 5).fill()
+    }
+}
+
 // ── Severity scale (one closed green→amber→red, shared by every health signal) ─
 // Returns the palette token so callers stay tunable; `severityColor` resolves it.
 
