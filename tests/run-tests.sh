@@ -283,9 +283,9 @@ fi
     t_grep "doctype present"           "$DETAIL_OUT" '<!DOCTYPE html>'
     t_grep "marked CDN link"           "$DETAIL_OUT" 'marked.*\.min\.js'
     t_grep "highlight.js CDN link"     "$DETAIL_OUT" 'highlight\.min\.js'
-    t_grep "serves the data-first SPA" "$DETAIL_OUT" 'Search whole transcript'
-    t_grep "SPA derives the hub /data base" "$DETAIL_OUT" 'const HUB ='
-    t_grep "SPA renders Edit as a diff" "$DETAIL_OUT" 'function diffBlock'
+    t_grep "serves the data-first SPA" "$DETAIL_OUT" 'window\.SESSION'
+    t_grep "SPA derives the hub /data base" "$DETAIL_OUT" 'const API ='
+    t_grep "SPA renders Edit as a diff" "$DETAIL_OUT" 'dl del'
 }
 
 # Legacy fallback still renders the baked HTML when explicitly opted in.
@@ -318,9 +318,9 @@ t_check "lib/hub.sh parses"            bash -n lib/hub.sh
 t_grep "binds tailnet IP (CGNAT 100.64/10)" lib/hub-server.py 'def tailnet_ip'
 t_grep "session route /s/<id>"         lib/hub-server.py 'SID_RE'
 t_grep "/data reuses transcript.py"    lib/hub-server.py 'parse_transcript'
-t_grep "SPA derives hub API base"      lib/transcript-app.html 'const HUB ='
+t_grep "SPA derives hub API base"      lib/transcript-app.html 'const API ='
 t_grep "index polls /api/sessions"     lib/hub-index.html '/api/sessions'
-t_grep "Edit renders as a diff"        lib/transcript-app.html 'function diffBlock'
+t_grep "Edit renders as a diff"        lib/transcript-app.html 'dl del'
 t_grep "copy works over insecure http" lib/transcript-app.html 'execCommand'
 t_grep "bar opens hub transcript"      native/ 'func openHubTranscript'
 t_grep "bar 'Sessions (phone)' action" native/ 'func openHubIndex'
