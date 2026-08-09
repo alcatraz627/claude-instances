@@ -27,7 +27,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Kanban board server state — nil until the first probe answers.
     private var kanbanUp: Bool?
     private var kanbanBusy = false
-    private weak var kanbanItem: NSMenuItem?
+    private weak var switchboardMenu: NSMenu?
     private var keepAwakeAssertionID: IOPMAssertionID = 0
 
     /// Tick counter for quick/full scan alternation.
@@ -510,6 +510,9 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // ── Rate limits (top — most urgent info) ────────────────────────────
         addRateLimitsSection(menu, data)
+
+        // ── Switchboard (every on/off the widget owns, one hover away) ──────
+        addSwitchboardSection(menu)
 
         // ── Usage stats (today/week aggregates) ─────────────────────────────
         addUsageStatsSection(menu, data)
@@ -1087,8 +1090,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func addActionsSection(_ menu: NSMenu, _ data: ScanResult) {
         addAction(menu, "New Session", #selector(newSession), icon: "plus.circle", key: "n")
         addAction(menu, "Dashboard", #selector(openDashboard), icon: "rectangle.3.group", key: "d")
-        addKeepAwakeItem(menu)
-        addKanbanItem(menu)
         addAction(menu, "Settings…", #selector(openSettings), icon: "gearshape", key: ",")
         addAction(menu, "Sessions (phone)", #selector(openHubIndex), icon: "iphone")
         addRefreshMenu(menu)
@@ -1154,47 +1155,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setIcon(now, "arrow.clockwise")
         menu.addItem(now)
 
-        // Cadence + pause demote to a secondary submenu — out of the way of the
-        // one-click refresh, still a single hover from the presets.
-        let cadence = NSMenuItem(title: "Auto-refresh", action: nil, keyEquivalent: "")
-        cadence.attributedTitle = NSAttributedString(
-            string: "  Auto-refresh interval",
-            attributes: [.font: NSFont.systemFont(ofSize: 12),
-                         .foregroundColor: NSColor.secondaryLabelColor])
-        setIcon(cadence, "timer")
-
-        let sub = NSMenu()
-        for preset in Self.refreshPresets {
-            let label = preset < 1 ? String(format: "%.1f seconds", preset) :
-                        preset == 1 ? "1 second" :
-                                      "\(Int(preset)) seconds"
-            let mi = NSMenuItem(title: label,
-                                action: #selector(setRefreshInterval(_:)),
-                                keyEquivalent: "")
-            mi.target = self
-            mi.representedObject = preset
-            mi.state = (!refreshPaused && abs(refreshInterval - preset) < 0.01) ? .on : .off
-            sub.addItem(mi)
-        }
-        sub.addItem(.separator())
-        let pause = NSMenuItem(title: "Paused",
-                               action: #selector(togglePause(_:)),
-                               keyEquivalent: "")
-        pause.target = self
-        pause.state = refreshPaused ? .on : .off
-        sub.addItem(pause)
-
-        cadence.submenu = sub
-        menu.addItem(cadence)
-    }
-
-    @objc private func setRefreshInterval(_ sender: NSMenuItem) {
-        guard let interval = sender.representedObject as? Double else { return }
-        refreshInterval = interval
-        refreshPaused = false
-        dlog("user set refresh interval to \(interval)s")
-        restartScanTimer()
-        refreshData()
+        // Cadence and pause live in the Switchboard — this stays a pure action.
     }
 
     @objc private func togglePause(_ sender: NSMenuItem) {
@@ -1202,6 +1163,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dlog("refresh \(refreshPaused ? "paused" : "resumed")")
         restartScanTimer()
         if !refreshPaused { refreshData() }
+        refreshSwitchboard()
     }
 
     // ── Keep Awake (prevent idle system sleep) ───────────────────────────────
@@ -1239,69 +1201,168 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleKeepAwake(_ sender: NSMenuItem) {
         setKeepAwake(!keepAwakeOn)
+        refreshSwitchboard()
     }
 
-    /// The menu row: addAction style, but stateful — blue bolt + blue label
-    /// while the assertion is held, template icon + base color when off.
-    private func addKeepAwakeItem(_ menu: NSMenu) {
-        let i = NSMenuItem(title: "Keep Awake",
-                           action: #selector(toggleKeepAwake(_:)), keyEquivalent: "")
-        i.target = self
-        i.state = keepAwakeOn ? .on : .off
-        i.attributedTitle = NSAttributedString(string: "  Keep Awake", attributes: [
-            .font: NSFont.systemFont(ofSize: 13),
-            .foregroundColor: keepAwakeOn ? NSColor.systemBlue : NSColor.labelColor,
-        ])
-        if var img = NSImage(systemSymbolName: keepAwakeOn ? "bolt.fill" : "bolt",
-                             accessibilityDescription: nil) {
-            var cfg = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-            if keepAwakeOn {
-                cfg = cfg.applying(.init(paletteColors: [.systemBlue]))
-            }
-            img = img.withSymbolConfiguration(cfg) ?? img
-            img.isTemplate = !keepAwakeOn
-            i.image = img
+    // ── Switchboard ──────────────────────────────────────────────────────────
+    // Every on/off the widget owns, on one rail. The switch shows the state;
+    // the lane beside it says what that state is doing to the machine.
+
+    /// Each switch as (label, engaged, tint, consequence) — the single source
+    /// the parent summary and the rows both read, so they can never disagree.
+    private var switchboardRows: [(label: String, on: Bool, tint: NSColor, note: String)] {
+        let kanbanNote: String
+        if kanbanBusy               { kanbanNote = "working…" }
+        else if kanbanUp == nil     { kanbanNote = "probing…" }
+        else if kanbanUp == true    { kanbanNote = "serving :5106" }
+        else                        { kanbanNote = "not running" }
+
+        let cadenceTag = refreshInterval < 1 ? String(format: "%.1fs", refreshInterval)
+                                             : "\(Int(refreshInterval))s"
+        return [
+            ("Keep Awake", keepAwakeOn, menuTeal,
+             keepAwakeOn ? "sleep blocked" : "system may sleep"),
+            ("Kanban Board", kanbanUp == true, menuGreen, kanbanNote),
+            ("Auto-refresh", !refreshPaused, refreshPaused ? menuYellow : menuGreen,
+             refreshPaused ? "paused · was \(cadenceTag)" : "every \(cadenceTag)"),
+        ]
+    }
+
+    private func addSwitchboardSection(_ menu: NSMenu) {
+        let rows = switchboardRows
+        let onCount = rows.filter { $0.on }.count
+
+        let parent = NSMenuItem(title: "Switchboard", action: nil, keyEquivalent: "")
+        let summary = NSMutableAttributedString()
+        summary.append(seg("  Switchboard", BarFont.body, .labelColor))
+        summary.append(seg("\t", BarFont.monoCaption, .clear))
+        for r in rows {
+            summary.append(seg("● ", BarFont.monoCaption,
+                               r.on ? r.tint : NSColor.quaternaryLabelColor))
         }
-        i.toolTip = "Prevent idle system sleep so remote (claude.ai) sessions stay connected on battery. The display still sleeps and locks normally."
+        summary.append(seg(" \(onCount) on", BarFont.monoCaption, .secondaryLabelColor))
+        let ps = NSMutableParagraphStyle()
+        ps.tabStops = [NSTextTab(textAlignment: .left, location: BarFont.scaled(196))]
+        summary.addAttribute(.paragraphStyle, value: ps,
+                             range: NSRange(location: 0, length: summary.length))
+        parent.attributedTitle = summary
+        setIcon(parent, "switch.2")
+        parent.submenu = buildSwitchboard()
+        menu.addItem(parent)
+    }
+
+    private func buildSwitchboard() -> NSMenu {
+        let m = NSMenu()
+        switchboardMenu = m
+        refreshSwitchboard()
+        return m
+    }
+
+    private func addSwitchboardHeader(_ menu: NSMenu, _ title: String) {
+        let i = NSMenuItem()
+        i.attributedTitle = seg("  " + title, BarFont.sectionLabel,
+                                .tertiaryLabelColor, kern: 0.8)
+        i.isEnabled = false
         menu.addItem(i)
+    }
+
+    /// One rail row: label · badge · consequence. Every metric derives from
+    /// BarFont.scaled so the rail survives the Display Sizing multiplier.
+    private func addSwitchRow(_ menu: NSMenu,
+                              _ r: (label: String, on: Bool, tint: NSColor, note: String),
+                              action: Selector, enabled: Bool = true, tip: String) {
+        let padL   = BarFont.scaled(18)
+        let labelW = BarFont.scaled(104)
+        let badgeW = BarFont.scaled(46)
+        let noteW  = BarFont.scaled(126)
+        let h      = BarFont.scaled(26)
+        let v = NSView(frame: NSRect(x: 0, y: 0,
+                                     width: padL + labelW + badgeW + noteW + BarFont.scaled(14),
+                                     height: h))
+
+        let name = NSTextField(labelWithString: r.label)
+        name.font = BarFont.body
+        name.textColor = enabled ? .labelColor : .tertiaryLabelColor
+        let nameH = ceil(name.attributedStringValue.size().height)
+        name.frame = NSRect(x: padL, y: (h - nameH) / 2, width: labelW, height: nameH)
+        v.addSubview(name)
+
+        let badge = makeStateBadge(r.on ? "on" : "off", tint: r.on ? r.tint : nil)
+        badge.setFrameOrigin(NSPoint(x: padL + labelW,
+                                     y: (h - badge.frame.height) / 2))
+        v.addSubview(badge)
+
+        let note = NSTextField(labelWithString: r.note)
+        note.font = BarFont.monoCaption
+        note.textColor = r.on ? .secondaryLabelColor : .tertiaryLabelColor
+        let noteH = ceil(note.attributedStringValue.size().height)
+        note.frame = NSRect(x: padL + labelW + badgeW, y: (h - noteH) / 2,
+                            width: noteW, height: noteH)
+        v.addSubview(note)
+
+        let item = NSMenuItem(title: r.label, action: action, keyEquivalent: "")
+        item.target = self
+        item.view = v
+        item.isEnabled = enabled
+        item.toolTip = tip
+        menu.addItem(item)
+    }
+
+    /// The cadence presets as one segmented strip, so five choices cost one row.
+    private func cadenceStripItem() -> NSMenuItem {
+        let labels = Self.refreshPresets.map { $0 < 1 ? String(format: "%.1fs", $0) : "\(Int($0))s" }
+        let seg = NSSegmentedControl(labels: labels, trackingMode: .selectOne,
+                                     target: self, action: #selector(cadenceStripChanged(_:)))
+        seg.segmentStyle = .texturedRounded
+        seg.font = BarFont.monoCaption
+        if let idx = Self.refreshPresets.firstIndex(where: { abs($0 - refreshInterval) < 0.01 }) {
+            seg.selectedSegment = idx
+        }
+        seg.isEnabled = !refreshPaused
+
+        let padL = BarFont.scaled(18)
+        let h = BarFont.scaled(30)
+        let stripW = BarFont.scaled(250)
+        seg.frame = NSRect(x: padL, y: (h - BarFont.scaled(22)) / 2,
+                           width: stripW, height: BarFont.scaled(22))
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: padL + stripW + BarFont.scaled(14), height: h))
+        v.addSubview(seg)
+
+        let item = NSMenuItem()
+        item.view = v
+        item.toolTip = "How often the widget rescans. Disabled while the feed is paused."
+        return item
+    }
+
+    @objc private func cadenceStripChanged(_ sender: NSSegmentedControl) {
+        let idx = sender.selectedSegment
+        guard idx >= 0, idx < Self.refreshPresets.count else { return }
+        refreshInterval = Self.refreshPresets[idx]
+        refreshPaused = false
+        dlog("user set refresh interval to \(refreshInterval)s")
+        restartScanTimer()
+        refreshData()
     }
 
     // ── Kanban board server (pm2 "kanban", :5106) ────────────────────────────
     // The bar IS the on/off surface: no launchd, off after reboot by design.
 
-    private func addKanbanItem(_ menu: NSMenu) {
-        let i = NSMenuItem(title: "Kanban Board",
-                           action: #selector(toggleKanban(_:)), keyEquivalent: "")
-        i.target = self
-        styleKanbanItem(i)
-        kanbanItem = i
-        menu.addItem(i)
-    }
-
-    /// Shared styling for build and in-place refresh, keep-awake's pattern:
-    /// green filled icon while serving, template icon + base color when off.
-    private func styleKanbanItem(_ i: NSMenuItem) {
-        let up = kanbanUp == true
-        i.state = up ? .on : .off
-        i.isEnabled = !kanbanBusy
-        let suffix = kanbanBusy ? "   …" : (kanbanUp == nil ? "" : (up ? "   on :5106" : "   off"))
-        i.attributedTitle = NSAttributedString(string: "  Kanban Board\(suffix)", attributes: [
-            .font: NSFont.systemFont(ofSize: 13),
-            .foregroundColor: up ? NSColor.systemGreen : NSColor.labelColor,
-        ])
-        if var img = NSImage(systemSymbolName: up ? "rectangle.split.3x1.fill" : "rectangle.split.3x1",
-                             accessibilityDescription: nil) {
-            var cfg = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-            if up {
-                cfg = cfg.applying(.init(paletteColors: [.systemGreen]))
-            }
-            img = img.withSymbolConfiguration(cfg) ?? img
-            img.isTemplate = !up
-            i.image = img
-        }
-        i.toolTip = up
-            ? "The kanban board is serving on http://localhost:5106 — click to stop it."
-            : "Start the kanban board server (pm2, port 5106). It stays off across reboots; this menu is where it comes back."
+    /// Rebuild the switchboard's rows in place. A toggle changes state while the
+    /// submenu is on screen, and its rows are views, so restyling is not enough.
+    private func refreshSwitchboard() {
+        guard let m = switchboardMenu else { return }
+        m.removeAllItems()
+        let rows = switchboardRows
+        addSwitchboardHeader(m, "SYSTEM")
+        addSwitchRow(m, rows[0], action: #selector(toggleKeepAwake(_:)),
+                     tip: "Prevent idle system sleep so remote (claude.ai) sessions stay connected on battery. The display still sleeps and locks normally.")
+        addSwitchRow(m, rows[1], action: #selector(toggleKanban(_:)), enabled: !kanbanBusy,
+                     tip: "The kanban board server on port 5106. It stays off across reboots; this switch is where it comes back.")
+        m.addItem(.separator())
+        addSwitchboardHeader(m, "FEED")
+        addSwitchRow(m, rows[2], action: #selector(togglePause(_:)),
+                     tip: "Pause or resume the scan that feeds this menu.")
+        m.addItem(cadenceStripItem())
     }
 
     /// One cheap liveness probe; async so the menu never waits on it.
@@ -1314,7 +1375,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.kanbanUp = up
-                if let item = self.kanbanItem { self.styleKanbanItem(item) }
+                self.refreshSwitchboard()
             }
         }.resume()
     }
@@ -1323,7 +1384,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !kanbanBusy else { return }
         let stopping = kanbanUp == true
         kanbanBusy = true
-        styleKanbanItem(sender)
+        refreshSwitchboard()
         dlog("kanban: \(stopping ? "stop" : "start")")
         // zsh -lc so pm2 resolves from the login PATH (GUI apps don't get it).
         let cmd = stopping

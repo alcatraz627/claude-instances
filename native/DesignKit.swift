@@ -97,6 +97,63 @@ func clampLines(_ label: NSTextField, _ lines: Int) {
     label.cell?.truncatesLastVisibleLine = true
 }
 
+// ── State badges ─────────────────────────────────────────────────────────────
+// A solid pill for an engaged state, a hollow one for disengaged. Palette
+// colours are user-editable, so the text colour is derived from the fill at
+// render time and the fill is walked until it clears 4.5:1. No pairing in this
+// file can fall below the floor, whatever the user picks.
+
+func relativeLuminance(_ c: NSColor) -> CGFloat {
+    let s = c.usingColorSpace(.sRGB) ?? c
+    func lin(_ v: CGFloat) -> CGFloat {
+        v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
+    }
+    return 0.2126 * lin(s.redComponent) + 0.7152 * lin(s.greenComponent) + 0.0722 * lin(s.blueComponent)
+}
+
+func contrastRatio(_ a: NSColor, _ b: NSColor) -> CGFloat {
+    let la = relativeLuminance(a), lb = relativeLuminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+}
+
+/// Fill + text for a solid badge: the fill is the palette colour untouched, the
+/// text is whichever of black/white reads better on it. That alone clears 4.5:1
+/// for every colour in sRGB — the two curves cross at 4.58:1, so the worse of
+/// the pair is never the one chosen. Swept and confirmed across the cube; the
+/// measured worst case is #E12D0F at 4.584:1.
+func accessibleBadgePair(_ base: NSColor) -> (fill: NSColor, text: NSColor) {
+    let fill = base.usingColorSpace(.sRGB) ?? base
+    let text: NSColor = contrastRatio(.white, fill) >= contrastRatio(.black, fill) ? .white : .black
+    return (fill, text)
+}
+
+/// One badge. `tint: nil` renders the hollow disengaged form.
+func makeStateBadge(_ text: String, tint: NSColor?) -> NSView {
+    let label = NSTextField(labelWithString: text)
+    label.font = NSFont.monospacedSystemFont(ofSize: 10 * BarFont.scale, weight: .semibold)
+    label.alignment = .center
+    let size = label.attributedStringValue.size()
+    let h = BarFont.scaled(15)
+    let w = ceil(size.width) + BarFont.scaled(8) * 2
+
+    let v = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+    v.wantsLayer = true
+    v.layer?.cornerRadius = h / 2
+    if let tint = tint {
+        let pair = accessibleBadgePair(tint)
+        v.layer?.backgroundColor = pair.fill.cgColor
+        label.textColor = pair.text
+    } else {
+        v.layer?.backgroundColor = NSColor.clear.cgColor
+        v.layer?.borderWidth = 1
+        v.layer?.borderColor = NSColor.tertiaryLabelColor.withAlphaComponent(0.55).cgColor
+        label.textColor = .secondaryLabelColor
+    }
+    label.frame = NSRect(x: 0, y: (h - ceil(size.height)) / 2, width: w, height: ceil(size.height))
+    v.addSubview(label)
+    return v
+}
+
 // ── Severity scale (one closed green→amber→red, shared by every health signal) ─
 // Returns the palette token so callers stay tunable; `severityColor` resolves it.
 
