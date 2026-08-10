@@ -116,14 +116,27 @@ func contrastRatio(_ a: NSColor, _ b: NSColor) -> CGFloat {
     return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
 }
 
-/// Fill + text for a solid badge: the fill is the palette colour untouched, the
-/// text is whichever of black/white reads better on it. That alone clears 4.5:1
-/// for every colour in sRGB — the two curves cross at 4.58:1, so the worse of
-/// the pair is never the one chosen. Swept and confirmed across the cube; the
-/// measured worst case is #E12D0F at 4.584:1.
-func accessibleBadgePair(_ base: NSColor) -> (fill: NSColor, text: NSColor) {
-    let fill = base.usingColorSpace(.sRGB) ?? base
-    let text: NSColor = contrastRatio(.white, fill) >= contrastRatio(.black, fill) ? .white : .black
+func isDarkAppearance() -> Bool {
+    NSApp?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+}
+
+/// Fill + text for a solid badge. The text colour is chosen by APPEARANCE, not
+/// by whichever is mathematically easiest: a light-mode pill wants white type on
+/// a saturated fill, and a dark-mode pill wants dark type on a lighter one.
+/// Picking the easier of black/white instead put dark text on every mid-tone
+/// fill, which is what made the light-mode "on" badges read muddy.
+/// The fill then moves away from the text until the pair clears 4.5:1, so the
+/// look is chosen first and the contrast floor is met by adjusting the fill.
+func accessibleBadgePair(_ base: NSColor, dark: Bool? = nil) -> (fill: NSColor, text: NSColor) {
+    let isDark = dark ?? isDarkAppearance()
+    let text: NSColor = isDark ? .black : .white
+    let away: NSColor = isDark ? .white : .black
+    var fill = base.usingColorSpace(.sRGB) ?? base
+    var steps = 0
+    while contrastRatio(text, fill) < 4.5 && steps < 40 {
+        fill = fill.blended(withFraction: 0.03, of: away) ?? fill
+        steps += 1
+    }
     return (fill, text)
 }
 
@@ -144,10 +157,12 @@ func makeStateBadge(_ text: String, tint: NSColor?) -> NSView {
         v.layer?.backgroundColor = pair.fill.cgColor
         label.textColor = pair.text
     } else {
-        v.layer?.backgroundColor = NSColor.clear.cgColor
+        // labelColor is dynamic, so the disengaged badge reads dark on light and
+        // light on dark without a branch. secondaryLabelColor washed out.
+        v.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
         v.layer?.borderWidth = 1
-        v.layer?.borderColor = NSColor.tertiaryLabelColor.withAlphaComponent(0.55).cgColor
-        label.textColor = .secondaryLabelColor
+        v.layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.22).cgColor
+        label.textColor = .labelColor
     }
     label.frame = NSRect(x: 0, y: (h - ceil(size.height)) / 2, width: w, height: ceil(size.height))
     v.addSubview(label)

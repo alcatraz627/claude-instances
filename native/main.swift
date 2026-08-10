@@ -202,5 +202,14 @@ func rateLimitResetSeconds(_ resetsAt: String?) -> TimeInterval? {
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)   // No Dock icon
 let delegate = BarDelegate()
+
+// Headless exercise of the Switchboard: builds the real menu and prints every
+// row, so the rows can be verified without opening a menu on someone's screen.
+// Reads only; no row is clicked and no state is written.
+if CommandLine.arguments.contains("--dump-switchboard") {
+    print(delegate.dumpSwitchboard())
+    exit(0)
+}
+
 app.delegate = delegate
 app.run()

@@ -28,6 +28,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var kanbanUp: Bool?
     private var kanbanBusy = false
     private weak var switchboardMenu: NSMenu?
+    private var sbSnapshot = SBSnapshot()
     private var keepAwakeAssertionID: IOPMAssertionID = 0
 
     /// Tick counter for quick/full scan alternation.
@@ -423,7 +424,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // off immediately so the user sees freshest possible data without
         // waiting up to `refreshInterval` seconds.
         if !refreshPaused { refreshData() }
-        probeKanban()
+        refreshSnapshot()
     }
 
     func menuDidClose(_ menu: NSMenu) {
@@ -1205,50 +1206,397 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // ── Switchboard ──────────────────────────────────────────────────────────
-    // Every on/off the widget owns, on one rail. The switch shows the state;
-    // the lane beside it says what that state is doing to the machine.
+    // Every on/off the widget owns, on one rail, grouped by the question each
+    // group answers: what is not protecting me, what is up, what is this costing,
+    // what is this session doing. A click may restore a protection, never remove
+    // one; suppressing a permission prompt is the single exception and it asks.
 
-    /// Each switch as (label, engaged, tint, consequence) — the single source
-    /// the parent summary and the rows both read, so they can never disagree.
-    private var switchboardRows: [(label: String, on: Bool, tint: NSColor, note: String)] {
+    enum SBBadge {
+        case on(NSColor)
+        case off
+        case count(Int, NSColor)
+        case ok
+
+        var text: String {
+            switch self {
+            case .on:              return "on"
+            case .off:             return "off"
+            case .count(let n, _): return "\(n)"
+            case .ok:              return "ok"
+            }
+        }
+        /// nil renders the hollow form, which is what "nothing engaged" should look like.
+        var tint: NSColor? {
+            switch self {
+            case .on(let c):       return c
+            case .off:             return nil
+            case .count(_, let c): return c
+            case .ok:              return nil
+            }
+        }
+    }
+
+    struct SBRow {
+        let label: String
+        let badge: SBBadge
+        let note: String
+        var enabled: Bool = true
+        var onClick: (() -> Void)? = nil
+        var submenu: (() -> NSMenu)? = nil
+        var tip: String = ""
+        /// Shown as a separate row beneath this one while the service is up. It
+        /// is its own menu item, so opening the link cannot reach the toggle.
+        var link: String? = nil
+    }
+
+    /// Everything the switchboard renders, read once per rebuild. Service probes
+    /// are slow, so they refresh off the main thread and land here.
+    struct SBSnapshot {
+        var muted: [MutedGuard] = []
+        var approvals: [PushApproval] = []
+        var prompts: [SettingsFlag: Bool] = [:]
+        var thinking = false
+        var effort = "unknown"
+        var boardSync = false
+        var hubReachable: Bool? = nil
+        /// Separate from hubReachable: the advertised (phone) address can be dead
+        /// while localhost still serves, and the link should follow what works.
+        var hubLocal: Bool? = nil
+        var hubHost: String? = nil
+        var brokerUp: Bool? = nil
+        var decisionPages: String? = nil
+        var jobsTotal = 0
+        var jobsFailing = 0
+    }
+
+    /// Refresh the slow half off the main thread. The menu renders whatever the
+    /// last snapshot held and never blocks on a probe.
+    private func refreshSnapshot(completion: (() -> Void)? = nil) {
+        let liveIDs = Set((cachedData?.live ?? []).compactMap { $0.sessionId })
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var s = SBSnapshot()
+            s.muted = Guards.muted()
+            s.approvals = PushApprovals.armed(liveSessionIDs: liveIDs)
+            for f in SettingsFlag.allCases { s.prompts[f] = Settings.bool(f) }
+            s.thinking = s.prompts[.alwaysThinking] ?? false
+            s.effort = Settings.effortLevel()
+            s.boardSync = BoardSync.enabled()
+            s.hubHost = Services.hubAdvertisedHost()
+            s.hubLocal = Services.probeHTTP("http://127.0.0.1:5400/healthz")
+            if let h = s.hubHost {
+                s.hubReachable = Services.probeHTTP("http://\(h):5400/healthz")
+            } else {
+                s.hubReachable = s.hubLocal
+            }
+            s.brokerUp = Services.shell("/bin/zsh", ["-lc", "claude-ipc daemon status 2>/dev/null"])
+                .contains("up")
+            s.decisionPages = Services.pm2Status("decision-pages")
+            let kanban = Services.probeHTTP("http://127.0.0.1:5106/api/boards")
+            let jobs = Services.shell("/bin/zsh", ["-lc",
+                "launchctl list 2>/dev/null | grep -c alcatraz; launchctl list 2>/dev/null | awk '$2 != 0 && /alcatraz/' | wc -l"])
+            let nums = jobs.split(separator: "\n").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            s.jobsTotal = nums.first ?? 0
+            s.jobsFailing = nums.count > 1 ? nums[1] : 0
+            DispatchQueue.main.async {
+                self?.sbSnapshot = s
+                // One probe path for kanban, so the menu and the headless dump
+                // can never disagree about whether it is up.
+                if self?.kanbanBusy == false { self?.kanbanUp = kanban }
+                self?.refreshSwitchboard()
+                completion?()
+            }
+        }
+    }
+
+    // ── The groups ───────────────────────────────────────────────────────────
+
+    private func sbGuardRows() -> [SBRow] {
+        let s = sbSnapshot
+        let stale = s.approvals.filter { !$0.sessionIsLive }
+        let suppressed = SettingsFlag.allCases.filter { $0.isSuppressor && (s.prompts[$0] ?? false) }
+
+        if s.muted.isEmpty && stale.isEmpty && suppressed.isEmpty {
+            return [SBRow(label: "All armed", badge: .ok,
+                          note: "no mutes, no stale approvals",
+                          enabled: false,
+                          tip: "No guard is muted and no push approval is left armed.")]
+        }
+        var rows: [SBRow] = []
+        if !s.muted.isEmpty {
+            rows.append(SBRow(label: "Muted guards",
+                              badge: .count(s.muted.count, menuYellow),
+                              note: s.muted.prefix(3).map { $0.name }.joined(separator: " · "),
+                              submenu: { [weak self] in self?.sbMutedGuardsMenu() ?? NSMenu() },
+                              tip: "Guards switched off machine-wide. Click one to re-arm it."))
+        }
+        if !suppressed.isEmpty {
+            rows.append(SBRow(label: "Permission prompts",
+                              badge: .count(suppressed.count, menuYellow),
+                              note: "suppressed in settings.json",
+                              submenu: { [weak self] in self?.sbPromptsMenu() ?? NSMenu() },
+                              tip: "Confirmation prompts currently suppressed. Click one to bring it back."))
+        }
+        if !stale.isEmpty {
+            let oldest = stale.first
+            rows.append(SBRow(label: "Push approvals",
+                              badge: .count(stale.count, menuYellow),
+                              note: sbApprovalNote(oldest),
+                              onClick: { [weak self] in
+                                  stale.forEach { PushApprovals.clear($0) }
+                                  self?.refreshSnapshot()
+                              },
+                              tip: "Push approvals armed by sessions that are no longer live. Click to revoke them."))
+        }
+        return rows
+    }
+
+    private func sbApprovalNote(_ a: PushApproval?) -> String {
+        guard let a = a else { return "armed" }
+        guard let when = a.armedAt else { return "dead session" }
+        let f = DateFormatter(); f.dateFormat = "d MMM"
+        return "armed \(f.string(from: when)), dead session"
+    }
+
+    private func sbServiceRows() -> [SBRow] {
+        let s = sbSnapshot
+        var rows: [SBRow] = []
+
         let kanbanNote: String
-        if kanbanBusy               { kanbanNote = "working…" }
-        else if kanbanUp == nil     { kanbanNote = "probing…" }
-        else if kanbanUp == true    { kanbanNote = "serving :5106" }
-        else                        { kanbanNote = "not running" }
+        if kanbanBusy            { kanbanNote = "working…" }
+        else if kanbanUp == nil  { kanbanNote = "probing…" }
+        else if kanbanUp == true { kanbanNote = "serving :5106" }
+        else                     { kanbanNote = "not running" }
+        rows.append(SBRow(label: "Kanban Board",
+                          badge: kanbanUp == true ? .on(menuGreen) : .off,
+                          note: kanbanNote,
+                          enabled: !kanbanBusy,
+                          onClick: { [weak self] in self?.toggleKanban(NSMenuItem()) },
+                          tip: "The kanban board server on port 5106. It stays off across reboots; this switch is where it comes back.",
+                          link: kanbanUp == true ? "http://localhost:5106" : nil))
 
-        let cadenceTag = refreshInterval < 1 ? String(format: "%.1fs", refreshInterval)
-                                             : "\(Int(refreshInterval))s"
+        // Reachability, not just liveness: a listener on a tailnet address that no
+        // longer resolves is up and unreachable at once. That shipped undetected.
+        let hubNote: String
+        let hubOK = s.hubReachable == true
+        if s.hubReachable == nil            { hubNote = "probing…" }
+        else if hubOK                       { hubNote = "serving :5400" }
+        else if s.hubHost != nil            { hubNote = "up, \(s.hubHost!) unreachable" }
+        else                                { hubNote = "not running" }
+        rows.append(SBRow(label: "Session Hub",
+                          badge: hubOK ? .on(menuGreen) : .off,
+                          note: hubNote,
+                          onClick: { [weak self] in self?.sbToggleHub() },
+                          tip: "The phone-facing session hub on port 5400. Restart it after Tailscale reconnects, or its advertised address goes stale.",
+                          link: s.hubLocal == true ? "http://localhost:5400" : nil))
+
+        rows.append(SBRow(label: "ipc Broker",
+                          badge: s.brokerUp == true ? .on(menuGreen) : .off,
+                          note: s.brokerUp == nil ? "probing…" : (s.brokerUp! ? "up" : "down"),
+                          enabled: false,
+                          tip: "The cross-session message broker. Read-only here: it runs under launchd."))
+
+        if let dp = s.decisionPages {
+            rows.append(SBRow(label: "Decision Pages",
+                              badge: dp == "online" ? .on(menuGreen) : .off,
+                              note: dp == "online" ? "serving :5197" : "pm2, \(dp)",
+                              onClick: { [weak self] in
+                                  Services.pm2(dp == "online" ? "stop" : "start", "decision-pages")
+                                  self?.refreshSnapshot()
+                              },
+                              tip: "The decision-page server used for batched human feedback.",
+                              link: dp == "online" ? "http://localhost:5197" : nil))
+        }
+
+        if s.jobsTotal > 0 {
+            rows.append(SBRow(label: "Scheduled jobs",
+                              badge: s.jobsFailing > 0 ? .count(s.jobsFailing, menuRed)
+                                                       : .count(s.jobsTotal, menuGreen),
+                              note: s.jobsFailing > 0 ? "\(s.jobsFailing) of \(s.jobsTotal) failing"
+                                                      : "\(s.jobsTotal) healthy",
+                              enabled: false,
+                              tip: "launchd jobs owned by this account. Read-only here."))
+        }
+        return rows
+    }
+
+    private func sbCostRows() -> [SBRow] {
+        let s = sbSnapshot
+        return [SBRow(label: "Always thinking",
+                      badge: s.thinking ? .on(menuTeal) : .off,
+                      note: s.thinking ? "every turn" : "only when asked",
+                      onClick: { [weak self] in
+                          Settings.write(key: SettingsFlag.alwaysThinking.rawValue, value: !s.thinking)
+                          self?.refreshSnapshot()
+                      },
+                      tip: "Extended thinking on every turn. Costs tokens and latency on turns that do not need it.")]
+    }
+
+    private func sbSessionRows() -> [SBRow] {
         return [
-            ("Keep Awake", keepAwakeOn, menuTeal,
-             keepAwakeOn ? "sleep blocked" : "system may sleep"),
-            ("Kanban Board", kanbanUp == true, menuGreen, kanbanNote),
-            ("Auto-refresh", !refreshPaused, refreshPaused ? menuYellow : menuGreen,
-             refreshPaused ? "paused · was \(cadenceTag)" : "every \(cadenceTag)"),
+            SBRow(label: "Keep Awake",
+                  badge: keepAwakeOn ? .on(menuTeal) : .off,
+                  note: keepAwakeOn ? "sleep blocked" : "system may sleep",
+                  onClick: { [weak self] in self?.toggleKeepAwake(NSMenuItem()) },
+                  tip: "Prevent idle system sleep so remote (claude.ai) sessions stay connected on battery. The display still sleeps and locks normally."),
+            SBRow(label: "Board sync",
+                  badge: sbSnapshot.boardSync ? .on(menuGreen) : .off,
+                  note: sbSnapshot.boardSync ? "todos to kanban" : "hooks skip",
+                  onClick: { [weak self] in
+                      BoardSync.set(!(self?.sbSnapshot.boardSync ?? false))
+                      self?.refreshSnapshot()
+                  },
+                  tip: "Whether session hooks sync the todo list to the kanban board."),
         ]
     }
 
+    private func sbFeedRows() -> [SBRow] {
+        let tag = refreshInterval < 1 ? String(format: "%.1fs", refreshInterval) : "\(Int(refreshInterval))s"
+        return [SBRow(label: "Auto-refresh",
+                      badge: refreshPaused ? .off : .on(menuGreen),
+                      note: refreshPaused ? "paused, was \(tag)" : "every \(tag)",
+                      onClick: { [weak self] in self?.togglePause(NSMenuItem()) },
+                      tip: "Pause or resume the scan that feeds this menu.")]
+    }
+
+    // ── Drill-downs ──────────────────────────────────────────────────────────
+
+    private func sbMutedGuardsMenu() -> NSMenu {
+        let m = NSMenu()
+        m.autoenablesItems = false
+        let f = DateFormatter(); f.dateFormat = "d MMM"
+        let rows = sbSnapshot.muted.map { g in
+            SBRow(label: g.name, badge: .off,
+                  note: g.mutedAt.map { "muted \(f.string(from: $0))" } ?? "muted",
+                  onClick: { [weak self] in
+                      Guards.rearm(g)
+                      self?.refreshSnapshot()
+                  },
+                  tip: "Click to re-arm this guard. Muting again stays a deliberate touch in a shell.")
+        }
+        let column = sbLabelColumn(rows)
+        for r in rows { addSBRow(m, r, labelColumn: column) }
+        m.addItem(.separator())
+        addSBNote(m, "Click re-arms. Muting stays a deliberate touch.")
+        return m
+    }
+
+    private func sbPromptsMenu() -> NSMenu {
+        let m = NSMenu()
+        m.autoenablesItems = false
+        // The row reads as the PROMPT, not the skip, so "on" always means the
+        // safer state and a stray click can only add friction.
+        let rows = SettingsFlag.allCases.filter { $0.isSuppressor }.map { flag -> SBRow in
+            let suppressed = sbSnapshot.prompts[flag] ?? false
+            return SBRow(label: flag.label,
+                         badge: suppressed ? .off : .on(menuGreen),
+                         note: suppressed ? "suppressed" : "asks first",
+                         onClick: { [weak self] in self?.sbTogglePrompt(flag, suppressed: suppressed) },
+                         tip: suppressed ? "Click to bring this confirmation back."
+                                         : "This prompt is active. Suppressing it will ask for confirmation.")
+        }
+        let column = sbLabelColumn(rows)
+        for r in rows { addSBRow(m, r, labelColumn: column) }
+        m.addItem(.separator())
+        addSBNote(m, "Restoring a prompt is one click. Suppressing one asks.")
+        return m
+    }
+
+    /// Restoring a prompt is immediate. Suppressing one is the only place this
+    /// menu can weaken a safeguard, so it goes through a modal first.
+    private func sbTogglePrompt(_ flag: SettingsFlag, suppressed: Bool) {
+        if suppressed {
+            Settings.write(key: flag.rawValue, value: false)
+            refreshSnapshot()
+            return
+        }
+        let a = NSAlert()
+        a.messageText = "Suppress the \(flag.label.lowercased())?"
+        a.informativeText = "This removes a confirmation step for every session on this machine, not just this one."
+        a.alertStyle = .warning
+        a.addButton(withTitle: "Suppress")
+        a.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        Settings.write(key: flag.rawValue, value: true)
+        refreshSnapshot()
+    }
+
+    private func sbToggleHub() {
+        let script = SwitchboardPaths.gccRoot + "/widgets/claude-instances/lib/hub.sh"
+        let up = sbSnapshot.hubReachable == true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            _ = Services.shell("/bin/bash", [script, up ? "stop" : "restart"])
+            DispatchQueue.main.async { self?.refreshSnapshot() }
+        }
+    }
+
+    // ── Rendering ────────────────────────────────────────────────────────────
+
     private func addSwitchboardSection(_ menu: NSMenu) {
-        let rows = switchboardRows
-        let onCount = rows.filter { $0.on }.count
+        let s = sbSnapshot
+        let stale = s.approvals.filter { !$0.sessionIsLive }.count
+        let up = [kanbanUp == true, s.hubReachable == true, s.brokerUp == true].filter { $0 }.count
 
         let parent = NSMenuItem(title: "Switchboard", action: nil, keyEquivalent: "")
         let summary = NSMutableAttributedString()
         summary.append(seg("  Switchboard", BarFont.body, .labelColor))
         summary.append(seg("\t", BarFont.monoCaption, .clear))
-        for r in rows {
-            summary.append(seg("● ", BarFont.monoCaption,
-                               r.on ? r.tint : NSColor.quaternaryLabelColor))
+        var bits: [NSAttributedString] = []
+        if !s.muted.isEmpty { bits.append(seg("\(s.muted.count) muted", BarFont.monoCaption, menuYellow)) }
+        if stale > 0        { bits.append(seg("\(stale) stale", BarFont.monoCaption, menuYellow)) }
+        bits.append(seg("\(up) up", BarFont.monoCaption, .secondaryLabelColor))
+        for (i, b) in bits.enumerated() {
+            if i > 0 { summary.append(seg(" · ", BarFont.monoCaption, .quaternaryLabelColor)) }
+            summary.append(b)
         }
-        summary.append(seg(" \(onCount) on", BarFont.monoCaption, .secondaryLabelColor))
         let ps = NSMutableParagraphStyle()
-        ps.tabStops = [NSTextTab(textAlignment: .left, location: BarFont.scaled(196))]
+        ps.tabStops = [NSTextTab(textAlignment: .left, location: BarFont.scaled(178))]
         summary.addAttribute(.paragraphStyle, value: ps,
                              range: NSRange(location: 0, length: summary.length))
         parent.attributedTitle = summary
         setIcon(parent, "switch.2")
         parent.submenu = buildSwitchboard()
         menu.addItem(parent)
+    }
+
+    /// Renders the real Switchboard to text: same snapshot, same group walk, same
+    /// row builder the menu uses. The one affordance that makes these rows
+    /// verifiable without a screen.
+    func dumpSwitchboard() -> String {
+        let sem = DispatchSemaphore(value: 0)
+        refreshSnapshot { sem.signal() }
+        // The refresh lands on the main queue, which this call is blocking, so
+        // pump the runloop instead of sleeping on the semaphore.
+        let deadline = Date().addingTimeInterval(20)
+        while sem.wait(timeout: .now()) == .timedOut && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+
+        let groups: [(String, [SBRow])] = [
+            ("GUARDS",   sbGuardRows()),
+            ("SERVICES", sbServiceRows()),
+            ("COST",     sbCostRows()),
+            ("SESSION",  sbSessionRows()),
+            ("FEED",     sbFeedRows()),
+        ]
+        var out = ["SWITCHBOARD DUMP"]
+        for (title, rows) in groups where !rows.isEmpty {
+            out.append("\n\(title)")
+            for r in rows {
+                let badge = r.badge.tint == nil ? "(\(r.badge.text))" : "[\(r.badge.text)]"
+                let affordance = r.submenu != nil ? "submenu" : (r.onClick != nil ? "click" : "readonly")
+                out.append(String(format: "  %-20@ %-6@ %-28@ %@%@",
+                                  r.label as NSString, badge as NSString,
+                                  r.note as NSString, affordance as NSString,
+                                  (r.enabled ? "" : " disabled") as NSString))
+                if let link = r.link { out.append("      link: \(link)") }
+            }
+        }
+        out.append("\nsnapshot: muted=\(sbSnapshot.muted.count) approvals=\(sbSnapshot.approvals.count) "
+                   + "effort=\(sbSnapshot.effort) thinking=\(sbSnapshot.thinking) "
+                   + "hubReachable=\(String(describing: sbSnapshot.hubReachable)) "
+                   + "jobs=\(sbSnapshot.jobsTotal)/\(sbSnapshot.jobsFailing)")
+        return out.joined(separator: "\n")
     }
 
     private func buildSwitchboard() -> NSMenu {
@@ -1267,54 +1615,96 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(i)
     }
 
-    /// One rail row: label · badge · consequence. Every metric derives from
+    private func addSBNote(_ menu: NSMenu, _ text: String) {
+        let i = NSMenuItem()
+        i.attributedTitle = seg("  " + text, BarFont.caption, .tertiaryLabelColor)
+        i.isEnabled = false
+        menu.addItem(i)
+    }
+
+    /// One rail row: label, badge, consequence. Every metric derives from
     /// BarFont.scaled so the rail survives the Display Sizing multiplier.
-    private func addSwitchRow(_ menu: NSMenu,
-                              _ r: (label: String, on: Bool, tint: NSColor, note: String),
-                              action: Selector, enabled: Bool = true, tip: String) {
+    /// Widest label in a group, so the rail is sized by its content instead of a
+    /// constant that silently clips when a label grows. "Permission prompts"
+    /// already overran the old 112pt column at the default scale.
+    private func sbLabelColumn(_ rows: [SBRow]) -> CGFloat {
+        let widest = rows.map { r -> CGFloat in
+            let f = NSTextField(labelWithString: r.label)
+            f.font = BarFont.body
+            return ceil(f.attributedStringValue.size().width)
+        }.max() ?? BarFont.scaled(112)
+        return min(max(widest + BarFont.scaled(12), BarFont.scaled(96)), BarFont.scaled(190))
+    }
+
+    private func addSBRow(_ menu: NSMenu, _ r: SBRow, labelColumn: CGFloat? = nil) {
         let padL   = BarFont.scaled(18)
-        let labelW = BarFont.scaled(104)
-        let badgeW = BarFont.scaled(46)
-        let noteW  = BarFont.scaled(126)
+        let labelW = labelColumn ?? BarFont.scaled(112)
+        let badgeW = BarFont.scaled(40)
+        let noteW  = BarFont.scaled(140)
         let h      = BarFont.scaled(26)
         let v = MenuRowView(frame: NSRect(x: 0, y: 0,
                                           width: padL + labelW + badgeW + noteW + BarFont.scaled(14),
                                           height: h))
-        v.rowEnabled = enabled
+        v.rowEnabled = r.enabled && (r.onClick != nil || r.submenu != nil)
 
         let name = NSTextField(labelWithString: r.label)
         name.font = BarFont.body
-        name.textColor = enabled ? .labelColor : .tertiaryLabelColor
+        name.textColor = r.enabled ? .labelColor : .secondaryLabelColor
         let nameH = ceil(name.attributedStringValue.size().height)
         name.frame = NSRect(x: padL, y: (h - nameH) / 2, width: labelW, height: nameH)
         v.addSubview(name)
 
-        let badge = makeStateBadge(r.on ? "on" : "off", tint: r.on ? r.tint : nil)
-        badge.setFrameOrigin(NSPoint(x: padL + labelW,
-                                     y: (h - badge.frame.height) / 2))
+        let badge = makeStateBadge(r.badge.text, tint: r.badge.tint)
+        badge.setFrameOrigin(NSPoint(x: padL + labelW, y: (h - badge.frame.height) / 2))
         v.addSubview(badge)
 
         let note = NSTextField(labelWithString: r.note)
         note.font = BarFont.monoCaption
-        note.textColor = r.on ? .secondaryLabelColor : .tertiaryLabelColor
+        note.textColor = .tertiaryLabelColor
         let noteH = ceil(note.attributedStringValue.size().height)
         note.frame = NSRect(x: padL + labelW + badgeW, y: (h - noteH) / 2,
                             width: noteW, height: noteH)
         v.addSubview(note)
 
-        // The view owns the mouse, so the click is wired here, not via the
-        // item's action (a view-based item never sends one).
+        // The view owns the mouse, so the click is wired here. A view-based
+        // NSMenuItem never sends its action.
         let item = NSMenuItem(title: r.label, action: nil, keyEquivalent: "")
-        v.onClick = { [weak self] in
-            _ = self?.perform(action, with: item)
-        }
         item.view = v
-        item.isEnabled = enabled
-        item.toolTip = tip
+        item.isEnabled = r.enabled
+        item.toolTip = r.tip
+        if let build = r.submenu {
+            item.submenu = build()
+        } else if let click = r.onClick {
+            v.onClick = click
+        }
+        menu.addItem(item)
+        if let link = r.link { addSBLinkRow(menu, link, indent: padL + BarFont.scaled(10)) }
+    }
+
+    /// The service's address as its own row. Opening it closes the menu and does
+    /// not touch the toggle, because the two are different menu items.
+    private func addSBLinkRow(_ menu: NSMenu, _ url: String, indent: CGFloat) {
+        let h = BarFont.scaled(19)
+        let text = NSTextField(labelWithString: url)
+        text.font = BarFont.monoCaption
+        text.textColor = .linkColor
+        let size = text.attributedStringValue.size()
+        text.frame = NSRect(x: indent, y: (h - ceil(size.height)) / 2,
+                            width: ceil(size.width), height: ceil(size.height))
+
+        let v = MenuRowView(frame: NSRect(x: 0, y: 0,
+                                          width: indent + ceil(size.width) + BarFont.scaled(20),
+                                          height: h))
+        v.staysOpen = false   // opening a link is a leave-the-menu action
+        v.onClick = { if let u = URL(string: url) { NSWorkspace.shared.open(u) } }
+        v.addSubview(text)
+
+        let item = NSMenuItem()
+        item.view = v
+        item.toolTip = "Open \(url) in your browser. Does not change the switch."
         menu.addItem(item)
     }
 
-    /// The cadence presets as one segmented strip, so five choices cost one row.
     private func cadenceStripItem() -> NSMenuItem {
         let labels = Self.refreshPresets.map { $0 < 1 ? String(format: "%.1fs", $0) : "\(Int($0))s" }
         let seg = NSSegmentedControl(labels: labels, trackingMode: .selectOne,
@@ -1364,32 +1754,50 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func rebuildSwitchboard() {
         guard let m = switchboardMenu else { return }
         m.removeAllItems()
-        let rows = switchboardRows
-        addSwitchboardHeader(m, "SYSTEM")
-        addSwitchRow(m, rows[0], action: #selector(toggleKeepAwake(_:)),
-                     tip: "Prevent idle system sleep so remote (claude.ai) sessions stay connected on battery. The display still sleeps and locks normally.")
-        addSwitchRow(m, rows[1], action: #selector(toggleKanban(_:)), enabled: !kanbanBusy,
-                     tip: "The kanban board server on port 5106. It stays off across reboots; this switch is where it comes back.")
-        m.addItem(.separator())
-        addSwitchboardHeader(m, "FEED")
-        addSwitchRow(m, rows[2], action: #selector(togglePause(_:)),
-                     tip: "Pause or resume the scan that feeds this menu.")
-        m.addItem(cadenceStripItem())
+        let groups: [(String, [SBRow])] = [
+            ("GUARDS",   sbGuardRows()),
+            ("SERVICES", sbServiceRows()),
+            ("COST",     sbCostRows()),
+            ("SESSION",  sbSessionRows()),
+            ("FEED",     sbFeedRows()),
+        ]
+        let column = sbLabelColumn(groups.flatMap { $0.1 })
+        for (i, g) in groups.enumerated() where !g.1.isEmpty {
+            if i > 0 { m.addItem(.separator()) }
+            addSwitchboardHeader(m, g.0)
+            for row in g.1 { addSBRow(m, row, labelColumn: column) }
+            if g.0 == "COST" { m.addItem(effortStripItem()) }
+            if g.0 == "FEED" { m.addItem(cadenceStripItem()) }
+        }
     }
 
-    /// One cheap liveness probe; async so the menu never waits on it.
-    private func probeKanban() {
-        guard !kanbanBusy, let url = URL(string: "http://127.0.0.1:5106/api/boards") else { return }
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 1.0
-        URLSession.shared.dataTask(with: req) { [weak self] _, resp, _ in
-            let up = (resp as? HTTPURLResponse)?.statusCode == 200
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                self.kanbanUp = up
-                self.refreshSwitchboard()
-            }
-        }.resume()
+    /// Effort as one strip, same shape as the cadence picker.
+    private func effortStripItem() -> NSMenuItem {
+        let seg = NSSegmentedControl(labels: Settings.efforts, trackingMode: .selectOne,
+                                     target: self, action: #selector(effortStripChanged(_:)))
+        seg.segmentStyle = .texturedRounded
+        seg.font = BarFont.monoCaption
+        if let idx = Settings.efforts.firstIndex(of: sbSnapshot.effort) {
+            seg.selectedSegment = idx
+        }
+        let padL = BarFont.scaled(18)
+        let h = BarFont.scaled(30)
+        let stripW = BarFont.scaled(250)
+        seg.frame = NSRect(x: padL, y: (h - BarFont.scaled(22)) / 2,
+                           width: stripW, height: BarFont.scaled(22))
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: padL + stripW + BarFont.scaled(14), height: h))
+        v.addSubview(seg)
+        let item = NSMenuItem()
+        item.view = v
+        item.toolTip = "Default reasoning effort for new turns. Higher costs more."
+        return item
+    }
+
+    @objc private func effortStripChanged(_ sender: NSSegmentedControl) {
+        let idx = sender.selectedSegment
+        guard idx >= 0, idx < Settings.efforts.count else { return }
+        Settings.write(key: "effortLevel", value: Settings.efforts[idx])
+        refreshSnapshot()
     }
 
     @objc private func toggleKanban(_ sender: NSMenuItem) {
@@ -1412,13 +1820,13 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 guard let self = self else { return }
                 self.kanbanBusy = false
-                self.probeKanban()
+                self.refreshSnapshot()
             }
         }
         do { try task.run() } catch {
             derr("kanban toggle failed: \(fmtErr(error))")
             kanbanBusy = false
-            probeKanban()
+            refreshSnapshot()
         }
     }
 
