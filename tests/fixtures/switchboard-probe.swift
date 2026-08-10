@@ -169,6 +169,20 @@ for hex in ["#FFFF00", "#000000", "#FFFFFF", "#808080", "#E12D0F", "#781EC3", "#
 }
 check("the floor survives adversarial palette choices", floorHolds)
 
+print("\n── shell timeout (gate finding: a wedged subprocess leaked a thread) ──")
+let t0 = Date()
+let wedged = Services.shell("/bin/sleep", ["30"], timeout: 1.0)
+let elapsed = Date().timeIntervalSince(t0)
+check("a wedged command is capped, not waited on", elapsed < 3.0,
+      String(format: "returned after %.2fs", elapsed))
+check("a killed command yields no output", wedged.isEmpty)
+// A child that outruns the 64K pipe buffer deadlocks if nobody drains it, which
+// would make the cap itself unreachable.
+let big = Services.shell("/bin/zsh", ["-lc", "head -c 300000 /dev/zero | tr '\\0' 'x'"], timeout: 5.0)
+check("output larger than the pipe buffer still returns", big.count >= 300_000, "\(big.count) bytes")
+let quick = Services.shell("/bin/echo", ["alive"], timeout: 4.0)
+check("a fast command is untouched by the cap", quick.contains("alive"))
+
 print("\n── row click path (the defect class that shipped inert) ──")
 var clicks = 0
 let row = MenuRowView(frame: NSRect(x: 0, y: 0, width: 240, height: 26))

@@ -273,7 +273,12 @@ enum Services {
         return true
     }
 
-    static func shell(_ exe: String, _ args: [String]) -> String {
+    /// A subprocess that wedges would otherwise pin a background thread for every
+    /// menu-open and leave the switchboard silently stale, so every call is
+    /// capped. Reading the pipe happens on another queue: a child that fills the
+    /// 64K pipe buffer blocks forever on write if nobody drains it, and then the
+    /// timeout never gets a chance to fire.
+    static func shell(_ exe: String, _ args: [String], timeout: TimeInterval = 4.0) -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: exe)
         p.arguments = args
@@ -281,9 +286,28 @@ enum Services {
         p.standardOutput = pipe
         p.standardError = FileHandle.nullDevice
         guard (try? p.run()) != nil else { return "" }
-        let d = pipe.fileHandleForReading.readDataToEndOfFile()
+
+        var out = Data()
+        let lock = NSLock()
+        let drained = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            let d = pipe.fileHandleForReading.readDataToEndOfFile()
+            lock.lock(); out = d; lock.unlock()
+            drained.signal()
+        }
+
+        if drained.wait(timeout: .now() + timeout) == .timedOut {
+            p.terminate()
+            // SIGTERM can be ignored; give it a moment, then take the process out.
+            if drained.wait(timeout: .now() + 0.5) == .timedOut {
+                kill(p.processIdentifier, SIGKILL)
+                _ = drained.wait(timeout: .now() + 0.5)
+            }
+            return ""
+        }
         p.waitUntilExit()
-        return String(data: d, encoding: .utf8) ?? ""
+        lock.lock(); defer { lock.unlock() }
+        return String(data: out, encoding: .utf8) ?? ""
     }
 }
 
