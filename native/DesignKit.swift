@@ -29,6 +29,9 @@ enum BarFont {
     static var monoBody:     NSFont { .monospacedSystemFont(ofSize: 12 * scale, weight: .regular) }
     static var monoCaption:  NSFont { .monospacedSystemFont(ofSize: 11 * scale, weight: .regular) }
     static var sectionLabel: NSFont { .systemFont(ofSize: 10 * scale, weight: .semibold) }    // tracked header
+    /// The switchboard entry row, deliberately larger than any other menu row:
+    /// it is the door to a whole panel, not a peer of the actions beside it.
+    static var switchboardTitle: NSFont { .systemFont(ofSize: 15 * scale, weight: .semibold) }
 }
 
 // ── Segment builder ──────────────────────────────────────────────────────────

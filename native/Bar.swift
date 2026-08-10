@@ -1537,24 +1537,30 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let stale = s.approvals.filter { !$0.sessionIsLive }.count
         let up = [kanbanUp == true, s.hubReachable == true, s.brokerUp == true].filter { $0 }.count
 
+        // A STANDARD item, not a view row: only a standard NSMenuItem gets
+        // AppKit's native submenu opening and its chevron, and this row is the
+        // only way into the switchboard. Two lines come from a multi-line
+        // attributed title, which keeps all of that intact.
         let parent = NSMenuItem(title: "Switchboard", action: nil, keyEquivalent: "")
-        let summary = NSMutableAttributedString()
-        summary.append(seg("  Switchboard", BarFont.body, .labelColor))
-        summary.append(seg("\t", BarFont.monoCaption, .clear))
         var bits: [NSAttributedString] = []
         if !s.muted.isEmpty { bits.append(seg("\(s.muted.count) muted", BarFont.monoCaption, menuYellow)) }
         if stale > 0        { bits.append(seg("\(stale) stale", BarFont.monoCaption, menuYellow)) }
         bits.append(seg("\(up) up", BarFont.monoCaption, .secondaryLabelColor))
+
+        let summary = NSMutableAttributedString()
+        summary.append(seg(" Switchboard\n", BarFont.switchboardTitle, .labelColor))
+        summary.append(seg(" ", BarFont.monoCaption, .clear))
         for (i, b) in bits.enumerated() {
             if i > 0 { summary.append(seg(" · ", BarFont.monoCaption, .quaternaryLabelColor)) }
             summary.append(b)
         }
         let ps = NSMutableParagraphStyle()
-        ps.tabStops = [NSTextTab(textAlignment: .left, location: BarFont.scaled(178))]
+        ps.lineSpacing = BarFont.scaled(3)
+        ps.paragraphSpacingBefore = BarFont.scaled(2)
         summary.addAttribute(.paragraphStyle, value: ps,
                              range: NSRange(location: 0, length: summary.length))
         parent.attributedTitle = summary
-        setIcon(parent, "switch.2")
+        setSwitchboardIcon(parent)
         parent.submenu = buildSwitchboard()
         menu.addItem(parent)
     }
@@ -1674,6 +1680,16 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.toolTip = r.tip
         if let build = r.submenu {
             item.submenu = build()
+            // AppKit draws no submenu chevron on a view-based item, so the row
+            // would look like a dead end. Draw it, right-aligned like the real one.
+            let chev = NSTextField(labelWithString: "›")
+            chev.font = NSFont.systemFont(ofSize: BarFont.scaled(13), weight: .medium)
+            chev.textColor = .tertiaryLabelColor
+            let cs = chev.attributedStringValue.size()
+            chev.frame = NSRect(x: v.frame.width - BarFont.scaled(13),
+                                y: (h - ceil(cs.height)) / 2,
+                                width: ceil(cs.width) + 2, height: ceil(cs.height))
+            v.addSubview(chev)
         } else if let click = r.onClick {
             v.onClick = click
         }
@@ -2103,6 +2119,20 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let icon = icon { setIcon(i, icon) }
         menu.addItem(i)
         return i
+    }
+
+    /// The switchboard's own icon rather than an SF Symbol, drawn larger to
+    /// match the two-line row. Template so it tints with the label colour.
+    private func setSwitchboardIcon(_ item: NSMenuItem) {
+        let path = widgetDir + "/assets/switchboard.svg"
+        guard let img = NSImage(contentsOfFile: path) else {
+            setIcon(item, "switch.2")   // the shipped symbol, if the asset is missing
+            return
+        }
+        let side = BarFont.scaled(26)
+        img.size = NSSize(width: side, height: side)
+        img.isTemplate = true
+        item.image = img
     }
 
     private func setIcon(_ item: NSMenuItem, _ symbol: String) {
