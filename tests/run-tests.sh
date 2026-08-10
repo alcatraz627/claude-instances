@@ -65,11 +65,16 @@ t_check "tests/run-tests.sh parses" bash -n tests/run-tests.sh
 
 t_section "swift compile"
 SWIFT_OUT=$(mktemp)
-# The bar is split across logical files; compile them as one module (the build).
-if /usr/bin/swiftc -O native/main.swift native/Models.swift native/Palette.swift \
-        native/DesignKit.swift native/Actions.swift native/LiveRowView.swift \
-        native/Bar.swift native/Dashboard.swift native/SettingsWindowController.swift \
-        -o "$SWIFT_OUT" 2>&1; then
+# The bar is split across logical files; compile them as one module. The list is
+# read from build.sh rather than copied, because a copy drifts silently: adding
+# Switchboard.swift to the build left this check compiling without it.
+# A bare native/*.swift glob is wrong too, since color-sampler.swift is a
+# standalone tool the module deliberately excludes.
+SWIFT_SRCS=$(grep -oE '\$SCRIPT_DIR/[A-Za-z]+\.swift' native/build.sh | sed 's|\$SCRIPT_DIR|native|')
+if [[ -z "$SWIFT_SRCS" ]]; then
+    t_fail "could not read the source list out of native/build.sh"
+fi
+if /usr/bin/swiftc -O $SWIFT_SRCS -o "$SWIFT_OUT" 2>&1; then
     t_pass "bar (split into logical files) compiles (-O)"
     rm -f "$SWIFT_OUT"
 else
