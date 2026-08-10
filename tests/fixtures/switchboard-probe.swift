@@ -143,6 +143,32 @@ check("refuses to create settings.json when the dir exists but the file does not
       && !fm.fileExists(atPath: emptyRoot + "/settings.json"))
 SwitchboardPaths.gccRoot = fixture
 
+print("\n── badge colour rules ──")
+// Light wants white type on a saturated fill, dark wants dark type on a lighter
+// one. Picking the easier of black/white put dark text on every mid-tone fill.
+for (mode, dark) in [("light", false), ("dark", true)] {
+    var worstRatio: CGFloat = 99
+    var wrongText = 0
+    for tok in [PaletteToken.successHigh, .stateActive, .warnMid, .warnHigh] {
+        let pair = accessibleBadgePair(PaletteStore.shared.color(for: tok), dark: dark)
+        let isWhite = relativeLuminance(pair.text) > 0.5
+        if isWhite == dark { wrongText += 1 }
+        worstRatio = min(worstRatio, contrastRatio(pair.text, pair.fill))
+    }
+    check("\(mode): text is \(dark ? "dark" : "white") on every badge", wrongText == 0)
+    check("\(mode): every badge clears 4.5:1", worstRatio >= 4.5,
+          String(format: "worst %.2f:1", Double(worstRatio)))
+}
+// The floor must survive a user-chosen palette, not just the shipped one.
+var floorHolds = true
+for hex in ["#FFFF00", "#000000", "#FFFFFF", "#808080", "#E12D0F", "#781EC3", "#C3961E"] {
+    for dark in [false, true] {
+        let pair = accessibleBadgePair(NSColor.fromHex(hex)!, dark: dark)
+        if contrastRatio(pair.text, pair.fill) < 4.5 { floorHolds = false }
+    }
+}
+check("the floor survives adversarial palette choices", floorHolds)
+
 print("\n── row click path (the defect class that shipped inert) ──")
 var clicks = 0
 let row = MenuRowView(frame: NSRect(x: 0, y: 0, width: 240, height: 26))

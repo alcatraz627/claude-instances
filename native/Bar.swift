@@ -1244,6 +1244,9 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var onClick: (() -> Void)? = nil
         var submenu: (() -> NSMenu)? = nil
         var tip: String = ""
+        /// Shown as a separate row beneath this one while the service is up. It
+        /// is its own menu item, so opening the link cannot reach the toggle.
+        var link: String? = nil
     }
 
     /// Everything the switchboard renders, read once per rebuild. Service probes
@@ -1256,6 +1259,9 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var effort = "unknown"
         var boardSync = false
         var hubReachable: Bool? = nil
+        /// Separate from hubReachable: the advertised (phone) address can be dead
+        /// while localhost still serves, and the link should follow what works.
+        var hubLocal: Bool? = nil
         var hubHost: String? = nil
         var brokerUp: Bool? = nil
         var decisionPages: String? = nil
@@ -1276,10 +1282,11 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             s.effort = Settings.effortLevel()
             s.boardSync = BoardSync.enabled()
             s.hubHost = Services.hubAdvertisedHost()
+            s.hubLocal = Services.probeHTTP("http://127.0.0.1:5400/healthz")
             if let h = s.hubHost {
                 s.hubReachable = Services.probeHTTP("http://\(h):5400/healthz")
             } else {
-                s.hubReachable = Services.probeHTTP("http://127.0.0.1:5400/healthz")
+                s.hubReachable = s.hubLocal
             }
             s.brokerUp = Services.shell("/bin/zsh", ["-lc", "claude-ipc daemon status 2>/dev/null"])
                 .contains("up")
@@ -1364,7 +1371,8 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                           note: kanbanNote,
                           enabled: !kanbanBusy,
                           onClick: { [weak self] in self?.toggleKanban(NSMenuItem()) },
-                          tip: "The kanban board server on port 5106. It stays off across reboots; this switch is where it comes back."))
+                          tip: "The kanban board server on port 5106. It stays off across reboots; this switch is where it comes back.",
+                          link: kanbanUp == true ? "http://localhost:5106" : nil))
 
         // Reachability, not just liveness: a listener on a tailnet address that no
         // longer resolves is up and unreachable at once. That shipped undetected.
@@ -1378,7 +1386,8 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                           badge: hubOK ? .on(menuGreen) : .off,
                           note: hubNote,
                           onClick: { [weak self] in self?.sbToggleHub() },
-                          tip: "The phone-facing session hub on port 5400. Restart it after Tailscale reconnects, or its advertised address goes stale."))
+                          tip: "The phone-facing session hub on port 5400. Restart it after Tailscale reconnects, or its advertised address goes stale.",
+                          link: s.hubLocal == true ? "http://localhost:5400" : nil))
 
         rows.append(SBRow(label: "ipc Broker",
                           badge: s.brokerUp == true ? .on(menuGreen) : .off,
@@ -1394,7 +1403,8 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                   Services.pm2(dp == "online" ? "stop" : "start", "decision-pages")
                                   self?.refreshSnapshot()
                               },
-                              tip: "The decision-page server used for batched human feedback."))
+                              tip: "The decision-page server used for batched human feedback.",
+                              link: dp == "online" ? "http://localhost:5197" : nil))
         }
 
         if s.jobsTotal > 0 {
@@ -1579,6 +1589,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                   r.label as NSString, badge as NSString,
                                   r.note as NSString, affordance as NSString,
                                   (r.enabled ? "" : " disabled") as NSString))
+                if let link = r.link { out.append("      link: \(link)") }
             }
         }
         out.append("\nsnapshot: muted=\(sbSnapshot.muted.count) approvals=\(sbSnapshot.approvals.count) "
@@ -1666,6 +1677,31 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if let click = r.onClick {
             v.onClick = click
         }
+        menu.addItem(item)
+        if let link = r.link { addSBLinkRow(menu, link, indent: padL + BarFont.scaled(10)) }
+    }
+
+    /// The service's address as its own row. Opening it closes the menu and does
+    /// not touch the toggle, because the two are different menu items.
+    private func addSBLinkRow(_ menu: NSMenu, _ url: String, indent: CGFloat) {
+        let h = BarFont.scaled(19)
+        let text = NSTextField(labelWithString: url)
+        text.font = BarFont.monoCaption
+        text.textColor = .linkColor
+        let size = text.attributedStringValue.size()
+        text.frame = NSRect(x: indent, y: (h - ceil(size.height)) / 2,
+                            width: ceil(size.width), height: ceil(size.height))
+
+        let v = MenuRowView(frame: NSRect(x: 0, y: 0,
+                                          width: indent + ceil(size.width) + BarFont.scaled(20),
+                                          height: h))
+        v.staysOpen = false   // opening a link is a leave-the-menu action
+        v.onClick = { if let u = URL(string: url) { NSWorkspace.shared.open(u) } }
+        v.addSubview(text)
+
+        let item = NSMenuItem()
+        item.view = v
+        item.toolTip = "Open \(url) in your browser. Does not change the switch."
         menu.addItem(item)
     }
 
