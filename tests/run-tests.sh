@@ -66,8 +66,7 @@ t_check "tests/run-tests.sh parses" bash -n tests/run-tests.sh
 t_section "swift compile"
 SWIFT_OUT=$(mktemp)
 # The bar is split across logical files; compile them as one module. The list is
-# read from build.sh rather than copied, because a copy drifts silently: adding
-# Switchboard.swift to the build left this check compiling without it.
+# read from build.sh rather than copied, because a copy drifts silently.
 # A bare native/*.swift glob is wrong too, since color-sampler.swift is a
 # standalone tool the module deliberately excludes.
 SWIFT_SRCS=$(grep -oE '\$SCRIPT_DIR/[A-Za-z]+\.swift' native/build.sh | sed 's|\$SCRIPT_DIR|native|')
@@ -76,35 +75,11 @@ if [[ -z "$SWIFT_SRCS" ]]; then
 fi
 if /usr/bin/swiftc -O $SWIFT_SRCS -o "$SWIFT_OUT" 2>&1; then
     t_pass "bar (split into logical files) compiles (-O)"
-    t_check "agent policy panel dump lists the policies" "$SWIFT_OUT" --dump-policy
     rm -f "$SWIFT_OUT"
 else
     t_fail "bar FAILED to compile"
     rm -f "$SWIFT_OUT"
 fi
-
-# ── Agent policy panel: the store, the hooks that read it, the panel's writes ──
-t_section "agent policy"
-t_check "pol.sh store (resolution, scopes, snoozes, owner-only writes)" bash "$HOME/.claude/scripts/pol/pol.test.sh"
-t_check "policy hooks (every key and route, old stores still win)"      bash "$HOME/.claude/scripts/hooks/guard-policy.test.sh"
-t_check "panel store probe (every write the panel makes)"               bash tests/fixtures/policy-probe.sh
-
-# ── Home tab: the bulb library's input checks (offline, never touches a bulb) ──
-t_section "home (wiz.py)"
-t_check "scene table is served"               python3 lib/wiz.py scenes
-wiz_rc() { python3 lib/wiz.py "$@" >/dev/null 2>&1; echo $?; }
-t_eq "out-of-range brightness refused (exit 2)" "2" "$(wiz_rc set 127.0.0.1 dimming=500)"
-t_eq "unknown key refused (exit 2)"             "2" "$(wiz_rc set 127.0.0.1 color=red)"
-t_eq "bad state refused (exit 2)"               "2" "$(wiz_rc set 127.0.0.1 state=maybe)"
-t_eq "no answer is an error, not a hang (exit 1)" "1" "$(wiz_rc set 127.0.0.1 state=on)"
-
-# ── Machine tab: schedules and wake-on-LAN libraries (no job is run) ─────────
-t_section "machine (jobs.py, wol.py)"
-t_check "jobs.py list emits a JSON array" python3 -c "import json,subprocess;assert isinstance(json.loads(subprocess.run(['python3','lib/jobs.py','list'],capture_output=True,text=True).stdout),list)"
-py_rc() { python3 "$@" >/dev/null 2>&1; echo $?; }
-t_eq "jobs.py run of an unknown label fails (exit 1)" "1" "$(py_rc lib/jobs.py run com.example.no-such-job)"
-t_eq "wol.py refuses a malformed MAC (exit 2)"       "2" "$(py_rc lib/wol.py wake not-a-mac)"
-t_eq "wol.py sends to a well-formed MAC (exit 0)"    "0" "$(py_rc lib/wol.py wake 02:00:00:00:00:01)"
 
 # ── Design primitives (P2 — the shared building blocks) ──────────────────────
 t_section "design primitives"

@@ -105,26 +105,13 @@ The Claude logo appears in your menu bar. Click it to see your running sessions.
   dropdown carries the per-window detail. Below the warn zone, no percentage shows
 - Shows `⚠ N` on the count badge when permission requests are pending
 
-### Switchboard Icon (the faders icon)
+### Switchboard
 
-A second menu bar icon from the same app, opening a panel with two tabs.
-**System** holds the machine switches that used to live in the dropdown's
-Switchboard section (removed 2026-09-25): Keep Awake, services, always
-thinking, board sync, guards, auto-refresh and the scan cadence. Any switch
-can be flipped for a while (the timer icon: "on for 2 hours", "off until
-6 PM"); timers survive a restart and never undo a change you made by hand in
-between. **Agents** lists
-every policy in `~/.claude/policy/registry.json`: what agents may do as you
-(GitHub, Slack, Linear, commits, pushes, deploys, model seats) plus a few
-thresholds. Each row gets the control its type declares, a timed flip on the
-clock button, and a reset when it differs from its default. The scope picker
-switches between Everywhere and a per-repo override. Writes go through
-`~/.claude/scripts/pol/pol.sh`, which the hooks read on every call, so a change
-applies to every running session at once. Full reference:
-`~/.claude/features/agent-policy.md`.
-
-Headless: `claude-instances-bar --dump-policy [--scope <dir>]` prints the rows;
-`--snapshot-policy out.png [--dark|--light]` renders the panel to a PNG.
+The faders icon (agent policy, usage limits, machine switches, smart bulbs) is
+its own app now: [switchboard-mac](https://github.com/alcatraz627/switchboard-mac).
+The dropdown's **Switchboard** action opens it, launching it first if needed.
+Its Usage tab moves the same warn and danger zones this icon is coloured by;
+it mirrors them into this app's preferences and asks the icon to redraw.
 
 ### Dropdown Menu (min-width 340pt), live-updating
 
@@ -406,8 +393,6 @@ Three persisted preferences, each wired to its render path:
 │   ├── LiveRowView.swift            # The live instance row NSView
 │   ├── Bar.swift                    # BarDelegate + menu builders
 │   ├── Dashboard.swift              # SwiftUI dashboard + tabs
-│   ├── Policy.swift                 # agent-policy model + the pol.sh bridge
-│   ├── PolicyPanel.swift            # agent-policy panel, its menu bar icon, snapshot
 │   ├── claude-logo.svg              # Menu-bar icon
 │   ├── color-sampler.swift          # Internal: vibrancy color preview tool
 │   ├── build.sh                     # Compile (swiftc -O native/*.swift) + install + manage
