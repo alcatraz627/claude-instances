@@ -211,5 +211,37 @@ if CommandLine.arguments.contains("--dump-switchboard") {
     exit(0)
 }
 
+// Headless exercise of the agent-policy panel. --dump-policy prints every row
+// the panel would show; --snapshot-policy renders the real panel to a PNG.
+// Both read only. Usage:
+//   --dump-policy [--scope <dir>]
+//   --snapshot-policy <out.png> [--dark|--light] [--scope <dir>]
+func argAfter(_ flag: String) -> String? {
+    let a = CommandLine.arguments
+    guard let i = a.firstIndex(of: flag), i + 1 < a.count else { return nil }
+    return a[i + 1]
+}
+if CommandLine.arguments.contains("--probe-timers") {
+    let report = delegate.probeSystemTimers()
+    print(report)
+    exit(report.hasSuffix("all passed") ? 0 : 1)
+}
+if CommandLine.arguments.contains("--dump-policy") {
+    let store = PolicyStore()
+    if let d = argAfter("--scope"), let root = PolicyCLI.root(of: d) { store.scope = .project(root) }
+    let r = PolicyCLI.load(store.scope)
+    store.applyForSnapshot(items: r.items, projects: r.projects, error: r.error)
+    print(policyDump(store))
+    exit(r.error == nil ? 0 : 1)
+}
+if let out = argAfter("--snapshot-policy") {
+    let tab = argAfter("--tab") ?? "agents"
+    let ok = snapshotPolicyPanel(to: out, dark: !CommandLine.arguments.contains("--light"),
+                                 scopeDir: argAfter("--scope"), tab: tab,
+                                 system: tab == "system" ? delegate.panelSystemGroupsFresh() : [])
+    print(ok ? "wrote \(out)" : "snapshot failed")
+    exit(ok ? 0 : 1)
+}
+
 app.delegate = delegate
 app.run()

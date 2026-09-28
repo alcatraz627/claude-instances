@@ -27,8 +27,10 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Kanban board server state — nil until the first probe answers.
     private var kanbanUp: Bool?
     private var kanbanBusy = false
-    private weak var switchboardMenu: NSMenu?
     private var sbSnapshot = SBSnapshot()
+    /// The second menu bar icon: the agent-policy panel (PolicyPanel.swift).
+    private var policyController: PolicyStatusController?
+    private var systemTimerTick: Timer?
     private var keepAwakeAssertionID: IOPMAssertionID = 0
 
     /// Tick counter for quick/full scan alternation.
@@ -121,6 +123,28 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         theMenu.autoenablesItems = false
         theMenu.delegate         = self
         statusItem.menu          = theMenu
+
+        // The agent-policy panel lives in this process, on its own icon, so it is
+        // one click away without being another app to keep running.
+        policyController = PolicyStatusController(
+            liveDirs: { [weak self] in (self?.cachedData?.live ?? []).compactMap { $0.cwd } },
+            requestSystemRefresh: { [weak self] in self?.refreshSnapshot() })
+        if let store = policyController?.store {
+            store.startSystemTimer = { [weak self] k, until in self?.startSystemTimer(k, until: until) }
+            store.cancelSystemTimer = { [weak self] k in self?.cancelSystemTimer(k) }
+            store.endSystemTimerNow = { [weak self] k in self?.endSystemTimerNow(k) }
+        }
+        systemTimerTick = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            self?.fireDueSystemTimers()
+        }
+        // One probe shortly after launch, so the System tab has rows before the
+        // first open instead of loading while the owner watches.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.refreshSnapshot() }
+        if CommandLine.arguments.contains("--open-policy") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.policyController?.show()
+            }
+        }
 
         // Hover detection for the usage-preview popover. A tracking area on the
         // status button doesn't deliver to a non-view owner, and global
@@ -511,9 +535,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // ── Rate limits (top — most urgent info) ────────────────────────────
         addRateLimitsSection(menu, data)
-
-        // ── Switchboard (every on/off the widget owns, one hover away) ──────
-        addSwitchboardSection(menu)
 
         // ── Usage stats (today/week aggregates) ─────────────────────────────
         addUsageStatsSection(menu, data)
@@ -1265,8 +1286,19 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var hubHost: String? = nil
         var brokerUp: Bool? = nil
         var decisionPages: String? = nil
+        /// nil when the warden institution is not installed (no row shown).
+        var wardenRunning: Bool? = nil
+        /// usage-gate standdown; display-only, self-clears on quota reset.
+        var wardenGated = false
+        /// The stand-down threshold the gate actually uses (policy ops.usage_gate_pct).
+        var wardenGatePct = 90
         var jobsTotal = 0
         var jobsFailing = 0
+        /// Other processes holding the Mac awake right now (codex, caffeinate…).
+        var awakeHolders: [String] = []
+        /// The owner's launchd jobs (lib/jobs.py list) and saved wake-on-LAN devices.
+        var jobs: [[String: Any]] = []
+        var wolTargets: [[String: Any]] = []
     }
 
     /// Refresh the slow half off the main thread. The menu renders whatever the
@@ -1291,12 +1323,50 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             s.brokerUp = Services.shell("/bin/zsh", ["-lc", "claude-ipc daemon status 2>/dev/null"])
                 .contains("up")
             s.decisionPages = Services.pm2Status("decision-pages")
+            s.wardenRunning = Warden.installed() ? Warden.running() : nil
+            if s.wardenRunning == true {
+                s.wardenGated = Warden.gated()
+                let pct = PolicyCLI.run(["get", "ops.usage_gate_pct"]).out
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if let n = Int(pct) { s.wardenGatePct = n }
+            }
             let kanban = Services.probeHTTP("http://127.0.0.1:5106/api/boards")
             let jobs = Services.shell("/bin/zsh", ["-lc",
                 "launchctl list 2>/dev/null | grep -c alcatraz; launchctl list 2>/dev/null | awk '$2 != 0 && /alcatraz/' | wc -l"])
             let nums = jobs.split(separator: "\n").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
             s.jobsTotal = nums.first ?? 0
             s.jobsFailing = nums.count > 1 ? nums[1] : 0
+            // Who else blocks sleep: pmset's per-process list, minus the OS's own
+            // display-on assertion and this app. A caffeinate is named by the
+            // process it runs for, so "node" rather than "caffeinate".
+            var holders: [String] = []
+            let asserts = Services.shell("/usr/bin/pmset", ["-g", "assertions"]).split(separator: "\n").map(String.init)
+            for (i, line) in asserts.enumerated() {
+                guard line.contains("PreventUserIdleSystemSleep") || line.contains("PreventSystemSleep"),
+                      let open = line.range(of: "("), let close = line.range(of: ")", range: open.upperBound..<line.endIndex)
+                else { continue }
+                var name = String(line[open.upperBound..<close.lowerBound])
+                // macOS's own daemons (powerd, bluetoothd, runningboardd…) are
+                // not something the owner started; only tools and apps are listed.
+                if name == "claude-instances-bar" || (name.hasSuffix("d") && name == name.lowercased()
+                    && !name.contains("-") && name.count > 4) { continue }
+                if name == "caffeinate", i + 1 < asserts.count,
+                   let behalf = asserts[i + 1].range(of: "on behalf of '") {
+                    let rest = asserts[i + 1][behalf.upperBound...]
+                    name = (String(rest.prefix { $0 != "'" }) as NSString).lastPathComponent
+                } else if name == "caffeinate" {
+                    name = "claude"   // Claude Code's rolling caffeinate carries no "on behalf of"
+                }
+                if !holders.contains(name) { holders.append(name) }
+            }
+            s.awakeHolders = holders
+            let lib = SwitchboardPaths.gccRoot + "/widgets/claude-instances/lib"
+            func pyList(_ script: String) -> [[String: Any]] {
+                let out = Services.shell("/usr/bin/env", ["python3", lib + "/" + script, "list"], timeout: 8)
+                return (try? JSONSerialization.jsonObject(with: Data(out.utf8)) as? [[String: Any]]) ?? []
+            }
+            s.jobs = pyList("jobs.py")
+            s.wolTargets = pyList("wol.py")
             DispatchQueue.main.async {
                 self?.sbSnapshot = s
                 // One probe path for kanban, so the menu and the headless dump
@@ -1407,35 +1477,30 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                               link: dp == "online" ? "http://localhost:5197" : nil))
         }
 
-        if s.jobsTotal > 0 {
-            rows.append(SBRow(label: "Scheduled jobs",
-                              badge: s.jobsFailing > 0 ? .count(s.jobsFailing, menuRed)
-                                                       : .count(s.jobsTotal, menuGreen),
-                              note: s.jobsFailing > 0 ? "\(s.jobsFailing) of \(s.jobsTotal) failing"
-                                                      : "\(s.jobsTotal) healthy",
-                              enabled: false,
-                              tip: "launchd jobs owned by this account. Read-only here."))
+        if let wr = s.wardenRunning {
+            let badge: SBBadge = !wr ? .off : (s.wardenGated ? .on(menuYellow) : .on(menuGreen))
+            let note = !wr ? "paused by you, deltas held"
+                     : (s.wardenGated ? "standing down, usage >\(s.wardenGatePct)% (auto-resumes)" : "beats live")
+            rows.append(SBRow(label: "Warden",
+                              badge: badge,
+                              note: note,
+                              onClick: { [weak self] in
+                                  Warden.set(running: !wr)
+                                  self?.refreshSnapshot()
+                              },
+                              tip: "The session warden. Click toggles YOUR pause (a saved override that supersedes everything). The yellow standing-down state is the usage gate; it clears itself when a window reopens — no click needed. Same sentinel as `claude-warden pause`."))
         }
-        return rows
-    }
 
-    private func sbCostRows() -> [SBRow] {
-        let s = sbSnapshot
-        return [SBRow(label: "Always thinking",
-                      badge: s.thinking ? .on(menuTeal) : .off,
-                      note: s.thinking ? "every turn" : "only when asked",
-                      onClick: { [weak self] in
-                          Settings.write(key: SettingsFlag.alwaysThinking.rawValue, value: !s.thinking)
-                          self?.refreshSnapshot()
-                      },
-                      tip: "Extended thinking on every turn. Costs tokens and latency on turns that do not need it.")]
+        return rows
     }
 
     private func sbSessionRows() -> [SBRow] {
         return [
             SBRow(label: "Keep Awake",
                   badge: keepAwakeOn ? .on(menuTeal) : .off,
-                  note: keepAwakeOn ? "sleep blocked" : "system may sleep",
+                  note: keepAwakeOn ? "sleep blocked"
+                      : (sbSnapshot.awakeHolders.isEmpty ? "system may sleep"
+                         : "also held awake by " + sbSnapshot.awakeHolders.joined(separator: ", ")),
                   onClick: { [weak self] in self?.toggleKeepAwake(NSMenuItem()) },
                   tip: "Prevent idle system sleep so remote (claude.ai) sessions stay connected on battery. The display still sleeps and locks normally."),
             SBRow(label: "Board sync",
@@ -1532,39 +1597,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // ── Rendering ────────────────────────────────────────────────────────────
 
-    private func addSwitchboardSection(_ menu: NSMenu) {
-        let s = sbSnapshot
-        let stale = s.approvals.filter { !$0.sessionIsLive }.count
-        let up = [kanbanUp == true, s.hubReachable == true, s.brokerUp == true].filter { $0 }.count
-
-        // A STANDARD item, not a view row: only a standard NSMenuItem gets
-        // AppKit's native submenu opening and its chevron, and this row is the
-        // only way into the switchboard. Two lines come from a multi-line
-        // attributed title, which keeps all of that intact.
-        let parent = NSMenuItem(title: "Switchboard", action: nil, keyEquivalent: "")
-        var bits: [NSAttributedString] = []
-        if !s.muted.isEmpty { bits.append(seg("\(s.muted.count) muted", BarFont.monoCaption, menuYellow)) }
-        if stale > 0        { bits.append(seg("\(stale) stale", BarFont.monoCaption, menuYellow)) }
-        bits.append(seg("\(up) up", BarFont.monoCaption, .secondaryLabelColor))
-
-        let summary = NSMutableAttributedString()
-        summary.append(seg(" Switchboard\n", BarFont.switchboardTitle, .labelColor))
-        summary.append(seg(" ", BarFont.monoCaption, .clear))
-        for (i, b) in bits.enumerated() {
-            if i > 0 { summary.append(seg(" · ", BarFont.monoCaption, .quaternaryLabelColor)) }
-            summary.append(b)
-        }
-        let ps = NSMutableParagraphStyle()
-        ps.lineSpacing = BarFont.scaled(3)
-        ps.paragraphSpacingBefore = BarFont.scaled(2)
-        summary.addAttribute(.paragraphStyle, value: ps,
-                             range: NSRange(location: 0, length: summary.length))
-        parent.attributedTitle = summary
-        setSwitchboardIcon(parent)
-        parent.submenu = buildSwitchboard()
-        menu.addItem(parent)
-    }
-
     /// Renders the real Switchboard to text: same snapshot, same group walk, same
     /// row builder the menu uses. The one affordance that makes these rows
     /// verifiable without a screen.
@@ -1581,7 +1613,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let groups: [(String, [SBRow])] = [
             ("GUARDS",   sbGuardRows()),
             ("SERVICES", sbServiceRows()),
-            ("COST",     sbCostRows()),
             ("SESSION",  sbSessionRows()),
             ("FEED",     sbFeedRows()),
         ]
@@ -1603,22 +1634,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                    + "hubReachable=\(String(describing: sbSnapshot.hubReachable)) "
                    + "jobs=\(sbSnapshot.jobsTotal)/\(sbSnapshot.jobsFailing)")
         return out.joined(separator: "\n")
-    }
-
-    private func buildSwitchboard() -> NSMenu {
-        let m = NSMenu()
-        m.autoenablesItems = false   // matches the main menu; we own enablement
-        switchboardMenu = m
-        rebuildSwitchboard()         // synchronous: the menu must be populated on return
-        return m
-    }
-
-    private func addSwitchboardHeader(_ menu: NSMenu, _ title: String) {
-        let i = NSMenuItem()
-        i.attributedTitle = seg("  " + title, BarFont.sectionLabel,
-                                .tertiaryLabelColor, kern: 0.8)
-        i.isEnabled = false
-        menu.addItem(i)
     }
 
     private func addSBNote(_ menu: NSMenu, _ text: String) {
@@ -1721,99 +1736,363 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item)
     }
 
-    private func cadenceStripItem() -> NSMenuItem {
-        let labels = Self.refreshPresets.map { $0 < 1 ? String(format: "%.1fs", $0) : "\(Int($0))s" }
-        let seg = NSSegmentedControl(labels: labels, trackingMode: .selectOne,
-                                     target: self, action: #selector(cadenceStripChanged(_:)))
-        seg.segmentStyle = .texturedRounded
-        seg.font = BarFont.monoCaption
-        if let idx = Self.refreshPresets.firstIndex(where: { abs($0 - refreshInterval) < 0.01 }) {
-            seg.selectedSegment = idx
-        }
-        seg.isEnabled = !refreshPaused
-
-        let padL = BarFont.scaled(18)
-        let h = BarFont.scaled(30)
-        let stripW = BarFont.scaled(250)
-        seg.frame = NSRect(x: padL, y: (h - BarFont.scaled(22)) / 2,
-                           width: stripW, height: BarFont.scaled(22))
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: padL + stripW + BarFont.scaled(14), height: h))
-        v.addSubview(seg)
-
-        let item = NSMenuItem()
-        item.view = v
-        item.toolTip = "How often the widget rescans. Disabled while the feed is paused."
-        return item
-    }
-
-    @objc private func cadenceStripChanged(_ sender: NSSegmentedControl) {
-        let idx = sender.selectedSegment
-        guard idx >= 0, idx < Self.refreshPresets.count else { return }
-        refreshInterval = Self.refreshPresets[idx]
-        refreshPaused = false
-        dlog("user set refresh interval to \(refreshInterval)s")
-        restartScanTimer()
-        refreshData()
-    }
-
     // ── Kanban board server (pm2 "kanban", :5106) ────────────────────────────
     // The bar IS the on/off surface: no launchd, off after reboot by design.
 
-    /// Rebuild the switchboard's rows in place. A toggle changes state while the
-    /// submenu is on screen, and its rows are views, so restyling is not enough.
+    /// Hand the Switchboard panel a fresh set of system rows. Hops a tick
+    /// because a row can trigger this from inside its own click handler.
     private func refreshSwitchboard() {
-        // Hop a tick: a row triggers this from inside its own mouseUp, and
-        // replacing the view mid-event is not safe.
-        DispatchQueue.main.async { [weak self] in self?.rebuildSwitchboard() }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.policyController?.store.systemGroups = self.panelSystemGroups()
+        }
     }
 
-    private func rebuildSwitchboard() {
-        guard let m = switchboardMenu else { return }
-        m.removeAllItems()
+    /// The system switches as panel rows, each carrying its own action and any
+    /// running timer. Effort is left out: Claude Code sets it itself.
+    func panelSystemGroups() -> [SystemGroup] {
+        func convert(_ r: SBRow) -> SystemRow {
+            let state: SystemRow.State
+            switch r.badge {
+            case .on(let c): state = .on(c)
+            case .off: state = .off
+            case .count(let n, let c): state = .count(n, c)
+            case .ok: state = .ok
+            }
+            var row = SystemRow(label: r.label, state: state, note: r.note, enabled: r.enabled,
+                                tip: r.tip, link: r.link, action: r.onClick, menu: r.submenu)
+            if row.isSwitch && r.enabled {
+                row.timerKey = r.label
+                row.timer = systemTimers[r.label]
+            }
+            return row
+        }
         let groups: [(String, [SBRow])] = [
-            ("GUARDS",   sbGuardRows()),
-            ("SERVICES", sbServiceRows()),
-            ("COST",     sbCostRows()),
-            ("SESSION",  sbSessionRows()),
-            ("FEED",     sbFeedRows()),
+            ("Guards",   sbGuardRows()),
+            ("Services", sbServiceRows()),
+            ("Session",  sbSessionRows()),
+            ("Feed",     sbFeedRows()),
         ]
-        let column = sbLabelColumn(groups.flatMap { $0.1 })
-        for (i, g) in groups.enumerated() where !g.1.isEmpty {
-            if i > 0 { m.addItem(.separator()) }
-            addSwitchboardHeader(m, g.0)
-            for row in g.1 { addSBRow(m, row, labelColumn: column) }
-            if g.0 == "COST" { m.addItem(effortStripItem()) }
-            if g.0 == "FEED" { m.addItem(cadenceStripItem()) }
+        var out = groups.filter { !$0.1.isEmpty }.map { SystemGroup(title: $0.0, rows: $0.1.map(convert)) }
+        // The scan cadence used to live only in the dropdown's Switchboard; it
+        // moved here with it, as a pick-one row in the Feed group.
+        if let i = out.firstIndex(where: { $0.title == "Feed" }) {
+            var cadence = SystemRow(label: "Scan every", state: .ok, note: refreshPaused ? "paused" : "")
+            cadence.choices = Self.refreshPresets.map { $0 < 1 ? String(format: "%.1fs", $0) : "\(Int($0))s" }
+            cadence.selected = Self.refreshPresets.firstIndex(where: { abs($0 - refreshInterval) < 0.01 }) ?? -1
+            cadence.enabled = !refreshPaused
+            cadence.onChoose = { [weak self] idx in
+                guard let self = self, idx >= 0, idx < Self.refreshPresets.count else { return }
+                self.refreshInterval = Self.refreshPresets[idx]
+                self.refreshPaused = false
+                dlog("user set refresh interval to \(self.refreshInterval)s")
+                self.restartScanTimer()
+                self.refreshData()
+                self.refreshSwitchboard()
+            }
+            out[i] = SystemGroup(title: "Feed", rows: out[i].rows + [cadence])
         }
+        if let i = out.firstIndex(where: { $0.title == "Session" }) {
+            out[i] = SystemGroup(title: "Session", rows: out[i].rows + [wakeOnLANRow()])
+        }
+        let schedules = scheduleRows()
+        if !schedules.isEmpty {
+            let at = (out.firstIndex(where: { $0.title == "Services" }) ?? -1) + 1
+            out.insert(SystemGroup(title: "Schedules", rows: schedules), at: at)
+        }
+        return out
     }
 
-    /// Effort as one strip, same shape as the cadence picker.
-    private func effortStripItem() -> NSMenuItem {
-        let seg = NSSegmentedControl(labels: Settings.efforts, trackingMode: .selectOne,
-                                     target: self, action: #selector(effortStripChanged(_:)))
-        seg.segmentStyle = .texturedRounded
-        seg.font = BarFont.monoCaption
-        if let idx = Settings.efforts.firstIndex(of: sbSnapshot.effort) {
-            seg.selectedSegment = idx
+    // ── Schedules: the owner's launchd jobs ──────────────────────────────────
+
+    private func scheduleRows() -> [SystemRow] {
+        let jobs = sbSnapshot.jobs
+        guard !jobs.isEmpty else { return [] }
+        let lib = SwitchboardPaths.gccRoot + "/widgets/claude-instances/lib"
+        func jobMenu(_ j: [String: Any]) -> () -> NSMenu {
+            {
+                let m = NSMenu()
+                let label = j["label"] as? String ?? ""
+                m.addItem(ClosureMenuItem("Run now") { [weak self] in
+                    _ = Services.shell("/usr/bin/env", ["python3", lib + "/jobs.py", "run", label])
+                    self?.refreshSnapshot()
+                })
+                if let plist = j["plist"] as? String {
+                    m.addItem(ClosureMenuItem("Show plist in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: plist)])
+                    })
+                }
+                if let log = j["log"] as? String {
+                    m.addItem(ClosureMenuItem("Open log") { NSWorkspace.shared.open(URL(fileURLWithPath: log)) })
+                }
+                m.addItem(.separator())
+                let info = NSMenuItem(title: label, action: nil, keyEquivalent: "")
+                info.isEnabled = false
+                m.addItem(info)
+                return m
+            }
         }
-        let padL = BarFont.scaled(18)
-        let h = BarFont.scaled(30)
-        let stripW = BarFont.scaled(250)
-        seg.frame = NSRect(x: padL, y: (h - BarFont.scaled(22)) / 2,
-                           width: stripW, height: BarFont.scaled(22))
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: padL + stripW + BarFont.scaled(14), height: h))
-        v.addSubview(seg)
-        let item = NSMenuItem()
-        item.view = v
-        item.toolTip = "Default reasoning effort for new turns. Higher costs more."
-        return item
+        // Always-on agents are services, not schedules: one summary row, the
+        // list in its menu. Everything that runs on a clock gets its own row.
+        let always = jobs.filter { ($0["schedule"] as? String) == "always running" }
+        let timed = jobs.filter { ($0["schedule"] as? String) != "always running" }
+        var rows: [SystemRow] = []
+        // Only failing scheduled jobs earn a row of their own; the healthy
+        // ones fold into one summary row, so the tab stays short.
+        let healthy = timed.filter { !($0["failing"] as? Bool ?? false) }
+        if !healthy.isEmpty {
+            var r = SystemRow(label: "Scheduled jobs",
+                              state: .count(healthy.count, menuGreen),
+                              note: "last runs ok · pick one for run now, plist, log",
+                              tip: "launchd jobs that run on a clock.",
+                              menu: {
+                                  let m = NSMenu()
+                                  for j in healthy {
+                                      let item = NSMenuItem(title: "\(j["name"] as? String ?? "?")  ·  \(j["schedule"] as? String ?? "")", action: nil, keyEquivalent: "")
+                                      item.submenu = jobMenu(j)()
+                                      m.addItem(item)
+                                  }
+                                  return m
+                              })
+            r.key = "scheduled-jobs"
+            rows.append(r)
+        }
+        for j in timed where j["failing"] as? Bool ?? false {
+            let exit = (j["last_exit"] as? NSNumber)?.intValue ?? 1
+            var r = SystemRow(label: (j["name"] as? String ?? "?").capitalized,
+                              state: .count(exit, menuRed),
+                              note: (j["schedule"] as? String ?? "") + " · last run failed (exit \(exit))",
+                              tip: j["label"] as? String ?? "",
+                              menu: jobMenu(j))
+            r.key = j["label"] as? String
+            rows.append(r)
+        }
+        if !always.isEmpty {
+            let down = always.filter { ($0["loaded"] as? Bool ?? false) && !($0["running"] as? Bool ?? false) }
+            let running = always.filter { $0["running"] as? Bool ?? false }.count
+            let unloaded = always.filter { !($0["loaded"] as? Bool ?? false) }.count
+            var r = SystemRow(label: "Always-on agents",
+                              state: down.isEmpty ? .count(running, menuGreen) : .count(down.count, menuRed),
+                              note: (down.isEmpty ? "\(running) running" : "\(down.count) stopped")
+                                  + (unloaded > 0 ? " · \(unloaded) not loaded" : ""),
+                              tip: "Agents launchd keeps alive. Pick one for its actions.",
+                              menu: {
+                                  let m = NSMenu()
+                                  for j in always {
+                                      let item = NSMenuItem(title: "\(j["running"] as? Bool ?? false ? "●" : "○")  \(j["name"] as? String ?? "?")", action: nil, keyEquivalent: "")
+                                      item.submenu = jobMenu(j)()
+                                      m.addItem(item)
+                                  }
+                                  return m
+                              })
+            r.key = "always-on-agents"
+            rows.insert(r, at: 0)
+        }
+        return rows
     }
 
-    @objc private func effortStripChanged(_ sender: NSSegmentedControl) {
-        let idx = sender.selectedSegment
-        guard idx >= 0, idx < Settings.efforts.count else { return }
-        Settings.write(key: "effortLevel", value: Settings.efforts[idx])
+    // ── Wake-on-LAN ──────────────────────────────────────────────────────────
+
+    private func wakeOnLANRow() -> SystemRow {
+        let targets = sbSnapshot.wolTargets
+        let wol = SwitchboardPaths.gccRoot + "/widgets/claude-instances/lib/wol.py"
+        return SystemRow(
+            label: "Wake a device",
+            state: targets.isEmpty ? .off : .count(targets.count, menuTeal),
+            note: targets.isEmpty ? "no saved devices" : targets.compactMap { $0["name"] as? String }.joined(separator: ", "),
+            tip: "Send a wake-on-LAN packet to a saved machine on the home network.",
+            menu: { [weak self] in
+                let m = NSMenu()
+                for t in targets {
+                    let name = t["name"] as? String ?? "?", mac = t["mac"] as? String ?? ""
+                    let bcast = t["broadcast"] as? String ?? "255.255.255.255"
+                    m.addItem(ClosureMenuItem("Wake \(name)") {
+                        let r = Services.shell("/usr/bin/env", ["python3", wol, "wake", mac, bcast])
+                        dlog("wol: \(name) \(r.trimmingCharacters(in: .whitespacesAndNewlines))")
+                    })
+                }
+                if !targets.isEmpty { m.addItem(.separator()) }
+                m.addItem(ClosureMenuItem("Add device…") { self?.addWakeTarget(wol) })
+                if !targets.isEmpty {
+                    let forget = NSMenuItem(title: "Forget", action: nil, keyEquivalent: "")
+                    let sub = NSMenu()
+                    for t in targets {
+                        let mac = t["mac"] as? String ?? ""
+                        sub.addItem(ClosureMenuItem(t["name"] as? String ?? mac) {
+                            _ = Services.shell("/usr/bin/env", ["python3", wol, "remove", mac])
+                            self?.refreshSnapshot()
+                        })
+                    }
+                    forget.submenu = sub
+                    m.addItem(forget)
+                }
+                return m
+            })
+    }
+
+    private func addWakeTarget(_ wol: String) {
+        let a = NSAlert()
+        a.messageText = "Add a device to wake"
+        a.informativeText = "Its MAC address, for example 3c:22:fb:12:34:56. The machine must have wake-on-LAN turned on."
+        let name = NSTextField(frame: NSRect(x: 0, y: 30, width: 260, height: 24))
+        name.placeholderString = "Name (e.g. Desktop PC)"
+        let mac = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        mac.placeholderString = "MAC address"
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 54))
+        box.addSubview(name); box.addSubview(mac)
+        a.accessoryView = box
+        a.addButton(withTitle: "Save")
+        a.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        let r = Services.shell("/usr/bin/env", ["python3", wol, "add", name.stringValue, mac.stringValue])
+        if r.contains("error") {
+            let e = NSAlert(); e.messageText = "Not saved"; e.informativeText = r; e.runModal()
+        }
         refreshSnapshot()
+    }
+
+    // ── Timed flips on system switches ───────────────────────────────────────
+    // "Keep Awake for 2 hours", "Kanban off until 6 PM": flip now, flip back at
+    // a time. Saved in UserDefaults so a restart does not lose one. At the due
+    // time the switch is re-probed and flipped only if it is not already where
+    // it should be, so a manual change in between is never undone twice.
+
+    /// Overridden by the timer probe, so a test never touches live timers.
+    var systemTimersKey = "switchboard.timers"
+
+    var systemTimers: [String: SystemTimer] {
+        get {
+            let raw = UserDefaults.standard.dictionary(forKey: systemTimersKey) as? [String: [String: Any]] ?? [:]
+            return raw.compactMapValues { d in
+                guard let t = d["until"] as? Double, let on = d["restoreOn"] as? Bool else { return nil }
+                return SystemTimer(until: Date(timeIntervalSince1970: t), restoreOn: on)
+            }
+        }
+        set {
+            let raw = newValue.mapValues { ["until": $0.until.timeIntervalSince1970, "restoreOn": $0.restoreOn] as [String: Any] }
+            UserDefaults.standard.set(raw, forKey: systemTimersKey)
+        }
+    }
+
+    private func systemRow(_ key: String) -> SystemRow? {
+        panelSystemGroups().flatMap { $0.rows }.first { $0.timerKey == key }
+    }
+
+    /// Flip the switch now; remember to put it back at `until`.
+    func startSystemTimer(_ key: String, until: Date) {
+        guard let row = systemRow(key), until > Date() else { return }
+        // A timer already running keeps its original restore state, so
+        // re-timing never forgets where the switch started.
+        let restore = systemTimers[key]?.restoreOn ?? row.isOn
+        if row.isOn == restore { row.action?() }
+        systemTimers[key] = SystemTimer(until: until, restoreOn: restore)
+        dlog("timer: \(key) until \(until), then \(restore ? "on" : "off")")
+        refreshSwitchboard()
+    }
+
+    /// Drop the timer and keep the switch as it is now.
+    func cancelSystemTimer(_ key: String) {
+        systemTimers[key] = nil
+        refreshSwitchboard()
+    }
+
+    /// Drop the timer and put the switch back right away.
+    func endSystemTimerNow(_ key: String) {
+        guard let t = systemTimers[key] else { return }
+        systemTimers[key] = nil
+        if let row = systemRow(key), row.isOn != t.restoreOn { row.action?() }
+        refreshSnapshot()
+    }
+
+    /// Headless check of the timer engine on the real Keep Awake switch, with
+    /// the real power assertion read back from pmset. Leaves Keep Awake as it
+    /// found it. Returns a pass/fail report.
+    func probeSystemTimers() -> String {
+        systemTimersKey = "switchboard.timers.probe"
+        systemTimers = [:]
+        var lines: [String] = [], fails = 0
+        func check(_ name: String, _ ok: Bool) { lines.append("  \(ok ? "ok  " : "FAIL") \(name)"); if !ok { fails += 1 } }
+        func pump(_ s: Double) { RunLoop.current.run(until: Date().addingTimeInterval(s)) }
+        func asserted() -> Bool {
+            Services.shell("/usr/bin/pmset", ["-g", "assertions"])
+                .split(separator: "\n").contains { $0.contains("pid \(getpid())(") && $0.contains("PreventUserIdleSystemSleep") }
+        }
+        func fire() {   // fire due timers and wait for the fresh-state pass to land
+            fireDueSystemTimers()
+            let deadline = Date().addingTimeInterval(25)
+            while systemTimers.values.contains(where: { $0.until <= Date() }) && Date() < deadline { pump(0.1) }
+            pump(0.5)
+        }
+        let before = keepAwakeOn
+        if keepAwakeOn { setKeepAwake(false) }
+        let key = "Keep Awake"
+
+        startSystemTimer(key, until: Date().addingTimeInterval(2)); pump(0.3)
+        check("on-for-a-while turns Keep Awake on", keepAwakeOn)
+        check("the power assertion is really held", asserted())
+        check("timer recorded to restore off", systemTimers[key]?.restoreOn == false)
+        pump(2.2); fire()
+        check("at the due time it turns back off", !keepAwakeOn)
+        check("the power assertion is released", !asserted())
+        check("the timer is gone", systemTimers[key] == nil)
+
+        startSystemTimer(key, until: Date().addingTimeInterval(2)); pump(0.3)
+        setKeepAwake(false)                       // the owner turns it off by hand
+        pump(2.2); fire()
+        check("a manual change in between is not flipped again", !keepAwakeOn)
+
+        startSystemTimer(key, until: Date().addingTimeInterval(60)); pump(0.3)
+        cancelSystemTimer(key); pump(0.3)
+        check("cancel keeps the current state (on)", keepAwakeOn)
+        check("cancel removes the timer", systemTimers[key] == nil)
+        setKeepAwake(false)
+
+        startSystemTimer(key, until: Date().addingTimeInterval(60)); pump(0.3)
+        endSystemTimerNow(key); pump(0.3)
+        check("end now flips it back at once", !keepAwakeOn)
+
+        startSystemTimer(key, until: Date().addingTimeInterval(60)); pump(0.3)
+        startSystemTimer(key, until: Date().addingTimeInterval(120)); pump(0.3)
+        check("re-timing keeps it on and keeps the original restore state",
+              keepAwakeOn && systemTimers[key]?.restoreOn == false)
+        endSystemTimerNow(key); pump(0.3)
+
+        if before != keepAwakeOn { setKeepAwake(before) }
+        systemTimers = [:]
+        lines.append("timer-probe: \(fails == 0 ? "all passed" : "\(fails) failed")")
+        return lines.joined(separator: "\n")
+    }
+
+    /// Checked on a slow tick: fire whatever is due, against fresh state.
+    private func fireDueSystemTimers() {
+        let due = systemTimers.filter { $0.value.until <= Date() }
+        guard !due.isEmpty else { return }
+        refreshSnapshot { [weak self] in
+            guard let self = self else { return }
+            for (key, t) in due {
+                self.systemTimers[key] = nil
+                if let row = self.systemRow(key), row.isOn != t.restoreOn {
+                    dlog("timer: \(key) due, turning \(t.restoreOn ? "on" : "off")")
+                    row.action?()
+                } else {
+                    dlog("timer: \(key) due, already \(t.restoreOn ? "on" : "off")")
+                }
+            }
+            self.refreshSnapshot()
+        }
+    }
+
+    /// Fresh system rows for a headless snapshot: runs the same probe the menu
+    /// does and waits for it, pumping the runloop the probe completes on.
+    func panelSystemGroupsFresh() -> [SystemGroup] {
+        var done = false
+        refreshSnapshot { done = true }
+        let deadline = Date().addingTimeInterval(20)
+        while !done && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        return panelSystemGroups()
     }
 
     @objc private func toggleKanban(_ sender: NSMenuItem) {
@@ -2119,20 +2398,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let icon = icon { setIcon(i, icon) }
         menu.addItem(i)
         return i
-    }
-
-    /// The switchboard's own icon rather than an SF Symbol, drawn larger to
-    /// match the two-line row. Template so it tints with the label colour.
-    private func setSwitchboardIcon(_ item: NSMenuItem) {
-        let path = widgetDir + "/assets/switchboard.svg"
-        guard let img = NSImage(contentsOfFile: path) else {
-            setIcon(item, "switch.2")   // the shipped symbol, if the asset is missing
-            return
-        }
-        let side = BarFont.scaled(26)
-        img.size = NSSize(width: side, height: side)
-        img.isTemplate = true
-        item.image = img
     }
 
     private func setIcon(_ item: NSMenuItem, _ symbol: String) {

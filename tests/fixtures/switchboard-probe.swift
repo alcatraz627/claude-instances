@@ -183,6 +183,23 @@ check("output larger than the pipe buffer still returns", big.count >= 300_000, 
 let quick = Services.shell("/bin/echo", ["alive"], timeout: 4.0)
 check("a fast command is untouched by the cap", quick.contains("alive"))
 
+print("\n── warden switch (sentinel shared with claude-warden pause) ──")
+check("no institution means no row (nil path)", Warden.installed() == false)
+try? fm.createDirectory(atPath: fixture + "/warden", withIntermediateDirectories: true)
+fm.createFile(atPath: fixture + "/warden/PROMPT.md", contents: Data("charter".utf8))
+check("installed once the charter exists", Warden.installed())
+check("no sentinel reads as running", Warden.running())
+check("pause writes the sentinel", Warden.set(running: false) && fm.fileExists(atPath: fixture + "/warden/.paused"))
+check("paused reads as not running", Warden.running() == false)
+let pausedBody = (try? String(contentsOfFile: fixture + "/warden/.paused", encoding: .utf8)) ?? ""
+check("sentinel carries provenance", pausedBody.hasPrefix("via switchboard "), pausedBody)
+check("resume removes the sentinel", Warden.set(running: true) && !fm.fileExists(atPath: fixture + "/warden/.paused"))
+check("resume when already running is a no-op, not a crash", Warden.set(running: true) == false)
+// gated() shells to the real usage-gate; here only the contract that it answers
+// without crashing and returns a Bool — the gate's own branches have their own suite.
+let g = Warden.gated()
+check("gated() answers without crashing", g == true || g == false)
+
 print("\n── row click path (the defect class that shipped inert) ──")
 var clicks = 0
 let row = MenuRowView(frame: NSRect(x: 0, y: 0, width: 240, height: 26))

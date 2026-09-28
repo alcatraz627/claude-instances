@@ -224,6 +224,22 @@ final class MenuRowView: NSView {
     }
 }
 
+/// A menu item that runs a closure when picked, so a menu can be built inline
+/// without a target object and a selector per action.
+final class ClosureMenuItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(_ title: String, _ handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(fire), keyEquivalent: "")
+        target = self
+    }
+
+    required init(coder: NSCoder) { fatalError("not used from a nib") }
+
+    @objc private func fire() { handler() }
+}
+
 // ── Severity scale (one closed green→amber→red, shared by every health signal) ─
 // Returns the palette token so callers stay tunable; `severityColor` resolves it.
 

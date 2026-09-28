@@ -311,6 +311,47 @@ enum Services {
     }
 }
 
+// ── Warden ───────────────────────────────────────────────────────────────────
+
+enum Warden {
+    /// The same sentinel `claude-warden pause` and warden-beat.sh use, so the
+    /// CLI, the beat script, and this switch can never disagree about state.
+    static var pausedSentinel: String { SwitchboardPaths.gccRoot + "/warden/.paused" }
+
+    /// The institution exists once its charter does; before that, no row.
+    static func installed() -> Bool {
+        FileManager.default.fileExists(atPath: SwitchboardPaths.gccRoot + "/warden/PROMPT.md")
+    }
+
+    static func running() -> Bool {
+        installed() && !FileManager.default.fileExists(atPath: pausedSentinel)
+    }
+
+    /// The auto-standdown state: usage-gate says both windows are hot. Distinct
+    /// from paused — nothing is written, so a quota reset re-enables by itself.
+    /// The manual sentinel always supersedes this in what the row displays.
+    static func gated() -> Bool {
+        let out = Services.shell("/bin/bash",
+            [NSString(string: "~/.claude/scripts/cron/usage-gate.sh").expandingTildeInPath])
+        return out.hasPrefix("GATED")
+    }
+
+    /// Pause writes the sentinel with its provenance; resume removes it. Beats
+    /// skip BEFORE the delta scan while paused, so activity accumulates and the
+    /// first resumed beat judges all of it (catch-up is warden-side, not ours).
+    @discardableResult
+    static func set(running: Bool) -> Bool {
+        let fm = FileManager.default
+        if running {
+            guard fm.fileExists(atPath: pausedSentinel) else { return false }
+            return (try? fm.removeItem(atPath: pausedSentinel)) != nil
+        }
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        return fm.createFile(atPath: pausedSentinel,
+                             contents: Data("via switchboard \(stamp)".utf8))
+    }
+}
+
 // ── Board sync ───────────────────────────────────────────────────────────────
 
 enum BoardSync {
