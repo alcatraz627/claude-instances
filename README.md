@@ -1,10 +1,8 @@
-<div align="center">
+<p align="center">
+  <img src=".github/readme/banner.svg" alt="Claude Instances banner: menu bar monitor for Claude Code sessions" width="100%">
+</p>
 
-  <img src="assets/banner.svg" alt="Claude Instances" width="720">
-
-</div>
-
-<h1 align="center">Claude Instances</h1>
+<h1 align="center"><img src=".github/readme/favicon.svg" alt="" width="32" height="32"> Claude Instances</h1>
 
 <p align="center">
   Native macOS menu bar app for monitoring and managing concurrent Claude Code sessions.
@@ -33,6 +31,13 @@
 </details>
 
 ---
+
+<details>
+<summary>Riddle answer</summary>
+
+A view-based menu item: LiveRowView mutates in place while the menu is held open, so ctx %, tokens and cost tick without a reopen.
+
+</details>
 
 ## About
 
