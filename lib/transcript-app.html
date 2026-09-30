@@ -84,6 +84,12 @@ button { font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparen
 .tbtn:hover { background: var(--sel); color: var(--text); border-color: var(--edge2); }
 .tbtn[aria-pressed="true"] { color: var(--you); border-color: var(--you); background: var(--you-soft); }
 .tbtn .lb { display: none; } @media (min-width: 640px) { .tbtn .lb { display: inline; } }
+/* on a phone the four buttons need the room: back is an arrow, no chapter count */
+@media (max-width: 480px) {
+    .topbar { gap: 4px; padding: 0 8px; }
+    .tb-back-lb, .tb-ch { display: none; }
+    .tbtn { padding: 0 9px; }
+}
 
 /* ================= layout: outline sidebar + reading column */
 .layout { display: flex; max-width: 1220px; margin: 0 auto; padding-top: var(--tb-h); }
@@ -145,16 +151,23 @@ main { flex: 1; min-width: 0; padding: 0 20px 30vh; }
 .spine span.cur { background: var(--you); }
 .spine span.err::after { content: ''; position: absolute; top: -3px; right: 0; width: 4px; height: 4px;
     border-radius: 50%; background: var(--err); }
+/* a long session has more chapters than the column has 7px slots */
+.spine { overflow: hidden; }
+.spine.dense { gap: 1px; }
+.spine.dense span { min-width: 1px; border-radius: 1px; }
 .spine-cap { display: flex; justify-content: space-between; font: 10.5px var(--mono); color: var(--faint); margin-top: 5px; }
 
 /* ================= chapters */
 .chapter { margin-top: 22px; }
 .ch-head { display: flex; gap: 14px; padding-top: 26px; border-top: 1px solid var(--edge);
     scroll-margin-top: calc(var(--tb-h) + 10px); }
-.chapter:first-of-type .ch-head { border-top: none; padding-top: 8px; }
+.chwrap:first-child .chapter .ch-head { border-top: none; padding-top: 8px; }
+/* fillChapter keeps the reading position itself; the browser's own scroll
+   anchoring (absent in Safari) would apply the same shift a second time */
+html, body { overflow-anchor: none; }
 .ch-num { flex: none; font: 700 11px var(--mono); color: var(--you); padding-top: 7px; width: 2.5ch; }
 .ch-body { min-width: 0; flex: 1; }
-.ch-title { font: 600 19px/1.35 var(--serif); letter-spacing: -.008em; margin: 0; text-wrap: pretty; cursor: pointer; }
+.ch-title { font: 600 19px/1.35 var(--serif); letter-spacing: -.008em; margin: 0; text-wrap: pretty; cursor: pointer; overflow-wrap: anywhere; }
 .ch-title:hover { color: var(--you); }
 .ch-meta { font: 11px var(--mono); color: var(--faint); margin-top: 5px; display: flex; flex-wrap: wrap; gap: 3px 14px; }
 .ch-meta .e { color: var(--err); font-weight: 700; }
@@ -518,7 +531,7 @@ body.has-tl .outline { top: calc(var(--tb-h) + 46px); }
 </defs></svg>
 
 <div class="topbar" id="topbar">
-  <a class="tb-back" href="/"><svg class="icon" style="width:13px;height:13px"><use href="#i-back"/></svg>sessions</a>
+  <a class="tb-back" href="/"><svg class="icon" style="width:13px;height:13px"><use href="#i-back"/></svg><span class="tb-back-lb">sessions</span></a>
   <span class="tb-title" id="tbTitle" title="Back to top"></span>
   <span class="tb-ch" id="tbCh"></span>
   <span class="tb-sp"></span>
@@ -640,6 +653,7 @@ const state = {
     records: window.SESSION.records,
     chapters: [],
     expanded: new Set(),     // ledger + tool row keys
+    filled: new Set(),       // chapters built in full (the rest are placeholders)
     epis: new Set(),         // expanded epigraphs
     curCh: 0,
     term: '', hits: [], hitIdx: 0,
@@ -755,7 +769,7 @@ function renderMasthead() {
         `<span class="in"><b>↓${kfmt(t.input)}</b></span>` +
         `<span class="out"><b>↑${kfmt(t.output)}</b></span>` +
         `<span><b>${kfmt(t.cache_read)}</b> cache</span></div>` +
-        `<div class="spine" id="spine">` +
+        `<div class="spine${state.chapters.length > 60 ? ' dense' : ''}" id="spine">` +
         state.chapters.map((c, i) => `<span data-ch="${i}" title="${esc(c.title)}${c.tools ? ` — ${c.tools} tools` : ''}${c.mins ? ` · ${c.mins}m` : ''}" class="${c.errs ? 'err' : ''}" style="flex:${Math.sqrt(1 + c.tools * 2 + c.toks / 1500 + c.mins * 3).toFixed(2)}"></span>`).join('') +
         `</div>` +
         `<div class="spine-cap"><span>${esc(state.chapters[0] && state.chapters[0].ts ? state.chapters[0].ts.slice(0,5) : '')}${d0 ? ' · ' + d0 : ''}</span><span id="spineCap">chapter 1 of ${state.chapters.length}</span></div>`;
@@ -829,7 +843,7 @@ function fetchSubagent(agentId) {
     _subFetching.add(agentId);
     fetch(API + 'data?agent=' + encodeURIComponent(agentId), { cache: 'no-cache' })
         .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
-        .then(d => { window.SESSION.subagents[agentId] = d; renderChapters(); renderOutline(); updateSpine(); })
+        .then(d => { window.SESSION.subagents[agentId] = d; refillWhere(`[data-agent="${CSS.escape(agentId)}"]`); })
         .catch(() => _subFailed.add(agentId))
         .finally(() => _subFetching.delete(agentId));
 }
@@ -840,7 +854,7 @@ function nestedHTML(t) {
     // inlining every agent would multiply the payload of agent-heavy sessions.
     if (!data && sub.agentId && sub.exists !== false && !_subFailed.has(sub.agentId)) {
         fetchSubagent(sub.agentId);
-        return `<div class="nested"><div class="note">↳ ${esc(sub.agentType || 'agent')} · ${esc(sub.description || '')} · loading transcript…</div></div>`;
+        return `<div class="nested" data-agent="${esc(sub.agentId)}"><div class="note">↳ ${esc(sub.agentType || 'agent')} · ${esc(sub.description || '')} · loading transcript…</div></div>`;
     }
     if (!data) return `<div class="cap">agent ${esc(sub.agentId || '?')} — transcript not captured</div>`;
     return `<div class="nested"><div class="note">↳ ${esc(sub.agentType || 'agent')} · ${esc(sub.description || data.meta.ai_title)} · ${data.records.length}/${data.meta.total_records} blocks</div>` +
@@ -876,12 +890,15 @@ function ledgerHTML(run, key) {
         `<span class="lg-ico">${ic('gear')}</span><span class="lg-sum">${sum.html}</span>` +
         `<svg class="icon lg-chev" style="width:12px;height:12px"><use href="#i-chev"/></svg></button>${body}</div>`;
 }
-function chapterHTML(c, i) {
+/* One chapter, wrapped with its divider so it can be swapped as a unit. An
+   unfilled chapter is its header plus a spacer of about its height; the body
+   and its markdown are built when it nears the viewport. */
+function chapterHTML(c, i, full) {
     const num = String(i + (state.chapters[0].user ? 1 : 0)).padStart(2, '0');
-    let h = '';
+    let h = `<div class="chwrap" data-chw="${i}">`;
     if (c.divider) h += `<div class="divider ${c.divider.kind}">${esc(c.divider.label)}</div>`;
     if (state.newSince != null && c.firstSeq === state.newSince) h += `<div class="newmark" id="newmark">new</div>`;
-    h += `<section class="chapter" data-ch="${i}" data-seq="${c.firstSeq}" data-screen-label="chapter ${num}">`;
+    h += `<section class="chapter${full ? '' : ' ph'}" data-ch="${i}" data-seq="${c.firstSeq}" data-screen-label="chapter ${num}">`;
     h += `<header class="ch-head"><span class="ch-num">${num}</span><div class="ch-body">`;
     if (c.user) {
         const { chip, body } = userParts(c.user.text);
@@ -889,7 +906,7 @@ function chapterHTML(c, i) {
         h += `<h2 class="ch-title" title="jump here">${esc(c.title)}</h2>`;
         h += `<div class="ch-meta">${chMetaLine(c)}</div>`;
         const rest = String(body || '').trim();
-        if (rest && (rest.split('\n').length > 2 || rest.length > 160)) {
+        if (full && rest && (rest.split('\n').length > 2 || rest.length > 160)) {
             const ek = 'epi:' + c.firstSeq, open = state.epis.has(ek);
             h += `<div class="epi${open ? '' : ' clamped'}"><div class="epi-in"><div class="content" data-md data-raw="${esc(rest)}"></div></div>` +
                 `<button class="epi-more" data-epi="${ek}">${open ? 'collapse prompt' : 'show full prompt'}</button></div>`;
@@ -898,6 +915,7 @@ function chapterHTML(c, i) {
         h += `<h2 class="ch-title">${esc(c.title)}</h2><div class="ch-meta">${chMetaLine(c)}</div>`;
     }
     h += `</div></header>`;
+    if (!full) return h + `<div class="ch-ph" style="height:${estHeight(c)}px"></div></section></div>`;
     // items: passages + ledgers (consecutive tools/events group into one ledger)
     let run = [];
     const flush = () => { if (run.length) { h += runHTML(run, 'lg:' + run[0].id); run = []; } };
@@ -927,44 +945,126 @@ function chapterHTML(c, i) {
                 `<div class="content" data-md data-raw="${esc(r.text)}"></div></div>`;
     }
     flush();
-    h += `</section>`;
+    h += `</section></div>`;
     return h;
+}
+/* A rough height for an unfilled chapter, so the scrollbar and outline jumps
+   land near the right place before the chapter is built. */
+function estHeight(c) {
+    let h = 20, inRun = false;
+    for (const r of c.items) {
+        if (r.role === 'tools' || r.role === 'thinking' || (r.role === 'event' && !/mode/i.test(r.text || ''))) {
+            if (!inRun) h += 54; inRun = true; continue;
+        }
+        inRun = false;
+        if (r.role === 'assistant') h += 44 + Math.ceil(String(r.text || '').length / 78) * 26;
+        else h += 30;
+    }
+    return Math.min(h, 20000);
+}
+const EAGER_NEWEST = 2;       // the newest chapters are built on load, the rest on approach
+let chObserver = null;
+function endcapHTML() {
+    return `<div class="endcap">the end · ${state.records.length}/${state.meta.total_records} blocks · ↑${kfmt(state.meta.tokens.output)}</div>`;
+}
+function observeShells(root) {
+    if (!('IntersectionObserver' in window)) {
+        root.querySelectorAll('.chapter.ph').forEach(s => fillChapter(+s.dataset.ch));
+        return;
+    }
+    if (!chObserver) chObserver = new IntersectionObserver(entries => {
+        // newest first, so a burst of fills never shifts what is being read
+        entries.filter(e => e.isIntersecting).map(e => +e.target.dataset.ch)
+            .sort((a, b) => b - a).forEach(i => fillChapter(i));
+    }, { rootMargin: '1200px 0px' });
+    root.querySelectorAll('.chapter.ph').forEach(s => chObserver.observe(s));
 }
 function renderChapters() {
     if (state.mode !== 'normal') return;
     buildChapters();
     const el = $('#chapters');
-    el.innerHTML = state.chapters.map((c, i) => chapterHTML(c, i)).join('') +
-        `<div class="endcap">the end · ${state.records.length}/${state.meta.total_records} blocks · ↑${kfmt(state.meta.tokens.output)}</div>`;
+    if (chObserver) chObserver.disconnect();
+    const n = state.chapters.length;
+    for (let i = Math.max(0, n - EAGER_NEWEST); i < n; i++) state.filled.add(i);
+    el.innerHTML = state.chapters.map((c, i) => chapterHTML(c, i, state.filled.has(i))).join('') + endcapHTML();
     el.querySelectorAll('.content[data-md]').forEach(mdRender);
     addPermalinks();
+    observeShells(el);
     renderOutline();
     updateSpine();
     $('#chLab').innerHTML = `<b>${state.curCh + 1}/${state.chapters.length}</b>`;
 }
-/* targeted re-render of one chapter (live append) */
-function rerenderChapter(i) {
-    const old = document.querySelector(`.chapter[data-ch="${i}"]`);
-    if (!old) return renderChapters();
+/* Build (or rebuild) one chapter in place. A chapter above the viewport keeps
+   the reader's position: the scroll moves by however much it grew. */
+function fillChapter(i) {
+    const old = document.querySelector(`.chwrap[data-chw="${i}"]`);
+    if (!old || !state.chapters[i]) return;
+    state.filled.add(i);
+    const oldSec = old.querySelector('.chapter');
+    if (chObserver && oldSec) chObserver.unobserve(oldSec);
+    const r0 = old.getBoundingClientRect();
     const t = document.createElement('template');
-    t.innerHTML = chapterHTML(state.chapters[i], i);
-    const fresh = t.content.querySelector('.chapter');
-    old.replaceWith(...t.content.childNodes);
-    document.querySelectorAll(`.chapter[data-ch="${i}"] .content[data-md]`).forEach(mdRender);
-    addPermalinks();
+    t.innerHTML = chapterHTML(state.chapters[i], i, true);
+    const fresh = t.content.firstElementChild;
+    old.replaceWith(fresh);
+    fresh.querySelectorAll('.content[data-md]').forEach(mdRender);
+    addPermalinks(fresh);
+    const tb = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--tb-h')) || 44;
+    if (r0.bottom <= tb) {
+        const delta = fresh.getBoundingClientRect().height - r0.height;
+        if (delta) window.scrollBy(0, delta);
+    }
+}
+const rerenderChapter = fillChapter;
+/* Chapters appended by the live tail: rebuild the old last one, add the rest. */
+function appendChapters(prevN) {
+    const el = $('#chapters');
+    if (prevN > 0) fillChapter(prevN - 1);
+    const cap = el.querySelector('.endcap');
+    for (let i = prevN; i < state.chapters.length; i++) {
+        state.filled.add(i);
+        const t = document.createElement('template');
+        t.innerHTML = chapterHTML(state.chapters[i], i, true);
+        const w = t.content.firstElementChild;
+        el.insertBefore(w, cap);
+        w.querySelectorAll('.content[data-md]').forEach(mdRender);
+        addPermalinks(w);
+    }
+    if (cap) cap.outerHTML = endcapHTML();
+}
+/* The chapter holding a record, by its seq. */
+function chapterOfSeq(seq) {
+    return state.chapters.findIndex(c => c.firstSeq <= seq && (c.items.length ? c.items[c.items.length - 1].seq >= seq : c.firstSeq === seq));
+}
+/* Rebuild whichever built chapters show an element matching `sel`. */
+function refillWhere(sel) {
+    const chs = new Set();
+    document.querySelectorAll(sel).forEach(n => { const s = n.closest('.chapter'); if (s) chs.add(+s.dataset.ch); });
+    chs.forEach(fillChapter);
 }
 
 /* ================= navigation */
 function jumpToChapter(i, smooth = true) {
+    if (!state.filled.has(i)) fillChapter(i);
     const el = document.querySelector(`.chapter[data-ch="${i}"] .ch-head`);
     if (!el) return;
-    window.scrollTo({ top: el.getBoundingClientRect().top + scrollY - 54, behavior: smooth ? 'smooth' : 'auto' });
+    const top = el.getBoundingClientRect().top;
+    // A long smooth scroll passes placeholders that grow as they fill and
+    // would move the target; far jumps go straight there.
+    const far = Math.abs(top) > innerHeight * 3;
+    window.scrollTo({ top: top + scrollY - 54, behavior: smooth && !far ? 'smooth' : 'auto' });
+}
+/* Build the chapter holding `seq` if it is still a placeholder; its index. */
+function ensureFilled(seq) {
+    const ch = chapterOfSeq(seq);
+    if (ch >= 0 && !state.filled.has(ch)) fillChapter(ch);
+    return ch;
 }
 function jumpToSeq(seq) {
-    let el = document.querySelector(`[data-seq="${seq}"]`);
-    if (!el) { // seq may be inside a collapsed ledger → find its chapter
-        const ch = state.chapters.findIndex(c => c.firstSeq <= seq && (c.items.length ? c.items[c.items.length-1].seq >= seq : c.firstSeq === seq));
-        if (ch >= 0) { jumpToChapter(ch); return; }
+    const ch = ensureFilled(seq);
+    let el = document.querySelector(`#chapters [data-seq="${seq}"]`);
+    if (!el) { // seq may be inside a collapsed ledger → jump to its chapter
+        if (ch >= 0) jumpToChapter(ch);
         return;
     }
     window.scrollTo({ top: el.getBoundingClientRect().top + scrollY - 70, behavior: 'smooth' });
@@ -972,8 +1072,8 @@ function jumpToSeq(seq) {
 }
 /* Per-block permalinks + deep links: #r<seq> jumps and marks the block;
    #r<seq>&q=<term> additionally highlights the matched text inside it. */
-function addPermalinks() {
-    document.querySelectorAll('#chapters [data-seq]').forEach(el => {
+function addPermalinks(root) {
+    (root || document.querySelector('#chapters')).querySelectorAll('[data-seq]').forEach(el => {
         if (el.querySelector(':scope > .blink')) return;
         const b = document.createElement('button');
         b.className = 'blink'; b.textContent = '#';
@@ -1017,11 +1117,9 @@ function applyHash() {
     if (!m || state.mode !== 'normal') return;
     const seq = +m[1];
     document.querySelectorAll('.linked').forEach(el => el.classList.remove('linked'));
-    let el = document.querySelector(`[data-seq="${seq}"]`);
-    if (!el) {   // seq lives inside a collapsed run — anchor on its chapter, like jumpToSeq
-        const ch = state.chapters.findIndex(c => c.firstSeq <= seq && (c.items.length ? c.items[c.items.length - 1].seq >= seq : c.firstSeq === seq));
-        if (ch >= 0) el = document.querySelector(`.chapter[data-ch="${ch}"]`);
-    }
+    const ch = ensureFilled(seq);
+    let el = document.querySelector(`#chapters [data-seq="${seq}"]`);
+    if (!el && ch >= 0) el = document.querySelector(`.chapter[data-ch="${ch}"]`);   // inside a collapsed run
     if (!el) { showAnchorMiss(seq); return; }   // dead deep link: calm notice, no jump
     clearAnchorMiss();
     el.classList.add('linked');
@@ -1080,17 +1178,17 @@ document.addEventListener('click', e => {
     const lg = e.target.closest('.lg-row');
     if (lg) { const k = lg.dataset.lg;
         state.expanded.has(k) ? state.expanded.delete(k) : state.expanded.add(k);
-        renderChapters(); return; }
+        fillChapter(+lg.closest(".chapter").dataset.ch); return; }
     const rm = e.target.closest('.res-more[data-full]');
     if (rm) { rm.textContent = 'loading…'; fetchFull(rm.dataset.full); return; }
     const tr = e.target.closest('.trow[data-key], .inj-row[data-key], .throw[data-key]');
     if (tr) { const k = tr.dataset.key;
         state.expanded.has(k) ? state.expanded.delete(k) : state.expanded.add(k);
-        renderChapters(); return; }
+        fillChapter(+tr.closest(".chapter").dataset.ch); return; }
     const em = e.target.closest('.epi-more');
     if (em) { const k = em.dataset.epi;
         state.epis.has(k) ? state.epis.delete(k) : state.epis.add(k);
-        renderChapters(); return; }
+        fillChapter(+em.closest(".chapter").dataset.ch); return; }
     const cp = e.target.closest('[data-copy]');
     if (cp) { const p = cp.closest('.passage'); copyText(p ? p.innerText : '', cp); }
 });
@@ -1187,8 +1285,12 @@ function ingestNew(recs) {
     state.records.push(...recs);
     const prevN = state.chapters.length;
     buildChapters();
-    if (state.chapters.length !== prevN) renderChapters();
-    else rerenderChapter(state.chapters.length - 1);
+    if (state.chapters.length > prevN) appendChapters(prevN);
+    else if (state.chapters.length < prevN) renderChapters();
+    else {
+        rerenderChapter(state.chapters.length - 1);
+        const cap = document.querySelector('#chapters .endcap'); if (cap) cap.outerHTML = endcapHTML();
+    }
     renderOutline(); updateSpine(); renderMasthead(); rebuildTimeline();
     for (const rec of recs) {
         const el = document.querySelector(`[data-seq="${rec.seq}"]`);
@@ -1207,7 +1309,7 @@ function ingestNew(recs) {
    treating every resend as activity would mean the idle check below never
    fires and the session looks permanently busy. */
 function refreshOpen(recs) {
-    let grew = false, changed = false;
+    let grew = false; const changed = [];
     for (const r of recs) {
         const i = state.records.findIndex(x => x.id === r.id);
         if (i < 0) continue;
@@ -1220,12 +1322,12 @@ function refreshOpen(recs) {
         // group that shrank (a rewritten transcript) must not stay frozen at
         // its historical peak for the life of the page.
         state.records[i] = r;
-        changed = true;
+        changed.push(r.seq);
         if (after > before) grew = true;
     }
-    if (changed) {
+    if (changed.length) {
         buildChapters();
-        rerenderChapter(state.chapters.length - 1);
+        new Set(changed.map(chapterOfSeq)).forEach(ch => { if (ch >= 0 && state.filled.has(ch)) fillChapter(ch); });
         renderOutline(); updateSpine(); rebuildTimeline();
     }
     return grew;
@@ -1344,7 +1446,7 @@ function ledgerRowsHTML(run) {
         if (r.role === 'thinking') return thinkingHTML(r);
         return r.tools.map((t, i) => {
             const tkey = r.id + ':' + i, topen = state.expanded.has(tkey);
-            return `<button class="trow${AGENT(t) ? ' agent' : ''}${t.is_error ? ' failed' : ''}" data-key="${esc(tkey)}" aria-expanded="${topen}">` +
+            return `<button class="trow${AGENT(t) ? ' agent' : ''}${t.is_error ? ' failed' : ''}" data-key="${esc(tkey)}" data-ref="${esc(t.id || '')}" aria-expanded="${topen}">` +
                 `<span class="fold">${topen ? '▾' : '▸'}</span><span class="tn">${esc(t.name)}</span>` +
                 `<span class="tp">${prevHTML(t)}</span>` +
                 (t.is_error ? `<span class="terr">error</span>` : '') +
@@ -1363,7 +1465,7 @@ function thinkingHTML(r) {
             : `${esc(r.preview)}${r.chars > (r.preview || '').length ? ` <span class="cap">loading…</span>` : ''}`}</div>`;
         if (full == null && r.chars > (r.preview || '').length) fetchFull(r.id);
     }
-    return `<button class="throw" data-key="${esc(k)}" aria-expanded="${open}"><span class="fold">${open ? '▾' : '▸'}</span>` +
+    return `<button class="throw" data-key="${esc(k)}" data-ref="${esc(r.id)}" aria-expanded="${open}"><span class="fold">${open ? '▾' : '▸'}</span>` +
         `<span class="thl">thinking</span><span class="tp">${esc(r.preview)}</span>` +
         `<span class="tk">${r.words} words</span></button>${body}`;
 }
@@ -1402,7 +1504,7 @@ function fetchFull(id) {
         .then(d => {
             FULL.set(id, d.result != null ? d.result : (d.thinking != null ? d.thinking : ''));
             if (d.input !== undefined) INPUTS.set(id, d.input);
-            renderChapters();
+            refillWhere(`[data-ref="${CSS.escape(id)}"]`);
         })
         .catch(() => {})
         .finally(() => _fullFetching.delete(id));

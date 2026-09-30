@@ -216,6 +216,8 @@ t_grep "SPA derives hub API base"      lib/transcript-app.html 'const API ='
 t_grep "index polls /api/sessions"     lib/hub-index.html '/api/sessions'
 t_grep "Edit renders as a diff"        lib/transcript-app.html 'dl del'
 t_grep "copy works over insecure http" lib/transcript-app.html 'execCommand'
+t_grep "chapters are built on approach"   lib/transcript-app.html 'new IntersectionObserver'
+t_grep "a toggle rebuilds one chapter"    lib/transcript-app.html 'fillChapter\(\+lg.closest'
 t_grep "bar opens hub transcript"      native/ 'func openHubTranscript'
 t_grep "bar 'Sessions (phone)' action" native/ 'func openHubIndex'
 
