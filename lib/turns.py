@@ -154,4 +154,6 @@ def classify(obj):
     clean = _REMINDER.sub('', text).strip()
     if not clean:
         return _turn('system', text)
+    # a pasted block arrives wrapped (<pasted_content id="…">); the wrapper is not what was said
+    clean = re.sub(r'^\s*</?pasted_content[^>]*>\s*$', '', clean, flags=re.M).strip() or clean
     return _turn('typed', clean)

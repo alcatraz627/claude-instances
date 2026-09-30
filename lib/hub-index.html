@@ -126,8 +126,40 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
     border-radius: 999px; padding: 0 7px; }
 .p-sys[hidden] { display: none; }
 .p-model { flex: none; font: 700 var(--t-xs) var(--mono); letter-spacing: .06em; text-transform: uppercase;
-    color: var(--claude); border: 1px solid color-mix(in srgb, var(--claude) 30%, transparent);
+    color: var(--claude); background: color-mix(in srgb, var(--claude) 11%, transparent);
     border-radius: 4px; padding: 1px 6px; }
+/* card (owner D1a): one header row with stable slots, a two-part footer */
+.p-head { flex-wrap: nowrap; align-items: center; }
+.p-title { min-width: 0; flex: 0 1 auto; }
+.p-right { margin-left: auto; flex: none; display: inline-flex; align-items: baseline; gap: 8px; }
+.p-right .p-el { margin-left: 0; }
+[data-copy] { cursor: copy; border-radius: 4px; transition: background var(--t-fast) var(--ease); }
+[data-copy]:hover { background: var(--sel); }
+[data-copy].copied { background: color-mix(in srgb, var(--add) 18%, transparent); }
+.p-foot { flex-direction: column; gap: 7px; padding: 9px 13px 10px; }
+.p-where { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.p-path, .p-act { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.p-path { color: var(--dim); overflow-wrap: anywhere; }
+.p-act { margin-left: auto; flex: none; color: var(--faint); }
+.p-where .icon, .fc .icon { width: 12px; height: 12px; flex: none; }
+.p-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.fc { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border-radius: 6px;
+    background: var(--sel); color: var(--dim); white-space: nowrap; }
+.fc .icon { color: var(--faint); }
+.fc.ctx .bar { width: 30px; }
+.fc.ctx.warn { color: var(--tool); background: var(--tool-soft, color-mix(in srgb, var(--tool) 12%, transparent)); }
+.fc.ctx.hot { color: var(--err); background: var(--err-soft); }
+.fc.warn { color: var(--tool); background: color-mix(in srgb, var(--tool) 10%, transparent); }
+.fc.warn .icon, .fc.ctx.warn .icon { color: var(--tool); }
+.fc.meta { color: var(--meta); background: color-mix(in srgb, var(--meta) 10%, transparent); }
+.fc.branch { color: color-mix(in srgb, var(--meta) 70%, var(--dim)); }
+.fc.sys[hidden] { display: none; }
+.p-foot .ipcchip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border-radius: 6px;
+    background: color-mix(in srgb, var(--meta) 10%, transparent); }
+.p-line .g .icon { width: 12px; height: 12px; vertical-align: -2px; }
+.p-line .g.t.k-shell, .p-line .g.k-shell { color: var(--tool); } .p-line .g.k-file, .p-line .g.k-edit { color: var(--you); }
+.p-line .g.k-find { color: var(--claude); } .p-line .g.k-agent { color: var(--meta); }
+.p-line .g.k-mcp { color: color-mix(in srgb, var(--err) 60%, var(--meta)); } .p-line .g.k-skill { color: var(--add); }
 .p-state { flex: none; font: 600 var(--t-xs) var(--sans); }
 .pane.turn .p-state { color: var(--you); }
 .pane.working .p-state { color: var(--claude); }
@@ -135,7 +167,7 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
 .pane.ended .p-state { color: var(--faint); font-weight: 600; }
 .pane.ended .p-tail { opacity: .8; min-height: 0; }
 .p-el { flex: none; margin-left: auto; font: var(--t-xs) var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
-.p-tail { flex: 1; padding: 8px 13px 10px; font: var(--t-xs)/1.65 var(--mono); min-height: 108px;
+.p-tail { flex: 1; padding: 8px 13px 10px; font: var(--t-xs)/1.65 var(--mono); min-height: 0;
     display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; position: relative; }
 .pane.turn .p-tail { min-height: 0; }
 .p-tail::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 26px;
@@ -162,7 +194,7 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
     border-top: 1px solid var(--edge); background: var(--well);
     font: var(--t-xs) var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
 .p-foot .ctx { display: inline-flex; align-items: center; gap: 5px; }
-.p-foot .ctx .bar { width: 36px; height: 4px; border-radius: 999px; background: var(--sel); overflow: hidden; }
+.p-foot .ctx .bar { width: 30px; height: 4px; border-radius: 999px; background: var(--edge2); overflow: hidden; }
 .p-foot .ctx .bar i { display: block; height: 100%; border-radius: 999px; background: var(--dim); }
 .p-foot .ctx.warn, .p-foot .ctx.warn b { color: var(--tool); } .p-foot .ctx.warn .bar i { background: var(--tool); }
 .p-foot .ctx.hot { color: var(--err); } .p-foot .ctx.hot .bar i { background: var(--err); }
@@ -394,6 +426,7 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
 <symbol id="i-stop" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><rect x="9" y="9" width="6" height="6" rx="1"/></symbol>
 <symbol id="i-hand" viewBox="0 0 24 24"><path d="M8 13V5a1.5 1.5 0 0 1 3 0v6M11 11V4a1.5 1.5 0 0 1 3 0v7M14 11V5a1.5 1.5 0 0 1 3 0v8c0 4-3 7-6 7s-5-2-6-4l-2-4a1.5 1.5 0 0 1 2.5-1.5L8 13"/></symbol>
 <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></symbol>
+<symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-10 7"/></symbol>
 </defs></svg>
 
 <div class="topbar">
@@ -588,12 +621,32 @@ function lineFor(r) {
     if (r.role === 'user' && r.turn && !OWNER_TURNS.has(r.turn))
         return ['hook', 'peer', 'task', 'system'].includes(r.turn) ? { sys: true } : null;
     if (r.role === 'event') return { sys: true };
-    if (r.role === 'user') return { g: '❯', c: 'u', tx: (r.label || String(r.text || '').replace(/<[^>]+>/g, ' ')).trim().slice(0, 120) };
-    if (r.role === 'assistant') return { g: '⏺', c: 'a', tx: String(r.text || '').replace(/[#*`>]/g, '').trim().slice(0, 120) };
-    if (r.role === 'thinking') return { g: '∴', c: 'e', tx: 'thinking' };
-    if (r.role === 'tools') { const t = r.tools[0];
-        return { g: '⏵', c: 't', tx: `<b>${esc(t.name)}</b> ${esc((t.preview || (t.input && t.input.command) || '').slice(0, 100))}`, html: true }; }
-    return { g: '·', c: 'e', tx: String(r.text || '').slice(0, 100) };
+    // thinking and empty lines say nothing on a card, so they take no row
+    if (r.role === 'thinking') return null;
+    if (r.role === 'user') {
+        const tx = (r.label || String(r.text || '').replace(/<[^>]+>/g, ' ')).trim();
+        return tx ? { g: '❯', c: 'u', tx: tx.slice(0, 120) } : null;
+    }
+    if (r.role === 'assistant') {
+        const tx = String(r.text || '').replace(/[#*`>]/g, '').replace(/\s+/g, ' ').trim();
+        return tx ? { g: '●', c: 'a', tx: tx.slice(0, 120) } : null;
+    }
+    if (r.role === 'tools') { const t = r.tools[0], k = tailKind(t.name);
+        return { g: ic(k.icon), c: 't k-' + k.k, tx: `<b>${esc(k.label)}</b> ${esc((t.preview || (t.input && t.input.command) || '').slice(0, 100))}`, html: true }; }
+    return null;
+}
+/* A tool's kind on a card: its icon and a short name (an MCP call shows its server). */
+function tailKind(n) {
+    n = n || '';
+    if (n.startsWith('mcp__')) return { k: 'mcp', icon: 'plug', label: (n.split('__')[1] || 'mcp').replace(/^plugin_/, '').split('_')[0] };
+    if (n === 'Bash') return { k: 'shell', icon: 'terminal', label: n };
+    if (n === 'Read') return { k: 'file', icon: 'file', label: n };
+    if (/^(Write|Edit|MultiEdit|NotebookEdit)$/.test(n)) return { k: 'edit', icon: 'edit', label: n };
+    if (/^(Grep|Glob|LS|ToolSearch)$/.test(n)) return { k: 'find', icon: 'find', label: n };
+    if (/^Web/.test(n)) return { k: 'web', icon: 'globe', label: n };
+    if (/^(Task|Agent)$/.test(n)) return { k: 'agent', icon: 'bot', label: n };
+    if (/^(Skill|SlashCommand)$/.test(n)) return { k: 'skill', icon: 'puzzle', label: n };
+    return { k: 'other', icon: 'gear', label: n };
 }
 /* Tails stream from each session's own transcript endpoint, keyed strictly by
    session_id. Prime = probe total_records via an impossible ?since, then fetch
@@ -613,7 +666,7 @@ function ingestTail(sid, recs) {
 /* SWR cache: tails persist in localStorage so a reopen (or a hover repeat)
    paints instantly from stale data, then one cheap ?since revalidate catches
    up. The cache is a placeholder, never a TTL bet — every prime revalidates. */
-const TAILCACHE = 'hub-tail-v3:';   // v3: harness lines are sys, not text
+const TAILCACHE = 'hub-tail-v4:';   // v4: thinking and empty lines are not kept
 function loadTailCache(sid) {
     try { const v = JSON.parse(localStorage.getItem(TAILCACHE + sid)); return v && Array.isArray(v.src) ? v : null; }
     catch (e) { return null; }
@@ -657,7 +710,7 @@ function refreshTailDOM(sid) {
         el.innerHTML = lines.map((l, i) => lineHTML(l, s.state === 'working' && i === lines.length - 1 ? ' cursorline fresh' : '')).join('');
     }
     const pill = document.querySelector(`[data-sys="${sid}"]`);
-    if (pill) { const n = tailSysCount(s); pill.textContent = `+${n} system`; pill.hidden = !n; }
+    if (pill) { const n = tailSysCount(s); pill.innerHTML = `${ic('zap')}${n} system`; pill.hidden = !n; }
     if (hpkSid === sid) {
         const row = document.querySelector(`[data-peek][data-sid="${sid}"]`);
         if (row) showPeek(row);
@@ -676,10 +729,17 @@ function tailSysCount(s) {
     if (!t || !shown.length) return 0;
     return t.src.filter(l => l.sys && l.seq > shown[0].seq).length;
 }
-function sysPillHTML(s) {
-    const n = tailSysCount(s);
-    return `<span class="p-sys" data-sys="${esc(s.session_id)}"${n ? '' : ' hidden'}>+${n} system</span>`;
-}
+/* Name, model, branch and path on a card copy on click instead of opening it. */
+document.addEventListener('click', e => {
+    const el = e.target.closest('[data-copy]');
+    if (!el) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    const txt = el.dataset.copy;
+    const done = () => { el.classList.add('copied'); setTimeout(() => el.classList.remove('copied'), 1100); };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(txt).then(done, () => {});
+    else { const ta = document.createElement('textarea'); ta.value = txt; ta.style.cssText = 'position:fixed;opacity:0';
+        document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } catch (err) {} ta.remove(); done(); }
+}, true);
 const lineHTML = (l, extra) =>
     `<div class="p-line${extra || ''}"><span class="g ${l.c}">${l.g}</span><span class="tx">${l.html ? l.tx : esc(l.tx)}</span></div>`;
 
@@ -696,23 +756,40 @@ function paneHTML(s, hit) {
         tail = lines.map((l, i) => lineHTML(l, i === lines.length - 1 ? ' cursorline' : '')).join('');
     }
     return `<a class="pane ${kind}${openable(s) ? '' : ' noopen'}"${openable(s) ? ` href="/s/${encodeURIComponent(s.session_id)}${hit && hit.seq ? `#r${hit.seq}&q=${encodeURIComponent(hit.w)}` : ''}"` : ''}${noOpenAttrs(s)} data-sid="${esc(s.session_id)}" data-screen-label="session ${esc(s.cwd_short)}">` +
-        `<div class="p-head"><span class="p-st"></span><span class="p-title">${esc(s.cwd_short)}</span>` +
-        `<span class="p-model">${esc(s.model)}</span>` +
-        `<span class="p-state">${esc(statusText(s))}</span>` + sysPillHTML(s) +
-        `<span class="p-el">${esc(s.elapsed)}</span></div>` +
+        headHTML(s, statusText(s), s.elapsed) +
         `<div class="p-tail" data-tail="${esc(s.session_id)}">${tail}</div>` +
-        (hit ? hitHTML(hit) : '') +
-        (s.mcp_down ? `<div class="p-alert">${ic('alert')}MCP down: ${esc(s.mcp_down)}</div>` : '') +
-        `<div class="p-foot">` +
-        (s.folder && s.folder !== s.cwd_short ? `<span title="${esc(s.cwd || '')}">${esc(s.folder)}</span>` : '') +
-        (s.last_act ? `<span title="last activity">active ${esc(s.last_act)}</span>` : '') +
-        (s.ctx_remaining != null ? `<span class="ctx ${ctxCls(s.ctx_remaining)}"><span class="bar"><i style="width:${s.ctx_remaining}%"></i></span>ctx ${s.ctx_remaining}%</span>` : '') +
-        `<span>↑${esc(s.output_tokens)}</span><span>${cfmt(s.cost_usd)}</span>` +
-        `<span>${s.turns}t</span>` +
-        (s.subagent_count ? `<span>↳${s.subagent_count}</span>` : '') +
-        (s.git_branch ? `<span class="branch">⎇ ${esc(s.git_branch)}${s.git_modified ? ` <span class="mod">*${s.git_modified}</span>` : ''}</span>` : '') +
-        ipcChipHTML(s) +
-        `</div></a>`;
+        (hit ? hitHTML(hit) : '') + footHTML(s) + `</a>`;
+}
+/* A session card's header (owner D1a): one row, stable slots. The name and
+   the model copy on click. */
+function headHTML(s, state, when) {
+    return `<div class="p-head"><span class="p-st"></span>` +
+        `<span class="p-title" data-copy="${esc(s.cwd_short)}" title="Copy">${esc(s.cwd_short)}</span>` +
+        `<span class="p-model" data-copy="${esc(s.model_full || s.model)}" title="Copy ${esc(s.model_full || s.model)}">${esc(s.model)}</span>` +
+        `<span class="p-right"><span class="p-state">${esc(state)}</span><span class="p-el">${esc(when || '')}</span></span></div>`;
+}
+/* The footer: where it runs and when it last moved, then the numbers as small
+   icon chips. Path and branch copy on click; problems are tinted, not shouted. */
+function footHTML(s) {
+    const ended = s.state === 'ended';
+    const chip = (icon, body, cls = '', title = '') =>
+        `<span class="fc ${cls}"${title ? ` title="${esc(title)}"` : ''}>${ic(icon)}${body}</span>`;
+    const n = tailSysCount(s);
+    const chips = [
+        !ended && s.ctx_remaining != null ? chip('gauge', `<span class="bar"><i style="width:${s.ctx_remaining}%"></i></span>${s.ctx_remaining}%`, 'ctx ' + ctxCls(s.ctx_remaining), 'context left') : '',
+        s.output_tokens ? chip('up', esc(s.output_tokens), '', 'output tokens') : '',
+        s.cost_usd != null ? chip('coin', cfmt(s.cost_usd), '', 'cost') : '',
+        s.turns ? chip('turns', s.turns, '', 'turns') : '',
+        s.subagent_count ? chip('bot', s.subagent_count, 'meta', 'sub-agents running') : '',
+        s.git_branch ? `<span class="fc branch" data-copy="${esc(s.git_branch)}" title="Copy branch">${ic('branch')}${esc(s.git_branch)}${s.git_modified ? `<span class="mod">*${s.git_modified}</span>` : ''}</span>` : '',
+        ipcChipHTML(s),
+        `<span class="fc sys" data-sys="${esc(s.session_id)}" title="hooks, peers, tasks and mode changes not shown above"${n ? '' : ' hidden'}>${ic('zap')}${n} system</span>`,
+        s.mcp_down ? chip('plug', 'MCP', 'warn', 'MCP down: ' + s.mcp_down) : '',
+    ].filter(Boolean).join('');
+    return `<div class="p-foot"><div class="p-where">` +
+        (s.cwd ? `<span class="p-path" data-copy="${esc(s.cwd)}" title="Copy path">${ic('folder')}${esc((s.cwd || '').replace(/^\/Users\/[^/]+/, '~'))}</span>` : '<span></span>') +
+        (!ended && s.last_act ? `<span class="p-act">${ic('clock')}active ${esc(s.last_act)}</span>` : '') +
+        `</div><div class="p-chips">${chips}</div></div>`;
 }
 /* Header badge: unread ipc mail across live sessions. "?" the moment ANY
    session's broker read is non-fresh — a partial total would be a confident
@@ -784,13 +861,9 @@ function ipcChipHTML(s) {
 }
 function endedPaneHTML(s, hit) {
     return `<a class="pane ended${openable(s) ? '' : ' noopen'}"${openable(s) ? ` href="/s/${encodeURIComponent(s.session_id)}${hit && hit.seq ? `#r${hit.seq}&q=${encodeURIComponent(hit.w)}` : ''}"` : ''}${noOpenAttrs(s)} data-sid="${esc(s.session_id)}" data-peek="1">` +
-        `<div class="p-head"><span class="p-st"></span><span class="p-title">${esc(s.cwd_short)}</span>` +
-        `<span class="p-model">${esc(s.model)}</span><span class="p-state">ended</span>` + sysPillHTML(s) +
-        `<span class="p-el">${esc(s.ago)}</span></div>` +
+        headHTML(s, 'ended', s.ago) +
         `<div class="p-tail" data-tail="${esc(s.session_id)}">` + tailLinesFor(s).map(l => lineHTML(l)).join('') + `</div>` +
-        (hit ? hitHTML(hit) : '') +
-        `<div class="p-foot"><span>${s.turns}t</span><span>${cfmt(s.cost_usd)}</span>` +
-        (s.git_branch ? `<span class="branch">⎇ ${esc(s.git_branch)}</span>` : '') + `</div></a>`;
+        (hit ? hitHTML(hit) : '') + footHTML(s) + `</a>`;
 }
 
 /* ---------------- table density ---------------- */

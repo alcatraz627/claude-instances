@@ -38,7 +38,9 @@ def a(text, n):
 
 if sys.argv[1:] == ["tail"]:
     # an idle card whose newest lines are a hook and a mode change
-    LINES += [a("On it.", 1), u("second ask", origin={"kind": "human"}), a("Done.", 2),
+    think = json.dumps({"type": "assistant", "uuid": "th1", "message": {"id": "m9", "model": "claude-opus-5-5",
+        "role": "assistant", "content": [{"type": "thinking", "thinking": "weighing it"}], "usage": {}}})
+    LINES += [a("On it.", 1), u("second ask", origin={"kind": "human"}), a("Done.", 2), think,
               u("Stop hook feedback: goal not met", isMeta=True),
               json.dumps({"type": "permission-mode", "permissionMode": "bypassPermissions"})]
 if sys.argv[1:] == ["chapters"]:

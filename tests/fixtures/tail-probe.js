@@ -12,11 +12,13 @@ const records = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 records.forEach((r, i) => { r.seq = i + 1; });
 
 const esc = s => String(s);
-const out = new Function('esc', 'records', html.slice(a, b) + `
+const ic = n => `[${n}]`;
+const document = { addEventListener() {}, querySelector() { return null; } };
+const out = new Function('esc', 'ic', 'document', 'records', html.slice(a, b) + `
     tails.s = { src: [], lastSeq: 0, loading: false };
     ingestTail('s', records);
     const s = { session_id: 's', state: 'idle' };
     const lines = tailLinesFor(s).map(l => l.g + ' ' + String(l.tx).replace(/<[^>]+>/g, ''));
     const n = typeof tailSysCount === 'function' ? tailSysCount(s) : 0;
-    return lines.join(' | ') + ' | +' + n;`)(esc, records);
+    return lines.join(' | ') + ' | +' + n;`)(esc, ic, document, records);
 console.log(out);
