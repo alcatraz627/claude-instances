@@ -644,6 +644,18 @@ t_eq "wrong-shape cache entries re-parse"   "3:15:PRUNED" \
 t_eq "cache write is atomic, tmp cleaned"   "ATOMIC:CLEAN" \
      "$(python3 "$SCAN_PROBE" agg_cache_atomic 3)"
 
+t_section "ghost sessions"
+
+# A row exists only for a live interactive session file (1006), or a young
+# claude process still writing one (1007). Never a codex daemon (1001), a
+# headless `claude -p` worker with or without a file (1002, 1003), a stale
+# file whose pid is gone (1004), a reused pid (1005), or an old fileless
+# claude process (1008).
+t_eq "only interactive sessions are live"   "1006:interactive:1006:n1006,1007:pending:-:-" \
+     "$(python3 "$SCAN_PROBE" liveness)"
+t_eq "ended list hides stubs under 4 turns" "4,10" \
+     "$(python3 "$SCAN_PROBE" history_stubs)"
+
 t_section "small truths (R3)"
 
 t_eq "stale tpath pointers are ignored"          "OK:STALE_IGNORED" \

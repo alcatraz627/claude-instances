@@ -38,8 +38,12 @@ def _load_agg(projects_dir, cache_path):
     return ns
 
 
-def _mk_sessions(root, n):
-    """n one-turn sessions (10 in / 5 out each) under root/projects."""
+def _mk_sessions(root, n, turns=4):
+    """n sessions under root/projects, each 10 in / 5 out tokens in total.
+
+    Four turns by default: history hides stubs under MIN_HISTORY_TURNS, and
+    only the first turn carries usage so token totals stay 10 / 5.
+    """
     d = os.path.join(root, "projects", "-tmp-agg")
     os.makedirs(d, exist_ok=True)
     paths = []
@@ -49,6 +53,9 @@ def _mk_sessions(root, n):
             fh.write(json.dumps({"type": "assistant", "message": {
                 "model": "claude-opus-4-8",
                 "usage": {"input_tokens": 10, "output_tokens": 5}}}) + "\n")
+            for _ in range(turns - 1):
+                fh.write(json.dumps({"type": "assistant", "message": {
+                    "model": "claude-opus-4-8"}}) + "\n")
         paths.append(p)
     return paths
 
@@ -527,6 +534,67 @@ def main(argv):
             print("ABSENT_OK" if isinstance(info, dict) or info is None else f"ODD:{type(info).__name__}")
         except Exception as e:
             print(f"RAISED:{type(e).__name__}")
+    elif op == "history_stubs":
+        # Ended list hides stubs: sessions of 0 to 3 turns never appear.
+        import tempfile, shutil
+        root = tempfile.mkdtemp(prefix="stubs-")
+        try:
+            d = os.path.join(root, "projects", "-tmp-stubs")
+            os.makedirs(d)
+            for t in (0, 2, 3, 4, 10):
+                with open(os.path.join(d, f"dddd{t:04d}-0000-4000-8000-000000000000.jsonl"), "w") as fh:
+                    fh.write(json.dumps({"type": "user", "message": {"content": "hi"}}) + "\n")
+                    for _ in range(t):
+                        fh.write(json.dumps({"type": "assistant", "message": {
+                            "model": "claude-opus-4-8"}}) + "\n")
+            ns2 = _load_agg(os.path.join(root, "projects"), os.path.join(root, "c.json"))
+            print(",".join(str(h["turns"]) for h in
+                           sorted(ns2["get_session_history"](), key=lambda h: h["turns"])))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "liveness":
+        # Ghost rows: a live row must be an interactive Claude session. The
+        # fixture is a fake process table plus a fake ~/.claude/sessions, run
+        # through the real get_live_instances. Only 1006 (valid session file)
+        # and 1007 (young claude that has not written its file yet) may appear.
+        import tempfile, shutil, time as _t
+        root = tempfile.mkdtemp(prefix="live-")
+        try:
+            now = _t.time()
+            fmt_ps = lambda t: _t.strftime('%a %b %d %H:%M:%S %Y', _t.localtime(t))
+            fmt_file = lambda t: _t.strftime('%a %b %d %H:%M:%S %Y', _t.gmtime(t))
+            old, young, day_ago = now - 3600, now - 5, now - 86400
+            ps_rows = [
+                (1001, old, "/Applications/Codex.app/Contents/Resources/codex app-server"),
+                (1002, young, "claude -p --model sonnet --output-format json You enforce a style ledger"),
+                (1003, young, "claude --print summarize this"),
+                (1005, old, "/usr/bin/vim notes.txt"),
+                (1006, old, "claude --model opus -n real"),
+                (1007, young, "claude --model opus"),
+                (1008, old, "claude --model opus"),
+            ]
+            ps_text = "\n".join(f"{p:>6} {fmt_ps(t)}     {cmd}" for p, t, cmd in ps_rows)
+            sdir = os.path.join(root, "sessions")
+            os.makedirs(sdir)
+            def sess(pid, started, kind, sid):
+                with open(os.path.join(sdir, f"{pid}.json"), "w") as fh:
+                    json.dump({"pid": pid, "sessionId": sid, "cwd": "/tmp/live-fx",
+                               "procStart": fmt_file(started), "kind": kind,
+                               "name": f"n{pid}", "status": "busy",
+                               "updatedAt": int(now * 1000),
+                               "statusUpdatedAt": int(now * 1000)}, fh)
+            sess(1002, young, "print", "aaaaaaaa-0000-4000-8000-000000001002")   # headless worker's file
+            sess(1004, old, "interactive", "aaaaaaaa-0000-4000-8000-000000001004")  # stale: pid gone
+            sess(1005, day_ago, "interactive", "aaaaaaaa-0000-4000-8000-000000001005")  # pid reused
+            sess(1006, old, "interactive", "aaaaaaaa-0000-4000-8000-000000001006")
+            ns2 = load()
+            ns2["SESSIONS_DIR"] = sdir
+            ns2["_ps_snapshot"] = lambda: ps_text
+            rows = ns2["get_live_instances"]()
+            print(",".join(f"{r['pid']}:{r['kind']}:{r['session_id'][-4:] or '-'}:{r['name'] or '-'}"
+                           for r in sorted(rows, key=lambda r: r['pid'])))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
     elif op == "tpath_stale":
         # PID reuse leaves the previous owner's tpath file behind; a pointer
         # file older than the process itself cannot belong to it.
