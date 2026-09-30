@@ -59,7 +59,29 @@ def _tag(s, name):
     return ' '.join(m.group(1).split()) if m else ''
 
 
+# System lines Claude Code writes often, named in a few words for their chip.
+_SYSTEM_NAMES = (
+    ('A session-scoped Stop hook is now active', 'goal armed'),
+    ('[Your previous response had no visible output', 'asked to reply visibly'),
+    ('The user named this session', 'session renamed'),
+    ('[Request interrupted by user', 'interrupted'),
+)
+
+
+def _short(s, n=80):
+    """The first clause of s, or its first n characters cut at a word."""
+    m = re.match(r'(.{8,}?)(?:[.:;!?](?:\s|$))', s)
+    head = m.group(1) if m and len(m.group(1)) <= n else s
+    if len(head) <= n:
+        return head
+    return head[:n].rsplit(' ', 1)[0] + '…'
+
+
 def _turn(kind, text, label='', command='', args=''):
+    if not label and kind == 'system':
+        clean = _REMINDER.sub(lambda m: m.group(0)[len('<system-reminder>'):-len('</system-reminder>')], text).strip()
+        label = next((name for prefix, name in _SYSTEM_NAMES if clean.startswith(prefix)), '') \
+            or _short(_first_line(clean))
     return {'kind': kind, 'text': text, 'label': label or _first_line(text),
             'command': command, 'args': args}
 
@@ -89,7 +111,7 @@ def classify(obj):
     if okind == 'auto-continuation' or turn_origin == 'auto_continuation':
         return _turn('system', text)
     if turn_origin == 'scheduled':
-        return _turn('system', text, 'scheduled: ' + _first_line(text))
+        return _turn('system', text, 'scheduled: ' + _short(_first_line(text), 60))
 
     if text.startswith('Base directory for this skill:'):   # meta flag not always set
         return _turn('injected', text)
@@ -101,9 +123,8 @@ def classify(obj):
         if text.startswith('Stop hook feedback:'):
             body = text[len('Stop hook feedback:'):].strip()
             head = _first_line(body).split(' — ')[0]   # hook messages lead with a heading
-            return _turn('hook', text, 'Stop hook: ' + (head or 'feedback'))
-        return _turn('system', text, _first_line(_REMINDER.sub(
-            lambda m: m.group(0)[len('<system-reminder>'):-len('</system-reminder>')], text)))
+            return _turn('hook', text, 'Stop hook: ' + (_short(head.lstrip('['), 60) or 'feedback'))
+        return _turn('system', text)
 
     if text.startswith('Another Claude session sent a message:') or text.startswith('<teammate-message'):
         who = _attr(text, 'teammate_id')
@@ -113,7 +134,7 @@ def classify(obj):
             what = status.group(1).replace('_', ' ')
         return _turn('peer', text, (f'{who}: ' if who else '') + what)
     if text.startswith('[Request interrupted by user'):
-        return _turn('system', text, 'interrupted')
+        return _turn('system', text)
     if text.startswith('<local-command-stdout>') or text.startswith('<local-command-stderr>') \
             or text.startswith('<bash-stdout>') or text.startswith('<bash-stderr>') \
             or text.startswith('<local-command-caveat>'):

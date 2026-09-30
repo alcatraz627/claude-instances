@@ -115,6 +115,10 @@ button { font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparen
 .ol-item.cur .ol-num { color: var(--you); }
 .ol-t { min-width: 0; }
 .ol-title { display: block; font: 600 12.5px var(--sans); line-height: 1.4; overflow-wrap: anywhere; }
+.ol-t { flex: 1; }
+.ol-ts { flex: none; font: 10.5px var(--mono); color: var(--faint); padding-top: 2px; }
+.ol-item.cur .ol-ts { color: var(--you); }
+.ol-meta:empty { display: none; }
 .ol-meta { display: flex; flex-wrap: wrap; gap: 0 6px; font: 10.5px var(--mono); color: var(--faint); margin-top: 2px; }
 .ol-meta > span { white-space: nowrap; }
 .ol-meta > span + span::before { content: '·'; margin-right: 6px; }
@@ -188,8 +192,10 @@ html, body { overflow-anchor: none; }
 .epi .content { color: var(--dim); font-size: 14px; }
 .epi.clamped .epi-in { max-height: 7.2em; overflow: hidden;
     -webkit-mask-image: linear-gradient(#000 55%, transparent); mask-image: linear-gradient(#000 55%, transparent); }
-.epi-more { background: none; border: none; color: var(--you); font: 600 12px var(--sans); padding: 2px 0; }
-.epi-more:hover { text-decoration: underline; }
+.epi-more { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 20px; margin-top: 2px;
+    background: var(--you-soft); border: none; border-radius: 6px; color: var(--you); padding: 0; }
+.epi-more .icon { width: 13px; height: 13px; }
+.epi-more:hover { background: color-mix(in srgb, var(--you) 18%, transparent); }
 
 /* claude passages */
 .passage { margin-top: 20px; }
@@ -210,8 +216,16 @@ html, body { overflow-anchor: none; }
     padding: 12px 14px; overflow-x: auto; font-size: 13px; line-height: 1.6; }
 .content pre code { background: none; padding: 0; font-size: inherit; }
 .content blockquote { margin: 10px 0; padding: 2px 16px; border-left: 2px solid var(--edge2); color: var(--dim); }
-.content table { border-collapse: collapse; font-size: 13.5px; display: block; overflow-x: auto; }
-.content th, .content td { border: 1px solid var(--edge); padding: 4px 10px; text-align: left; }
+/* tables: one outer frame, a tinted header, row rules only */
+.content table { border-collapse: separate; border-spacing: 0; font-size: 13px; line-height: 1.45; display: block;
+    overflow-x: auto; max-width: 100%; width: max-content; border: 1px solid var(--edge); border-radius: var(--r); margin: 12px 0; }
+.content th, .content td { padding: 6px 12px; text-align: left; vertical-align: top; border: none; border-bottom: 1px solid var(--edge); }
+.content th { background: var(--well); font: 600 11.5px var(--sans); color: var(--dim); white-space: nowrap; }
+.content tr:last-child td { border-bottom: none; }
+.content tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--well) 45%, transparent); }
+.content hr { border: none; border-top: 1px solid var(--edge); margin: 16px 0; }
+.content .callout-h { display: inline-block; font: 700 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase;
+    color: var(--meta); margin-top: 6px; }
 .content mark { background: var(--mark); color: inherit; border-radius: 2px; }
 
 /* ================= activity ledger */
@@ -302,9 +316,8 @@ pre.res.err { color: var(--err); }
     text-underline-offset: 2px; cursor: pointer; overflow-wrap: anywhere; }
 .lk:hover { text-decoration-color: var(--you); }
 .lk .pdir { color: inherit; opacity: .7; }
-.lk-cp { display: inline-block; margin-left: 3px; padding: 0 3px; border-radius: 4px; font-size: .85em; color: var(--faint);
-    cursor: pointer; opacity: 0; transition: opacity var(--t-fast) var(--ease); }
-.lk:hover + .lk-cp, .lk-cp:hover, .lk-cp.ok { opacity: 1; }
+.lk-cp { display: none; margin-left: 3px; padding: 0 3px; border-radius: 4px; font-size: .85em; color: var(--faint); cursor: pointer; }
+.lk:hover + .lk-cp, .lk-cp:hover, .lk-cp.ok { display: inline-block; }
 .lk-cp:hover { color: var(--you); background: var(--you-soft); }
 .lk-cp.ok { color: var(--add); }
 /* harness turns (hook, peer, task, system) folded into the chapter they interrupted */
@@ -316,7 +329,10 @@ pre.res.err { color: var(--err); }
 .ch-cmds { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
 .cmdline-t { font: 12.5px/1.5 var(--mono); color: var(--dim); overflow-wrap: anywhere; }
 .cmdtag { font-weight: 700; color: var(--you); background: var(--you-soft); border-radius: 4px; padding: 1px 6px; margin-right: 8px; }
-.divider.clear { color: var(--dim); }
+/* /clear: one quiet line, not a shouted banner; the chapter under it drops its own rule */
+.divider.clear { font: 11px var(--mono); letter-spacing: 0; text-transform: none; color: var(--faint); margin-top: 26px; }
+.divider.clear::before, .divider.clear::after { background: none; border-top: 1px dashed var(--edge2); height: 0; }
+.chwrap > .divider + section .ch-head, .chwrap > .divider + .newmark + section .ch-head { border-top: none; padding-top: 10px; }
 .ol-div { font: 10.5px var(--mono); color: var(--faint); letter-spacing: .06em; padding: 8px 10px 2px; }
 .inj-body .content { font-size: 13.5px; }
 /* standalone event line (mode changes stay visible outside the ledger fold) */
@@ -728,9 +744,17 @@ function sanitizeHTML(html) {
         if ((a.name === 'href' || a.name === 'src') && /^\s*javascript:/i.test(a.value)) el.removeAttribute(a.name); }); });
     return t.innerHTML;
 }
+/* Terminal decoration in Claude's replies (═══ rule lines, `★ Insight ───`
+   markers) becomes a real rule and a small label instead of wrapping glyphs. */
+function tidyMd(s) {
+    return s
+        .replace(/^[ \t]*[═━─]{6,}[ \t]*$/gm, '\n\n<hr>\n\n')
+        .replace(/[═━]{6,}/g, '')
+        .replace(/`([^`\n]*?)─{3,}[^`\n]*`/g, (m, a) => a.trim() ? `<span class="callout-h">${esc(a.trim())}</span>` : '');
+}
 function mdRender(el) {
     if (window.marked) {
-        el.innerHTML = sanitizeHTML(marked.parse(el.getAttribute('data-raw') || ''));
+        el.innerHTML = sanitizeHTML(marked.parse(tidyMd(el.getAttribute('data-raw') || '')));
         el.querySelectorAll('pre code').forEach(b => { try { hljs.highlightElement(b); } catch (e) {} });
     } else el.textContent = el.getAttribute('data-raw') || '';
     el.removeAttribute('data-raw');
@@ -832,6 +856,14 @@ function buildChapters() {
             continue;
         }
         c.title = 'Session start';
+    }
+    // A start that only records the opening permission mode says nothing the
+    // masthead does not; its divider moves to the next chapter.
+    if (chs.length > 1 && !chs[0].user && !chs[0].cmds.length &&
+            chs[0].items.every(x => (x.role === 'event' && x.event_type === 'mode-change') ||
+                                    (x.role === 'user' && turnOf(x) === 'hidden'))) {
+        chs[1].divider = chs[1].divider || chs[0].divider;
+        chs.shift();
     }
     chs.forEach(chStats);
     state.chapters = chs;
@@ -936,14 +968,24 @@ function chMetaLine(c) {
         c.errs ? `<span class="e">${c.errs} error${c.errs > 1 ? 's' : ''}</span>` : '',
     ].filter(Boolean).join(' · ');
 }
+/* The outline is for jumping: a short title (the first clause; a shell
+   command's first words), the time, and the two counts worth scanning for. */
+function olTitle(c) {
+    const t = String(c.title || '');
+    if (c.user && c.user.turn === 'shell') return t.split(/\s+/).slice(0, 4).join(' ');
+    const m = t.match(/^(.{12,}?)[.:;!?](\s|$)/);
+    const head = m && m[1].length <= 72 ? m[1] : t;
+    return head.length <= 72 ? head : head.slice(0, 72).replace(/\s+\S*$/, '') + '…';
+}
 function renderOutline() {
     $('#olList').innerHTML = state.chapters.map((c, i) =>
         (c.divider && c.divider.kind === 'clear' ? `<div class="ol-div">${esc(c.divider.label)}</div>` : '') +
-        `<button class="ol-item${i === state.curCh ? ' cur' : ''}" data-ch="${i}">` +
+        `<button class="ol-item${i === state.curCh ? ' cur' : ''}" data-ch="${i}" title="${esc(c.title)}">` +
         `<span class="ol-num">${String(i + (state.chapters[0].user ? 1 : 0)).padStart(2, '0')}</span>` +
-        `<span class="ol-t"><span class="ol-title">${esc(c.title)}</span>` +
-        `<span class="ol-meta">${[c.tools ? `${c.tools} tools` : '', c.toks ? `↑${kfmt(c.toks)}` : '', ...harnessParts(c),
-            c.errs ? `<b class="e">${c.errs} ${c.errs > 1 ? 'errors' : 'error'}</b>` : ''].filter(Boolean).map(x => `<span>${x}</span>`).join('')}</span></span></button>`).join('');
+        `<span class="ol-t"><span class="ol-title">${esc(olTitle(c))}</span>` +
+        `<span class="ol-meta">${[c.tools ? `${c.tools} tools` : '',
+            c.errs ? `<b class="e">${c.errs} ${c.errs > 1 ? 'errors' : 'error'}</b>` : ''].filter(Boolean).map(x => `<span>${x}</span>`).join('')}</span></span>` +
+        `<span class="ol-ts">${esc(c.ts ? c.ts.slice(0, 5) : '')}</span></button>`).join('');
 }
 
 /* ================= chapter rendering */
@@ -1023,7 +1065,7 @@ function ledgerSummary(run) {
             mins += r._workedMin || 0; toks += (r.tokens && r.tokens.out) || 0;
             for (const t of r.tools) { by[t.name] = (by[t.name] || 0) + 1; if (AGENT(t)) agents++; if (t.is_error) errs++; }
         } else if (r.role === 'thinking') thinks++;
-        else { events++; if (r.cls === 'err') errs++; }
+        else if (evText(r)) { events++; if (r.cls === 'err') errs++; }
     }
     const parts = Object.entries(by).sort((a, b) => b[1] - a[1]).slice(0, 4)
         .map(([n, k]) => `<b>${esc(n)}</b> ×${k}`);
@@ -1063,6 +1105,21 @@ function harnessChipHTML(r) {
         `<span class="fold">${open ? '▾' : '›'}</span></button>` +
         (open ? `<div class="inj-body"><div class="content" data-md data-raw="${esc(r.text)}"></div></div>` : '') + `</div>`;
 }
+/* What an event says in words, or '' when it has nothing worth a line: a hook
+   run that neither failed nor blocked is routine. */
+function evText(r) {
+    if (r.text) return r.text;
+    if (r.event_type === 'hook-summary') {
+        const n = (r.errors || []).length;
+        if (!n && !r.prevented_continuation) return '';
+        return [`${r.hook_count || 0} stop hook${r.hook_count === 1 ? '' : 's'}`, n ? `${n} failed` : '',
+            r.prevented_continuation ? 'kept Claude working' : ''].filter(Boolean).join(' · ');
+    }
+    return '';
+}
+function evlineHTML(r) {
+    return `<div class="evline${r.cls === 'err' ? ' err' : ''}">${esc(evText(r))}<span class="ts">${esc(r.ts || '')}</span></div>`;
+}
 function chapterHTML(c, i, full) {
     const num = String(i + (state.chapters[0].user ? 1 : 0)).padStart(2, '0');
     let h = `<div class="chwrap" data-chw="${i}">`;
@@ -1073,13 +1130,16 @@ function chapterHTML(c, i, full) {
     if (c.user) {
         const { chip, body } = userParts(c.user.text);
         h += (chip ? `<span class="cmdchip">${esc(chip)}</span>` : '');
-        h += `<h2 class="ch-title" title="jump here">${esc(c.title)}</h2>`;
+        const short = olTitle(c);
+        h += `<h2 class="ch-title" title="jump here">${esc(short)}</h2>`;
         h += `<div class="ch-meta">${chMetaLine(c)}</div>` + cmdsHTML(c);
         const rest = String(body || '').trim();
-        if (full && rest && (rest.split('\n').length > 2 || rest.length > 160)) {
+        // the whole message sits under a shortened title, clamped until opened
+        if (full && rest && rest !== short) {
             const ek = 'epi:' + c.firstSeq, open = state.epis.has(ek);
             h += `<div class="epi${open ? '' : ' clamped'}"><div class="epi-in"><div class="content" data-md data-raw="${esc(rest)}"></div></div>` +
-                `<button class="epi-more" data-epi="${ek}">${open ? 'collapse prompt' : 'show full prompt'}</button></div>`;
+                `<button class="epi-more" data-epi="${ek}" aria-label="${open ? 'Collapse the message' : 'Show the whole message'}" title="${open ? 'Collapse' : 'Show all'}">` +
+                `<svg class="icon" style="transform:rotate(${open ? -90 : 90}deg)"><use href="#i-chev"/></svg></button></div>`;
         }
     } else {
         h += `<h2 class="ch-title">${esc(c.title)}</h2><div class="ch-meta">${chMetaLine(c)}</div>` + cmdsHTML(c);
@@ -1088,17 +1148,21 @@ function chapterHTML(c, i, full) {
     if (!full) return h + `<div class="ch-ph" style="height:${estHeight(c)}px"></div></section></div>`;
     // items: passages + ledgers (consecutive tools/events group into one ledger)
     let run = [];
-    const flush = () => { if (run.length) { h += runHTML(run, 'lg:' + run[0].id); run = []; } };
+    // A run of events alone is a line or two, not a ledger box.
+    const flush = () => {
+        if (!run.length) return;
+        if (run.some(x => x.role !== 'event')) h += runHTML(run, 'lg:' + run[0].id);
+        else run.forEach(e => { h += evlineHTML(e); });
+        run = [];
+    };
     for (const r of c.items) {
+        if (r.role === 'event' && !evText(r)) continue;
         // mode/permission events stay visible outside the fold; other events group into the ledger
-        if (r.role === 'tools' || r.role === 'thinking' || (r.role === 'event' && !/mode/i.test(r.text || ''))) { run.push(r); continue; }
+        if (r.role === 'tools' || r.role === 'thinking' || (r.role === 'event' && r.event_type !== 'mode-change')) { run.push(r); continue; }
         flush();
         if (r._divider) h += `<div class="divider ${r._divider.kind}">${esc(r._divider.label)}</div>`;
         if (state.newSince != null && r.seq === state.newSince) h += `<div class="newmark">new</div>`;
-        if (r.role === 'event') {
-            h += `<div class="evline${r.cls === 'err' ? ' err' : ''}">${esc(r.text)}<span class="ts">${esc(r.ts || '')}</span></div>`;
-            continue;
-        }
+        if (r.role === 'event') { h += evlineHTML(r); continue; }
         if (r.role === 'user' && turnOf(r) === 'hidden') continue;
         if (r.role === 'user' && (HARNESS.has(turnOf(r)) || turnOf(r) === 'command')) { h += harnessChipHTML(r); continue; }
         if (r.role === 'user') { // injected (command expansion / skill preamble) — annotation, not chapter
@@ -1220,11 +1284,14 @@ function jumpToChapter(i, smooth = true) {
     if (!state.filled.has(i)) fillChapter(i);
     const el = document.querySelector(`.chapter[data-ch="${i}"] .ch-head`);
     if (!el) return;
-    const top = el.getBoundingClientRect().top;
-    // A long smooth scroll passes placeholders that grow as they fill and
-    // would move the target; far jumps go straight there.
-    const far = Math.abs(top) > innerHeight * 3;
-    window.scrollTo({ top: top + scrollY - 54, behavior: smooth && !far ? 'smooth' : 'auto' });
+    let top = el.getBoundingClientRect().top;
+    // A long smooth scroll passes placeholders that grow as they fill and would
+    // move the target, so a far jump lands one screen short, then glides in.
+    if (smooth && Math.abs(top) > innerHeight * 3) {
+        window.scrollTo({ top: top + scrollY - 54 - Math.sign(top) * innerHeight, behavior: 'auto' });
+        top = el.getBoundingClientRect().top;
+    }
+    window.scrollTo({ top: top + scrollY - 54, behavior: smooth ? 'smooth' : 'auto' });
 }
 /* Build the chapter holding `seq` if it is still a placeholder; its index. */
 function ensureFilled(seq) {
@@ -1335,7 +1402,7 @@ addEventListener('scroll', () => {
             state.curCh = cur;
             updateSpine();
             $('#chLab').innerHTML = `<b>${cur + 1}/${state.chapters.length}</b>`;
-            document.querySelectorAll('.ol-item').forEach((el, i) => el.classList.toggle('cur', i === cur));
+            document.querySelectorAll('.ol-item').forEach((el, i) => { el.classList.toggle('cur', i === cur); if (i === cur) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); });
         }
         if (innerHeight + scrollY > document.body.scrollHeight - 300) { state.newSince = null; $('#jumpNew').classList.remove('on'); }
     });
@@ -1717,7 +1784,8 @@ function ledgerRowsHTML(run) {
     return run.map(r => {
         if (r.role === 'event') {
             const err = r.cls === 'err';
-            return `<div class="evrow${err ? ' err' : ''}">${err ? '▲' : '·'} ${esc(r.text)}<span class="ts">${esc(r.ts || '')}</span></div>`;
+            if (!evText(r)) return '';
+            return `<div class="evrow${err ? ' err' : ''}">${err ? '▲' : '·'} ${esc(evText(r))}<span class="ts">${esc(r.ts || '')}</span></div>`;
         }
         if (r.role === 'thinking') return thinkingHTML(r);
         return r.tools.map((t, i) => {

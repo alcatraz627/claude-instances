@@ -44,6 +44,9 @@ if sys.argv[1:] == ["tail"]:
 if sys.argv[1:] == ["chapters"]:
     # after the owner's ask: Claude answers, a command runs with a reply and
     # no typed message after it, then a command with nothing after it at all
+    # a session that opens with only its permission mode has no "Session start" chapter
+    LINES.insert(0, json.dumps({"type": "permission-mode", "permissionMode": "default"}))
+    LINES.insert(1, u("<local-command-caveat>Caveat: local commands</local-command-caveat>", isMeta=True))
     LINES += [a("On it.", 1), u("second ask", origin={"kind": "human"}), a("Done.", 2),
               u("<command-name>/review</command-name><command-args></command-args>", origin={"kind": "human"}),
               a("## Review\nLooks fine.", 3),
