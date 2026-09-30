@@ -625,6 +625,9 @@ if command -v node >/dev/null 2>&1; then
     t_eq "every URL and path in a transcript becomes a link; trailing punctuation and D1a/D2b do not" \
          "https://github.com/x/y/pull/9 => https://github.com/x/y/pull/9 | /Users/me/Code/app/lib/scan.sh => /f?p=%2FUsers%2Fme%2FCode%2Fapp%2Flib%2Fscan.sh | ~/.claude/rules/git.md => /f?p=~%2F.claude%2Frules%2Fgit.md | lib/hub-index.html => /f?p=%2FUsers%2Fme%2FCode%2Fapp%2Flib%2Fhub-index.html&rel=lib%2Fhub-index.html" \
          "$(node "$REPO_ROOT/tests/fixtures/links-probe.js")"
+    t_eq "drawn boxes become callouts, only declared or shell blocks are coloured, task tags become fields" \
+         "box:callout blocks:plain,shell,shell,box card:task=b0q;status=completed summary-body" \
+         "$(node "$REPO_ROOT/tests/fixtures/render-probe.js")"
     t_eq "card tails leave out hooks and mode changes, and count them" \
          "❯ second ask | ● Done. | +2" \
          "$(python3 "$REPO_ROOT/tests/fixtures/turns-probe.py" tail)"

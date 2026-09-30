@@ -1,0 +1,99 @@
+/* What the hub board and the transcript page share: the palettes, the
+   tooltip, and the hover copy button. Both pages name the same tokens
+   (--bg2 on the transcript, --panel on the board: each palette sets both). */
+
+/* ===== palettes: Graphite is each page's own :root; these override it ===== */
+:root[data-skin="paper"] { color-scheme: dark;
+    --bg: #1b1916; --bg2: #24211d; --panel: #24211d; --well: #201d1a; --sel: #302c27;
+    --edge: rgba(235,220,195,.12); --edge2: rgba(235,220,195,.23);
+    --text: #efe9df; --dim: #b3aa9b; --faint: #7a7266;
+    --you: oklch(0.76 0.11 250); --claude: oklch(0.76 0.1 170); --tool: #dcae63;
+    --err: #e38b76; --add: oklch(0.76 0.12 140); --del: #e38b76; --meta: oklch(0.75 0.09 320);
+    --sky: oklch(0.76 0.08 230); --rose: oklch(0.74 0.11 10);
+    --out: #211e1b; --term: #1e1b18; --mark: rgba(220,174,99,.3); }
+:root[data-skin="paper"].light { color-scheme: light;
+    --bg: #f8f5ee; --bg2: #efebe2; --panel: #fdfbf7; --well: #f3efe6; --sel: #e6e0d4;
+    --edge: rgba(60,45,20,.13); --edge2: rgba(60,45,20,.25);
+    --text: #28231c; --dim: #5e5648; --faint: #93897a;
+    --you: oklch(0.47 0.12 255); --claude: oklch(0.47 0.1 175); --tool: #85600f;
+    --err: #ad402f; --add: oklch(0.47 0.12 140); --del: #ad402f; --meta: oklch(0.47 0.11 320);
+    --sky: oklch(0.5 0.1 230); --rose: oklch(0.52 0.14 10);
+    --out: #fcfaf5; --term: #f4f0e7; --mark: rgba(210,160,40,.3); }
+
+:root[data-skin="fjord"] { color-scheme: dark;
+    --bg: #1e222b; --bg2: #262b36; --panel: #262b36; --well: #222731; --sel: #313746;
+    --edge: rgba(200,215,240,.12); --edge2: rgba(200,215,240,.23);
+    --text: #e6ebf3; --dim: #a5b0c2; --faint: #6c778b;
+    --you: oklch(0.78 0.09 235); --claude: oklch(0.79 0.08 190); --tool: #e4c07f;
+    --err: #e38c8f; --add: oklch(0.8 0.1 140); --del: #e38c8f; --meta: oklch(0.76 0.08 300);
+    --sky: oklch(0.8 0.07 215); --rose: oklch(0.75 0.1 0);
+    --out: #232833; --term: #1c2029; --mark: rgba(228,192,127,.28); }
+:root[data-skin="fjord"].light { color-scheme: light;
+    --bg: #eef1f5; --bg2: #e3e8ef; --panel: #f8fafc; --well: #e8ecf2; --sel: #dbe1ea;
+    --edge: rgba(30,45,70,.13); --edge2: rgba(30,45,70,.25);
+    --text: #1f2633; --dim: #4f5b6e; --faint: #858fa0;
+    --you: oklch(0.48 0.12 245); --claude: oklch(0.49 0.1 195); --tool: #82621a;
+    --err: #b1434a; --add: oklch(0.49 0.11 145); --del: #b1434a; --meta: oklch(0.48 0.11 300);
+    --sky: oklch(0.5 0.1 225); --rose: oklch(0.52 0.13 0);
+    --out: #f7f9fb; --term: #eaeef3; --mark: rgba(200,160,50,.3); }
+
+:root[data-skin="dusk"] { color-scheme: dark;
+    --bg: #1a1724; --bg2: #221e2f; --panel: #221e2f; --well: #1e1b2a; --sel: #2d2840;
+    --edge: rgba(215,200,240,.12); --edge2: rgba(215,200,240,.23);
+    --text: #ece8f4; --dim: #aca4bf; --faint: #716a86;
+    --you: oklch(0.77 0.11 285); --claude: oklch(0.77 0.09 195); --tool: #eab86e;
+    --err: #ec8aa0; --add: oklch(0.78 0.1 160); --del: #ec8aa0; --meta: oklch(0.76 0.12 330);
+    --sky: oklch(0.77 0.09 230); --rose: oklch(0.76 0.12 355);
+    --out: #1f1c2b; --term: #171421; --mark: rgba(234,184,110,.28); }
+:root[data-skin="dusk"].light { color-scheme: light;
+    --bg: #faf5f0; --bg2: #f1eae4; --panel: #fffcf9; --well: #f4ede7; --sel: #e9dfd8;
+    --edge: rgba(60,35,60,.13); --edge2: rgba(60,35,60,.25);
+    --text: #2a2233; --dim: #5d5268; --faint: #93889c;
+    --you: oklch(0.48 0.13 285); --claude: oklch(0.48 0.1 195); --tool: #8d5f14;
+    --err: #b23d5c; --add: oklch(0.48 0.11 160); --del: #b23d5c; --meta: oklch(0.48 0.14 330);
+    --sky: oklch(0.5 0.1 230); --rose: oklch(0.52 0.15 355);
+    --out: #fffbf8; --term: #f5eee8; --mark: rgba(215,160,60,.3); }
+
+:root[data-skin="terminal"] { color-scheme: dark;
+    --bg: #0e0f11; --bg2: #16181b; --panel: #16181b; --well: #121316; --sel: #22252a;
+    --edge: rgba(220,225,235,.11); --edge2: rgba(220,225,235,.22);
+    --text: #e8eaed; --dim: #a4a9b1; --faint: #6b7079;
+    --you: oklch(0.78 0.12 255); --claude: oklch(0.8 0.15 150); --tool: #f0b85a;
+    --err: #f2837a; --add: oklch(0.8 0.15 150); --del: #f2837a; --meta: oklch(0.76 0.12 310);
+    --sky: oklch(0.8 0.1 220); --rose: oklch(0.76 0.13 0);
+    --out: #131417; --term: #0a0b0c; --mark: rgba(240,184,90,.28); }
+:root[data-skin="terminal"].light { color-scheme: light;
+    --bg: #ffffff; --bg2: #f3f4f6; --panel: #ffffff; --well: #f6f7f8; --sel: #e8eaee;
+    --edge: rgba(15,20,30,.14); --edge2: rgba(15,20,30,.27);
+    --text: #111318; --dim: #4b515c; --faint: #858b96;
+    --you: oklch(0.47 0.15 255); --claude: oklch(0.47 0.14 150); --tool: #845c00;
+    --err: #b3261e; --add: oklch(0.47 0.14 150); --del: #b3261e; --meta: oklch(0.47 0.14 310);
+    --sky: oklch(0.5 0.12 220); --rose: oklch(0.52 0.16 0);
+    --out: #ffffff; --term: #f4f5f7; --mark: rgba(230,180,40,.3); }
+
+/* palette swatches in the View panel */
+.vp-skins { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.vp-skins button { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 6px 2px 5px;
+    border: 1px solid var(--edge); border-radius: 9px; background: none; color: var(--dim);
+    font: 600 var(--t-xs) var(--sans); }
+.vp-skins button:hover { color: var(--text); border-color: var(--edge2); }
+.vp-skins button[aria-pressed="true"] { color: var(--text); border-color: var(--you); box-shadow: 0 0 0 1px var(--you); }
+.vp-skins .pv { width: 100%; height: 26px; border-radius: 6px; display: flex; overflow: hidden;
+    box-shadow: inset 0 0 0 1px rgba(128,128,128,.25); }
+.vp-skins .pv i { flex: 1; }
+
+/* ===== tooltip: WKWebView (Switchboard) never shows a title attribute ===== */
+.tip { position: fixed; z-index: 200; max-width: 320px; padding: 5px 9px; border-radius: 7px; pointer-events: none;
+    background: color-mix(in srgb, var(--text) 92%, var(--bg)); color: var(--bg);
+    font: 500 12px/1.4 var(--sans); white-space: pre-line; box-shadow: 0 6px 20px -6px rgba(0,0,0,.45);
+    opacity: 0; translate: 0 3px; transition: opacity 120ms, translate 120ms; }
+.tip.on { opacity: 1; translate: 0 0; }
+
+/* ===== hover copy button for a paragraph, list item, table cell or code block ===== */
+.bcp { position: absolute; z-index: 40; width: 24px; height: 24px; display: none; align-items: center; justify-content: center;
+    padding: 0; border: 1px solid var(--edge); border-radius: 6px; background: var(--bg2, var(--panel)); color: var(--faint);
+    cursor: pointer; box-shadow: 0 2px 8px -4px rgba(0,0,0,.4); }
+.bcp.on { display: inline-flex; }
+.bcp:hover { color: var(--text); border-color: var(--edge2); }
+.bcp.ok { color: var(--add); }
+.bcp .icon { width: 13px; height: 13px; }

@@ -7,6 +7,7 @@
 <!-- The menu-bar widget's Claude starburst (terracotta), tiled on the hub's
      slate and wearing a teal live-dot — the hub's own mark. -->
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23191a21'/%3E%3Cg stroke='%23d97757' stroke-width='5.5' stroke-linecap='round'%3E%3Cpath d='M32 32 32 9'/%3E%3Cpath d='M32 32 46 14'/%3E%3Cpath d='M32 32 55 27'/%3E%3Cpath d='M32 32 50 44'/%3E%3Cpath d='M32 32 37 55'/%3E%3Cpath d='M32 32 21 52'/%3E%3Cpath d='M32 32 10 42'/%3E%3Cpath d='M32 32 9 25'/%3E%3Cpath d='M32 32 18 11'/%3E%3C/g%3E%3Ccircle cx='51' cy='51' r='6' fill='%234fb6a6' stroke='%23191a21' stroke-width='2.5'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/vendor/hub-shared.css?v=1">
 <style>
 /* V6 "FLEET" index — the merged board. V3's state-grouped spine (Needs you →
    Working → Ended), V5's query grammar + live peek panes, V1's table density,
@@ -25,7 +26,7 @@
     --err-soft: color-mix(in srgb, var(--err) 10%, transparent);
     --sans: ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    --r: 10px; --tb-h: 44px;
+    --r: 10px; --tb-h: 52px;
     --ease: cubic-bezier(.2,0,0,1); --t-fast: 130ms; --t-slow: 260ms;
     --shadow: 0 10px 32px -12px rgba(0,0,0,.6);
 }
@@ -52,8 +53,20 @@ button, select { font: inherit; cursor: pointer; -webkit-tap-highlight-color: tr
     display: flex; align-items: center; gap: 10px; padding: 0 14px;
     background: color-mix(in srgb, var(--bg) 90%, transparent); backdrop-filter: blur(10px);
     border-bottom: 1px solid var(--edge); }
-.tb-brand { font: 650 var(--t-md) var(--sans); }
-.tb-host { font: var(--t-xs) var(--mono); color: var(--faint); }
+.tb-brand { display: inline-flex; align-items: center; gap: 9px; height: 36px; padding: 0 10px 0 6px; margin-left: -6px;
+    border-radius: 10px; color: var(--text); text-decoration: none; }
+.tb-brand:hover { background: var(--sel); }
+.tb-brand .brand { width: 20px; height: 20px; flex: none; }
+.tb-name { font: 650 var(--t-md)/1 var(--sans); letter-spacing: -.005em; }
+.tb-host { font: var(--t-xs)/1 var(--mono); color: var(--faint); padding-left: 9px; border-left: 1px solid var(--edge2); }
+.tb-host:empty { display: none; }
+/* what the live sessions have cost so far, summed */
+.tb-spend { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border-radius: 10px;
+    border: 1px solid var(--edge); background: var(--panel); color: var(--dim); font: 600 var(--t-sm) var(--mono);
+    font-variant-numeric: tabular-nums; }
+.tb-spend .icon { width: 15px; height: 15px; color: var(--tool); }
+.tb-spend[hidden] { display: none; }
+@media (max-width: 900px) { .tb-spend, .tb-host { display: none; } }
 .tb-sp { flex: 1; }
 .chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px;
     border-radius: 999px; font: 700 var(--t-xs) var(--mono); }
@@ -75,46 +88,73 @@ select.tbtn { appearance: none; padding-right: 22px;
     background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
     background-position: calc(100% - 14px) 55%, calc(100% - 10px) 55%; background-size: 4px 4px; background-repeat: no-repeat; }
 /* top bar controls (owner D2a): one height, one border, one pressed look */
-.seg { display: inline-flex; align-items: center; gap: 2px; height: 30px; padding: 2px;
-    border: 1px solid var(--edge); border-radius: 8px; background: var(--panel); }
-.seg button { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border: none;
-    border-radius: 6px; background: none; color: var(--dim); font: 600 var(--t-sm) var(--sans);
+.seg { display: inline-flex; align-items: center; gap: 2px; height: 36px; padding: 3px;
+    border: 1px solid var(--edge); border-radius: 10px; background: var(--panel); }
+.seg button { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border: none;
+    border-radius: 7px; background: none; color: var(--dim); font: 600 var(--t-sm) var(--sans);
     transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
 .seg button:hover { color: var(--text); background: var(--sel); }
 .seg button[aria-pressed="true"] { color: var(--text); background: var(--bg); box-shadow: 0 0 0 1px var(--edge2); }
-.seg .icon { width: 14px; height: 14px; }
+.seg .icon { width: 16px; height: 16px; }
 .seg .n { font: 600 var(--t-xs) var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
 .st-all { --sc: var(--dim); } .st-you { --sc: var(--you); } .st-work { --sc: var(--claude); } .st-ended { --sc: var(--faint); }
 .st-seg button .icon { color: var(--sc); }
 .st-seg button[aria-pressed="true"] .n { color: var(--sc); }
 .icon-seg button { width: 30px; padding: 0; justify-content: center; }
-.tctl { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px;
-    border: 1px solid var(--edge); border-radius: 8px; background: var(--panel); color: var(--dim);
+.tctl { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px;
+    border: 1px solid var(--edge); border-radius: 10px; background: var(--panel); color: var(--dim);
     font: 600 var(--t-sm) var(--sans); transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
 .tctl:hover { color: var(--text); background: var(--sel); }
-.tctl.icon { width: 30px; padding: 0; justify-content: center; }
+.tctl.icon { width: 36px; padding: 0; justify-content: center; }
 .tctl[aria-pressed="true"] { color: var(--text); box-shadow: 0 0 0 1px var(--edge2); }
-.tctl .icon { width: 14px; height: 14px; }
+.tctl .icon { width: 16px; height: 16px; }
+@media (max-width: 640px) {
+    .topbar { gap: 6px; padding: 0 8px; }
+    .seg, .tctl { height: 32px; } .seg button { height: 24px; padding: 0 8px; } .tctl.icon { width: 32px; }
+    .tb-name { display: none; }
+}
 .tctl select { appearance: none; border: none; background: none; color: var(--text); font: inherit; padding: 0; cursor: pointer; }
 .tctl select:focus { outline: none; }
 .tctl .chev { width: 12px; height: 12px; color: var(--faint); margin-left: -2px; pointer-events: none; }
 .vp-grp:has(#vpDir), .vp-grp:has(#vpTheme) { display: none; }
 .seg button:focus:not(:focus-visible) { outline: none; }
 .st-seg button { padding: 0 9px; gap: 5px; }
-.mh-sub { margin-top: 2px; font: var(--t-sm) var(--sans); color: var(--faint); }
-.alerts { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
-.al { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 6px; font: var(--t-xs) var(--sans); }
-.al .icon { width: 12px; height: 12px; }
-.al-warn { color: color-mix(in srgb, var(--err) 75%, var(--dim)); background: color-mix(in srgb, var(--err) 7%, transparent); }
-.al-info { color: var(--dim); background: var(--sel); }
+.mh-sub { font: var(--t-sm) var(--sans); color: var(--faint); }
+/* the board in figures */
+.hstats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.hs { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; min-width: 112px; padding: 8px 14px 9px;
+    border: 1px solid var(--edge); border-radius: 10px; background: var(--panel); color: var(--dim); text-align: left;
+    font: inherit; transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease); }
+button.hs:hover { border-color: var(--edge2); background: var(--sel); }
+.hs.on { border-color: var(--hc, var(--edge2)); box-shadow: 0 0 0 1px var(--hc, var(--edge2)); }
+.hs-v { display: inline-flex; align-items: center; gap: 7px; font: 650 var(--t-lg)/1.25 var(--mono); color: var(--text);
+    font-variant-numeric: tabular-nums; }
+.hs-v .icon { width: 15px; height: 15px; color: var(--hc, var(--faint)); }
+.hs-l { font: var(--t-xs) var(--sans); color: var(--faint); }
+.hs.you { --hc: var(--you); } .hs.work { --hc: var(--claude); } .hs.ended { --hc: var(--faint); }
+.hs.spend { --hc: var(--tool); } .hs.mail { --hc: var(--meta); } .hs.low { --hc: var(--err); }
+.hs.you .hs-v, .hs.low .hs-v { color: var(--hc); }
+.hs.mail.bad .hs-v { color: var(--tool); }
+/* problems, each named by where it is */
+.alerts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 12px 0 2px; }
+.al-lb { font: 700 var(--t-xs) var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); margin-right: 4px; }
+.al { display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px; border-radius: 7px; font: var(--t-xs) var(--sans); cursor: help; }
+.al b { font-weight: 650; }
+.al .icon { width: 13px; height: 13px; }
+.al-warn { color: color-mix(in srgb, var(--err) 80%, var(--text)); background: color-mix(in srgb, var(--err) 9%, transparent);
+    border: 1px solid color-mix(in srgb, var(--err) 22%, transparent); }
+.al-info { color: var(--dim); background: var(--sel); border: 1px solid var(--edge); }
+.qhint .qh-lb { color: var(--faint); margin-right: 4px; }
+.qhint .qh-grp { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-right: 14px; }
 /* opening a card: its title becomes the transcript's title (owner D1 note) */
 @view-transition { navigation: auto; }
+.topbar { view-transition-name: topbar; }
 ::view-transition-group(*) { animation-duration: 340ms; animation-timing-function: cubic-bezier(.2, 0, 0, 1); }
 ::view-transition-old(root), ::view-transition-new(root) { animation-duration: 220ms; animation-timing-function: cubic-bezier(.2, 0, 0, 1); }
 @media (prefers-reduced-motion: reduce) { ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none; } }
 
 main { max-width: 1120px; margin: 0 auto; padding: calc(var(--tb-h) + 22px) 18px 70px; }
-.mh-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 22px; }
+.mh-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
 h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; }
 .mh-line { font: var(--t-sm) var(--mono); color: var(--dim); display: flex; flex-wrap: wrap; gap: 4px 18px;
     font-variant-numeric: tabular-nums; align-items: center; }
@@ -211,13 +251,15 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
 .pane.turn .p-tail { min-height: 0; }
 .p-tail::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 26px;
     background: linear-gradient(var(--panel), transparent); pointer-events: none; z-index: 1; }
-.p-line { display: flex; gap: 8px; color: var(--dim); white-space: nowrap; overflow: hidden; }
+/* tail lines wrap (the house rule: text wraps, it is never cut with an ellipsis) */
+.p-line { display: flex; gap: 8px; color: var(--dim); }
+.p-line + .p-line { margin-top: 2px; }
+.p-line .tx { min-width: 0; overflow-wrap: anywhere; }
 .p-line .g { flex: none; width: 2ch; text-align: center; }
 .p-line .g.u { color: var(--you); font-weight: 700; }
 .p-line .g.a { color: var(--claude); }
 .p-line .g.t { color: var(--tool); }
 .p-line .g.e { color: var(--faint); }
-.p-line .tx { overflow: hidden; text-overflow: ellipsis; }
 .p-line .tx b { color: var(--tool); font-weight: 700; }
 .p-line.fresh { animation: fresh var(--t-slow) var(--ease); }
 @keyframes fresh { from { opacity: 0; translate: 0 5px; } }
@@ -365,49 +407,11 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
     border: 1px dashed var(--edge2); border-radius: 8px; padding: 8px 10px;
     display: flex; flex-direction: column; gap: 5px; box-shadow: var(--shadow); color: var(--dim); }
 .demo-body label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
-/* ===== handoff: palette skins (color-only; includes --panel for card surfaces) ===== */
-:root[data-skin="tty"] { color-scheme: dark;
-    --bg: #14161e; --panel: #1d212c; --well: #191c26; --sel: #2a2f3d;
-    --edge: rgba(190,200,235,.17); --edge2: rgba(190,200,235,.3);
-    --text: #eef1f9; --dim: #aeb7cc; --faint: #6f7994;
-    --you: oklch(0.76 0.155 268); --claude: oklch(0.76 0.145 180); --tool: #e2b05b;
-    --err: #ea8578; --add: oklch(0.75 0.14 142); --meta: oklch(0.74 0.11 305); }
-:root[data-skin="tty"].light { color-scheme: light;
-    --bg: #f6f6f7; --panel: #ecedef; --well: #f0f0f2; --sel: #e2e4e8;
-    --edge: rgba(30,34,48,.16); --edge2: rgba(30,34,48,.3);
-    --text: #1e2027; --dim: #545866; --faint: #82879a;
-    --you: oklch(0.46 0.16 268); --claude: oklch(0.46 0.15 180); --tool: #8a6410;
-    --err: #b23f33; --add: oklch(0.46 0.14 142); --meta: oklch(0.46 0.13 305); }
-:root[data-skin="editorial"] { color-scheme: dark;
-    --bg: #191a21; --panel: #21232c; --well: #1d1f27; --sel: #2b2d38;
-    --edge: rgba(200,205,225,.13); --edge2: rgba(200,205,225,.24);
-    --text: #edeef4; --dim: #a2a7b8; --faint: #676d80;
-    --you: oklch(0.76 0.15 268); --claude: oklch(0.76 0.14 180); --tool: #e2b05b;
-    --err: #ea8578; --add: oklch(0.75 0.14 142); --meta: oklch(0.74 0.11 305); }
-:root[data-skin="editorial"].light { color-scheme: light;
-    --bg: #faf9f6; --panel: #f1efe9; --well: #f4f2ed; --sel: #e8e5dd;
-    --edge: rgba(35,32,24,.13); --edge2: rgba(35,32,24,.26);
-    --text: #1e1f24; --dim: #565b68; --faint: #8e93a1;
-    --you: oklch(0.46 0.16 268); --claude: oklch(0.46 0.15 180); --tool: #7e5d0e;
-    --err: #b23f33; --add: oklch(0.46 0.14 142); --meta: oklch(0.46 0.13 305); }
-:root[data-skin="product"] { color-scheme: dark;
-    --bg: #171923; --panel: #1f222c; --well: #1c1f28; --sel: #2a2e3a;
-    --edge: rgba(178,190,225,.12); --edge2: rgba(178,190,225,.22);
-    --text: #e8ebf3; --dim: #99a0b4; --faint: #6d7488;
-    --you: oklch(0.72 0.13 268); --claude: oklch(0.72 0.13 180); --tool: #d9ab55;
-    --err: #e07f72; --add: oklch(0.74 0.12 142); --meta: oklch(0.72 0.1 305); }
-:root[data-skin="product"].light { color-scheme: light;
-    --bg: #f2f4f8; --panel: #fff; --well: #eceef4; --sel: #e7eaf1;
-    --edge: rgba(22,28,45,.13); --edge2: rgba(22,28,45,.24);
-    --text: #1a1c23; --dim: #5f6575; --faint: #8a90a0;
-    --you: oklch(0.50 0.15 268); --claude: oklch(0.50 0.15 180); --tool: #8a6614;
-    --err: #b8483b; --add: oklch(0.50 0.13 142); --meta: oklch(0.50 0.13 305); }
-
 /* ===== handoff: text-size = UI scale on the board (dashboard, not prose) ===== */
 #main { zoom: var(--zoom, 1); }
 
 /* ===== handoff: the View panel ===== */
-.viewpanel { position: fixed; top: calc(var(--tb-h) + 8px); right: 12px; z-index: 78; width: 258px;
+.viewpanel { position: fixed; top: calc(var(--tb-h) + 8px); right: 12px; z-index: 78; width: 340px;
     background: var(--panel); border: 1px solid var(--edge2); border-radius: 13px; box-shadow: var(--shadow);
     padding: 13px 15px; display: none; flex-direction: column; gap: 13px; }
 .viewpanel.open { display: flex; }
@@ -426,7 +430,7 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
 .vp-range { width: 100%; accent-color: var(--you); }
 .vp-hint { font: var(--t-xs) var(--mono); color: var(--faint); line-height: 1.5; }
 </style>
-<script>(function(){try{var s=localStorage.getItem('cc-skin');if(s&&s!=='native')document.documentElement.dataset.skin=s;var d=localStorage.getItem('hx-idir')||'fleet';document.documentElement.dataset.dir=d;var f=localStorage.getItem('hx-fs');if(f)document.documentElement.style.setProperty('--zoom',(parseFloat(f)/14.5).toFixed(3));}catch(e){}})()</script>
+<script>(function(){try{var R={tty:'terminal',editorial:'paper',product:'native'},s=localStorage.getItem('cc-skin');s=R[s]||s;if(s&&s!=='native')document.documentElement.dataset.skin=s;document.documentElement.dataset.dir='fleet';var f=parseFloat(localStorage.getItem('hx-fs'));if(f)document.documentElement.style.setProperty('--zoom',(Math.min(18,Math.max(12,f))/14.5).toFixed(3));}catch(e){}})()</script>
 </head>
 <body>
 
@@ -470,7 +474,7 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
 </defs></svg>
 
 <div class="topbar">
-  <span class="tb-brand">Claude</span><span class="tb-host">Aakarshs-M5-Pro</span>
+  <a class="tb-brand" href="/" title="Every Claude Code session on this Mac"><svg class="brand" viewBox="0 0 1200 1200" aria-hidden="true"><use href="#i-claude"/></svg><span class="tb-name">Sessions</span><span class="tb-host"></span></a>
   <span class="tb-sp"></span>
   <div class="seg st-seg" id="stSeg" role="tablist" aria-label="Show sessions">
     <button data-st="all" class="st-all" title="All sessions"><svg class="icon"><use href="#i-layers"/></svg><span class="n" id="nAll"></span></button>
@@ -480,6 +484,8 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
   </div>
   <span class="tb-sp"></span>
   <span class="chip refresh" id="chipRefresh" style="display:none"><span class="pulse"></span>refreshing…</span>
+  <span class="tb-spend" id="tbSpend" hidden></span>
+  <button class="tctl icon" id="searchBtn" title="Search sessions and transcripts (/)"><svg class="icon"><use href="#i-search"/></svg></button>
   <label class="tctl" title="Sort within groups"><svg class="icon"><use href="#i-sort"/></svg>
     <select id="sortSel" aria-label="Sort">
       <option value="urgency">Urgency</option>
@@ -491,12 +497,13 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
     <button data-dens="peeks" title="Cards (d)"><svg class="icon"><use href="#i-grid"/></svg></button>
     <button data-dens="table" title="Table (d)"><svg class="icon"><use href="#i-rows"/></svg></button>
   </div>
-  <button class="tctl icon" id="viewBtn" title="Text size and colours" aria-pressed="false"><svg class="icon"><use href="#i-type"/></svg></button>
-  <button class="tctl icon" id="themeBtn" title="Toggle theme"><svg class="icon"><use href="#i-moon"/></svg></button>
+  <button class="tctl icon" id="viewBtn" title="Palette and text size" aria-pressed="false"><svg class="icon"><use href="#i-type"/></svg></button>
+  <button class="tctl icon" id="themeBtn" title="Dark or light (t)"><svg class="icon"><use href="#i-moon"/></svg></button>
 </div>
 
 <main id="main"></main>
 <div class="hpk" id="hpk" aria-hidden="true"></div>
+<script src="/vendor/hub-shared.js?v=1"></script>
 <div class="viewpanel" id="viewPanel">
   <div class="vp-cap">View</div>
   <div class="vp-grp"><span class="vp-lb">Direction</span>
@@ -506,15 +513,14 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
     <span class="vp-hint" id="vpDirHint"></span>
   </div>
   <div class="vp-grp"><span class="vp-lb">Palette</span>
-    <div class="vp-seg" id="vpSkin">
-      <button data-skin="native"><span class="sw" style="background:#191a21"><i style="background:oklch(0.76 0.15 268)"></i></span>Native</button><button data-skin="tty"><span class="sw" style="background:#14161e"><i style="background:#aeb7cc"></i></span>TTY</button><button data-skin="editorial"><span class="sw" style="background:#191a21"><i style="background:oklch(0.74 0.11 305)"></i></span>Editorial</button><button data-skin="product"><span class="sw" style="background:#171923"><i style="background:oklch(0.72 0.13 180)"></i></span>Product</button>
-    </div>
+    <div id="vpSkin"></div>
   </div>
   <div class="vp-grp"><span class="vp-lb">Theme</span>
     <div class="vp-seg" id="vpTheme"><button data-theme="dark"><svg class="icon"><use href="#i-moon"/></svg>Dark</button><button data-theme="light"><svg class="icon"><use href="#i-sun"/></svg>Light</button></div>
   </div>
-  <div class="vp-grp"><span class="vp-lb">Text size <b id="vpFsVal">14.5</b>px</span>
+  <div class="vp-grp"><span class="vp-lb">Text size <b id="vpFsVal">100%</b></span>
     <input class="vp-range" type="range" id="vpFs" min="12" max="18" step="0.5" value="14.5">
+    <span class="vp-hint">Scales every text on both pages, transcripts included.</span>
   </div>
 </div>
 
@@ -666,11 +672,19 @@ function stLabel() {
     document.querySelectorAll('#stSeg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.st === stFilter)));
     const sub = document.getElementById('mhSub'); if (sub) sub.textContent = ST_LABEL[stFilter] || '';
 }
-$('#stSeg').onclick = e => {
-    const b = e.target.closest('button'); if (!b) return;
-    stFilter = b.dataset.st; try { localStorage.setItem('hub-st', stFilter); } catch (err) {}
-    stLabel(); vt(() => renderBoard(curQ));
-};
+function setStFilter(st) {
+    stFilter = st; try { localStorage.setItem('hub-st', stFilter); } catch (err) {}
+    stLabel();
+    document.querySelectorAll('.hs[data-st]').forEach(b => b.classList.toggle('on', b.dataset.st === stFilter));
+    vt(() => renderBoard(curQ));
+}
+$('#stSeg').onclick = e => { const b = e.target.closest('button'); if (b) setStFilter(b.dataset.st); };
+// a header figure filters to its group; clicking the one already chosen shows everything
+document.addEventListener('click', e => {
+    const b = e.target.closest('.hs[data-st]');
+    if (b) setStFilter(stFilter === b.dataset.st ? 'all' : b.dataset.st);
+});
+$('#searchBtn').onclick = () => { const fq = $('#fq'); if (fq) { fq.focus(); fq.scrollIntoView({ block: 'center', behavior: 'smooth' }); } };
 stLabel();
 $('#sortSel').value = sortBy;
 $('#sortSel').onchange = () => { sortBy = $('#sortSel').value; try { localStorage.setItem(SS.sort, sortBy); } catch (e) {} renderBoard(curQ); };
@@ -749,7 +763,7 @@ function pruneTailCache() {
     } catch (e) {}
 }
 async function primeTail(sid) {
-    if (!sid || tails[sid]) return;
+    if (!sid || (tails[sid] && !tails[sid].cachedOnly)) return;   // a tail painted from cache at start still revalidates
     const cached = loadTailCache(sid);
     tails[sid] = { src: cached ? cached.src : [], lastSeq: cached ? cached.lastSeq : 0, loading: true };
     if (cached) refreshTailDOM(sid);            // stale immediately…
@@ -882,17 +896,6 @@ function footHTML(s) {
         (!ended && s.last_act ? `<span class="p-act">${ic('clock')}active ${esc(s.last_act)}</span>` : '') +
         `</div><div class="p-chips">${chips}</div></div>`;
 }
-/* Header badge: unread ipc mail across live sessions. "?" the moment ANY
-   session's broker read is non-fresh — a partial total would be a confident
-   falsehood. Absent entirely when no card carries ipc data (kill switch). */
-function ipcBadgeHTML(live) {
-    const rows = live.filter(s => s.ipc && s.ipc.alias);
-    if (!rows.length) return '';
-    const bad = rows.some(s => (s.ipc.state && s.ipc.state !== 'fresh')
-                               || (s.ipc.state === 'fresh' && !Number.isInteger(s.ipc.inbox)));
-    const tot = rows.reduce((a, s) => a + (Number.isInteger(s.ipc.inbox) ? s.ipc.inbox : 0), 0);
-    return `<span class="ipcbadge${bad ? ' bad' : ''}" title="${bad ? 'ipc partly unreachable, so the total is unknown' : 'unread ipc mail across live sessions'}">📬 ${bad ? '?' : tot}</span>`;
-}
 /* Degraded-duration banner: silent graceful degradation is itself the bug
    class the meld exists to kill, so a >24h-degraded bridge (any non-fresh
    state) surfaces HERE, on the page the owner actually watches. */
@@ -916,14 +919,35 @@ function ipcDegradedHTML(live) {
 function alertsHTML(live) {
     const m = FEED.machine || {};
     const list = [];
-    if (m.mcp_down) list.push({ sev: 'warn', icon: 'plug', text: `MCP down: ${m.mcp_down.split(',').map(s => s.trim()).join(', ')}` });
+    if (m.mcp_down) list.push({ sev: 'warn', where: 'This Mac', icon: 'plug', text: `MCP servers down: ${m.mcp_down.split(',').map(s => s.trim()).join(', ')}`,
+        tip: 'These MCP servers failed to start for every live session. Tools that need them will fail.' });
     const rows = live.filter(s => s.ipc && s.ipc.alias);
     if (rows.length && rows.every(s => s.ipc.state && s.ipc.state !== 'fresh'))
-        list.push({ sev: 'warn', icon: 'mail', text: 'ipc unreachable: mail counts unknown' });
+        list.push({ sev: 'warn', where: 'Messaging', icon: 'mail', text: 'ipc broker unreachable, mail counts unknown', tip: 'claude-ipc did not answer for any live session.' });
     const dis = live.filter(s => s.ipc && s.ipc.disagree).length;
-    if (dis) list.push({ sev: 'info', icon: 'alert', text: `${dis} session${dis > 1 ? 's' : ''} where ipc and the process check disagree` });
-    return list.length ? `<div class="alerts">${list.map(a =>
-        `<span class="al al-${a.sev}">${ic(a.icon)}${esc(a.text)}</span>`).join('')}</div>` : '';
+    if (dis) list.push({ sev: 'info', where: 'Messaging', icon: 'alert', text: `${dis} session${dis > 1 ? 's' : ''} where ipc and the process check disagree`,
+        tip: 'The process is running but ipc thinks it is gone or elsewhere. This page trusts the process check; the card shows which.' });
+    return list.length ? `<div class="alerts"><span class="al-lb">Health</span>${list.map(a =>
+        `<span class="al al-${a.sev}" title="${esc(a.tip)}">${ic(a.icon)}<b>${esc(a.where)}</b>${esc(a.text)}</span>`).join('')}</div>` : '';
+}
+/* The board in figures, read across: who needs you, what is running, what it
+   costs, what is running low. The three state figures filter the board. */
+function headStatsHTML(live, turn) {
+    const low = live.filter(s => s.ctx_remaining != null && s.ctx_remaining < 25).length;
+    const mailRows = live.filter(s => s.ipc && s.ipc.alias);
+    const mailBad = mailRows.some(s => (s.ipc.state && s.ipc.state !== 'fresh') || (s.ipc.state === 'fresh' && !Number.isInteger(s.ipc.inbox)));
+    const mail = mailRows.reduce((a, s) => a + (Number.isInteger(s.ipc.inbox) ? s.ipc.inbox : 0), 0);
+    const tile = (cls, icon, v, label, tip, st) =>
+        `<${st ? `button data-st="${st}"` : 'div'} class="hs ${cls}${st && stFilter === st ? ' on' : ''}" title="${esc(tip)}">` +
+        `<span class="hs-v">${ic(icon)}${esc(String(v))}</span><span class="hs-l">${esc(label)}</span></${st ? 'button' : 'div'}>`;
+    return `<div class="hstats">` +
+        tile('you', 'hand', turn, 'waiting on you', 'Sessions where Claude finished and waits for you. Click to show only these.', 'you') +
+        tile('work', 'play', live.length - turn, 'working', 'Sessions where Claude is busy. Click to show only these.', 'work') +
+        tile('ended', 'stop', FEED.recent.length, 'ended recently', 'Sessions that finished recently. Click to show only these.', 'ended') +
+        (mailRows.length ? tile('mail' + (mailBad ? ' bad' : ''), 'mail', mailBad ? '?' : mail, 'unread messages',
+            mailBad ? 'The ipc broker did not answer for every session, so the total is unknown' : 'Unread ipc messages across the live sessions') : '') +
+        (low ? tile('low', 'gauge', low, 'low on context', 'Live sessions with under 25% of their context left') : '') +
+        `</div>`;
 }
 function machineHTML() {
     const m = FEED.machine || {};
@@ -1035,8 +1059,9 @@ function pushHist(q) {
 function renderQhint() {
     const el = $('#qhint'); if (!el) return;
     const hist = loadHist();
-    el.innerHTML = (hist.length ? `recent ${hist.map(q => `<code>${esc(q)}</code>`).join(' ')} · ` : '') +
-        `try <code>deepseek</code> <code>model:opus</code> <code>branch:intents</code> <code>dir:versable</code> <code>state:idle</code>`;
+    el.innerHTML = (hist.length ? `<span class="qh-grp"><span class="qh-lb">Recent</span>${hist.map(q => `<code>${esc(q)}</code>`).join('')}</span>` : '') +
+        `<span class="qh-grp"><span class="qh-lb" title="Type field:value to filter; plain words also search every transcript">Filter by</span>` +
+        `<code title="Model name">model:opus</code><code title="Git branch">branch:main</code><code title="Folder or path">dir:versable</code><code title="idle means waiting on you">state:idle</code></span>`;
 }
 function parseQ(q) {
     const f = {}, free = [];
@@ -1158,12 +1183,16 @@ function render() {
     $('#nYou').textContent = turn;
     $('#nWork').textContent = live.length - turn;
     $('#nEnded').textContent = FEED.recent.length;
+    const priced = live.filter(s => s.cost_usd != null);
+    const spend = priced.reduce((a, s) => a + s.cost_usd, 0);
+    const sp = $('#tbSpend');
+    sp.hidden = !priced.length;
+    sp.innerHTML = `${ic('coin')}$${spend.toFixed(2)}`;
+    sp.dataset.tip = `What the ${priced.length} live session${priced.length === 1 ? '' : 's'} have cost so far\n` +
+        priced.slice().sort((a, b) => b.cost_usd - a.cost_usd).slice(0, 6).map(s => `${cfmt(s.cost_usd)}  ${s.cwd_short}`).join('\n');
     $('#main').innerHTML =
-        `<div class="mh-row"><h1>Sessions</h1>` +
-        `<div class="mh-line">` +
-        ipcBadgeHTML(live) +
-        `</div></div>` +
-        `<div class="mh-sub" id="mhSub">${esc(ST_LABEL[stFilter] || '')}</div>` +
+        `<div class="mh-row"><h1>Sessions</h1><span class="mh-sub" id="mhSub">${esc(ST_LABEL[stFilter] || '')}</span></div>` +
+        headStatsHTML(live, turn) +
         alertsHTML(live) +
         ((VDIR && !VDIR.query) ? '' :
         `<div class="qbar">${ic('search')}<input id="fq" placeholder="Search sessions and transcripts" autocomplete="off" spellcheck="false"><span class="qstat" id="qstat"></span></div>` +
@@ -1284,7 +1313,9 @@ async function pollFeed() {
     try {
         const r = await fetch('/api/sessions', { cache: 'no-store' });
         if (!r.ok) throw new Error(r.status);
-        const d = await r.json();
+        const text = await r.text();
+        const d = JSON.parse(text);
+        try { sessionStorage.setItem('hub-feed', text); } catch (e) {}
         setRefreshCue(!!d.refreshing);
         adaptFeed(d);
         if (!booted) {
@@ -1357,14 +1388,11 @@ function applyDir(name) {
     save('hx-idir', name);
     if (mode === 'normal') render();
 }
-function applyPalette(skin) {
-    if (skin === 'native') delete document.documentElement.dataset.skin;
-    else document.documentElement.dataset.skin = skin;
-    seg('#vpSkin', skin, 'skin'); save('cc-skin', skin);
-}
+const applyPalette = HubShared.applyPalette;
+/* the board scales as a whole (it is a dashboard, not prose); 14.5 is 100% on both pages */
 function applyTextSize(px) {
-    document.documentElement.style.setProperty('--zoom', (px / 14.5).toFixed(3));
-    const v = $('#vpFsVal'); if (v) v.textContent = px;
+    document.documentElement.style.setProperty('--zoom', (px / HubShared.FS_DEFAULT).toFixed(3));
+    const v = $('#vpFsVal'); if (v) v.textContent = Math.round(px / HubShared.FS_DEFAULT * 100) + '%';
     const r = $('#vpFs'); if (r) r.value = px;
     save('hx-fs', px);
 }
@@ -1387,9 +1415,34 @@ $('#vpFs').oninput = e => applyTextSize(+e.target.value);
 window.setMode = setMode;
 densLabel();
 applyDir('fleet');   // the state tabs and the cards/table pair replaced the old directions
-applyPalette(load('cc-skin', 'native'));
-applyTextSize(parseFloat(load('hx-fs', '14.5')));
-setMode('loading');
+HubShared.paletteButtons($('#vpSkin'));
+applyPalette(HubShared.savedPalette());
+applyTextSize(HubShared.savedSize());
+/* Coming back from a transcript: paint the last feed this tab saw at once, so
+   the first frame already holds the card the transcript's title returns to. */
+(function paintFromLastFeed() {
+    let d = null;
+    try { d = JSON.parse(sessionStorage.getItem('hub-feed') || 'null'); } catch (e) {}
+    if (!d) { setMode('loading'); return; }
+    adaptFeed(d);
+    for (const s of FEED.live.concat(FEED.recent).filter(openable)) {
+        const c = loadTailCache(s.session_id);
+        if (c) tails[s.session_id] = { src: c.src, lastSeq: c.lastSeq, loading: false, cachedOnly: true };
+    }
+    setMode(FEED.live.length || FEED.recent.length ? 'normal' : 'loading');
+})();
+/* Carry the transcript's title back into its card, then let the name go so
+   the next card opened can take it. */
+function nameReturnCard() {
+    let sid = null;
+    try { sid = sessionStorage.getItem('hub-back'); sessionStorage.removeItem('hub-back'); } catch (e) {}
+    if (!sid) return;
+    const t = document.querySelector(`#board [data-sid="${CSS.escape(sid)}"] .p-title, #board [data-sid="${CSS.escape(sid)}"] .c-dir`);
+    if (!t) return;
+    t.style.viewTransitionName = 'sess-title';
+    setTimeout(() => { t.style.viewTransitionName = ''; }, 900);
+}
+nameReturnCard();
 pollFeed();
 </script>
 </body>

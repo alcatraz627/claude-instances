@@ -66,6 +66,8 @@ VENDOR_FILES = {
     "highlight.min.js": "text/javascript; charset=utf-8",
     "hljs-github.min.css": "text/css; charset=utf-8",
     "hljs-github-dark.min.css": "text/css; charset=utf-8",
+    "hub-shared.css": "text/css; charset=utf-8",
+    "hub-shared.js": "text/javascript; charset=utf-8",
 }
 
 # A session id is a UUID; allow the loose [\w-] so older/odd ids still route.

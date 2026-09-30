@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Claude Code session</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23191a21'/%3E%3Cg stroke='%23d97757' stroke-width='5.5' stroke-linecap='round'%3E%3Cpath d='M32 32 32 9'/%3E%3Cpath d='M32 32 46 14'/%3E%3Cpath d='M32 32 55 27'/%3E%3Cpath d='M32 32 50 44'/%3E%3Cpath d='M32 32 37 55'/%3E%3Cpath d='M32 32 21 52'/%3E%3Cpath d='M32 32 10 42'/%3E%3Cpath d='M32 32 9 25'/%3E%3Cpath d='M32 32 18 11'/%3E%3C/g%3E%3Ccircle cx='51' cy='51' r='6' fill='%234fb6a6' stroke='%23191a21' stroke-width='2.5'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/vendor/hub-shared.css?v=1">
 <style>
 /* ============================================================ V3 "CHAPTERS"
    Conviction: a session is a story of your asks; skim is the primary job.
@@ -14,7 +15,10 @@
    Register: editorial reader in the dark house palette — serif display,
    big prose, quiet dense chrome. */
 :root {
-    --t-xs: 11px; --t-sm: 12.5px; --t-md: 14px; --t-lg: 16px; --t-xl: 20px;   /* the one type scale (owner D6a) */
+    /* the one type scale (owner D6a); the View panel's text size scales all of it through --k */
+    --k: 1;
+    --t-xs: calc(11px * var(--k)); --t-sm: calc(12.5px * var(--k)); --t-md: calc(14px * var(--k));
+    --t-lg: calc(16px * var(--k)); --t-xl: calc(20px * var(--k)); --t-2xl: calc(25px * var(--k));
     color-scheme: dark;
     --bg: #191a21; --bg2: #21232c; --well: #1d1f27; --sel: #2b2d38;
     --edge: rgba(200,205,225,.13); --edge2: rgba(200,205,225,.24);
@@ -23,8 +27,8 @@
     --tool: #e2b05b; --err: #ea8578; --add: oklch(0.75 0.14 142); --del: #ea8578;
     --meta: oklch(0.74 0.11 305);   /* violet — git/meta hint only */
     --sky: oklch(0.76 0.11 230); --rose: oklch(0.74 0.13 350);
-    --out: #22242d;   /* an opened call's output: one shade off the page */
-    --term: #15161c;  /* its input: a shade darker, like a terminal */
+    --out: #20222b;   /* an opened call's output: one shade off the page */
+    --term: #1c1d25;  /* its input: a touch darker, like a terminal */
     --mark: rgba(226,176,91,.3);
     --you-soft: color-mix(in srgb, var(--you) 10%, transparent);
     --you-ring: color-mix(in srgb, var(--you) 40%, transparent);
@@ -34,8 +38,8 @@
     --sans: ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
     --serif: ui-serif, Georgia, "Iowan Old Style", "Times New Roman", serif;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    --fs-prose: var(--t-md); --lh-prose: 1.68; --measure: 640px;
-    --r: 8px; --tb-h: 44px;
+    --fs-prose: calc(15px * var(--k)); --lh-prose: 1.68; --measure: 680px;
+    --r: 8px; --tb-h: 52px;
     --ease: cubic-bezier(.2,0,0,1); --t-fast: 130ms; --t-slow: 260ms;
     --shadow: 0 10px 32px -12px rgba(0,0,0,.6);
 }
@@ -49,7 +53,7 @@
     --meta: oklch(0.46 0.13 305);
     --sky: oklch(0.5 0.12 230); --rose: oklch(0.52 0.16 350);
     --out: #fdfcfa;
-    --term: #f0eee8;
+    --term: #f6f4ef;
     --mark: rgba(216,160,32,.32);
     --shadow: 0 10px 32px -12px rgba(40,36,20,.24);
 }
@@ -71,14 +75,28 @@ button { font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparen
 .tb-back { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); text-decoration: none;
     font: 600 var(--t-sm) var(--sans); padding: 6px 8px; border-radius: var(--r); white-space: nowrap; }
 .tb-back:hover { background: var(--sel); color: var(--text); }
+.tb-back .brand, .tb-brand .brand { width: 18px; height: 18px; flex: none; }
+.tb-back { gap: 7px; font-size: var(--t-md); color: var(--text); }
+.tb-sep { flex: none; width: 1px; height: 20px; background: var(--edge2); }
+.tb-title { font-size: var(--t-md); }
 .tb-title { font: 600 var(--t-sm) var(--serif); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     opacity: 0; transition: opacity var(--t-slow) var(--ease); cursor: pointer; min-width: 0; }
 .tb-ch { flex: none; font: 700 var(--t-xs) var(--mono); color: var(--faint); opacity: 0;
     transition: opacity var(--t-slow) var(--ease); white-space: nowrap; }
 .topbar.scrolled .tb-title, .topbar.scrolled .tb-ch { opacity: 1; }
-.tb-live { flex: none; display: inline-flex; align-items: center; gap: 6px;
-    font: 700 var(--t-xs) var(--mono); letter-spacing: .07em; text-transform: uppercase; color: var(--claude); }
-.tb-live.yourturn { color: var(--you); }
+/* the session's state: a pill with what it is, since when, and what it last did */
+.tb-live { --lc: var(--claude); flex: none; display: inline-flex; align-items: center; gap: 8px; height: 34px;
+    padding: 0 12px 0 11px; border-radius: 999px; font: 600 var(--t-sm) var(--sans); color: var(--text);
+    background: color-mix(in srgb, var(--lc) 11%, transparent); border: 1px solid color-mix(in srgb, var(--lc) 28%, transparent); }
+.tb-live.yourturn { --lc: var(--you); }
+.tb-live.ended { --lc: var(--faint); }
+.tb-live .pulse { color: var(--lc); }
+.tb-live .lv-state { color: var(--lc); font-weight: 700; }
+.tb-live .lv-for { color: var(--dim); font: var(--t-xs) var(--mono); font-variant-numeric: tabular-nums; }
+.tb-live .lv-what { color: var(--faint); font: var(--t-xs) var(--sans); max-width: 26ch; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+.tb-live .lv-what:empty { display: none; }
+@media (max-width: 900px) { .tb-live .lv-what { display: none; } }
 .tb-live .pulse { width: 7px; height: 7px; border-radius: 50%; background: currentColor; position: relative; }
 .tb-live.working .pulse::after { content: ''; position: absolute; inset: -4px; border-radius: 50%;
     border: 1.5px solid currentColor; opacity: 0; animation: pulse 2s var(--ease) infinite; }
@@ -91,21 +109,22 @@ button { font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparen
 .connbar.on { display: flex; }
 .connbar .icon { color: var(--err); }
 .connbar span { color: var(--dim); font: var(--t-xs) var(--mono); }
-.tbtn { height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 11px;
-    border: 1px solid var(--edge); border-radius: 8px; background: var(--bg2); color: var(--dim);
-    font: 600 var(--t-sm) var(--sans); white-space: nowrap;
+/* top bar controls: plain icon buttons, one size, named by their tooltip */
+.tbtn { width: 36px; height: 36px; flex: none; display: inline-flex; align-items: center; justify-content: center; padding: 0;
+    border: 1px solid var(--edge); border-radius: 10px; background: var(--bg2); color: var(--dim);
     transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
 .tbtn:hover { background: var(--sel); color: var(--text); }
-.tbtn[aria-pressed="true"] { color: var(--text); box-shadow: 0 0 0 1px var(--edge2); }
-.tbtn .icon { width: 14px; height: 14px; }
-/* the hub's controls took over direction and theme; the panel keeps colours and text size */
+.tbtn[aria-pressed="true"] { color: var(--text); background: var(--sel); box-shadow: 0 0 0 1px var(--edge2); }
+.tbtn .icon { width: 17px; height: 17px; }
+.tb-grp { display: inline-flex; gap: 6px; }
+/* the outline is a sidebar on a wide screen, so its button only exists for the drawer */
+@media (min-width: 1100px) { #olBtn { display: none; } }
 .vp-grp:has(#vpDir), .vp-grp:has(#vpTheme) { display: none; }
-.tbtn .lb { display: none; } @media (min-width: 640px) { .tbtn .lb { display: inline; } }
-/* on a phone the four buttons need the room: back is an arrow, no chapter count */
+@media (max-width: 640px) { .tbtn { width: 32px; height: 32px; border-radius: 9px; } .tbtn .icon { width: 15px; height: 15px; } .tb-live { height: 32px; } }
+/* on a phone the buttons need the room: back is an arrow, no chapter count */
 @media (max-width: 480px) {
     .topbar { gap: 4px; padding: 0 8px; }
-    .tb-back-lb, .tb-ch { display: none; }
-    .tbtn { padding: 0 9px; }
+    .tb-back-lb, .tb-ch, .tb-live .lv-for { display: none; }
 }
 
 /* ================= layout: outline sidebar + reading column */
@@ -164,10 +183,18 @@ main { flex: 1; min-width: 0; padding: 0 20px 30vh; }
     display: flex; flex-wrap: wrap; gap: 4px 18px; }
 .mh-colophon b { color: var(--text); font-weight: 700; }
 .mh-colophon .in b { color: var(--you); } .mh-colophon .out b { color: var(--claude); }
+/* the session in figures: value over label, read across */
+.mh-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 10px 8px;
+    margin-top: 18px; padding: 12px 0; border-top: 1px solid var(--edge); border-bottom: 1px solid var(--edge); }
+.mh-stats .st { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.mh-stats .v { font: 600 var(--t-lg)/1.2 var(--mono); color: var(--text); font-variant-numeric: tabular-nums; }
+.mh-stats .l { font: var(--t-xs) var(--sans); color: var(--faint); }
+.mh-stats .in .v { color: var(--you); } .mh-stats .out .v { color: var(--claude); }
 /* progress spine — one segment per chapter */
-.spine { display: flex; gap: 3px; margin-top: 12px; height: 6px; }
+.spine { display: flex; gap: 3px; margin-top: 14px; height: 8px; }
 .spine span { flex: 1; border-radius: 3px; background: var(--sel); cursor: pointer; position: relative;
-    transition: background var(--t-fast) var(--ease); min-width: 4px; }
+    transition: background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease); min-width: 4px; }
+.spine span:hover { transform: scaleY(1.5); }
 .spine span:hover { background: var(--edge2); }
 .spine span.done { background: color-mix(in srgb, var(--you) 45%, var(--sel)); }
 .spine span.cur { background: var(--you); }
@@ -187,12 +214,31 @@ main { flex: 1; min-width: 0; padding: 0 20px 30vh; }
 /* fillChapter keeps the reading position itself; the browser's own scroll
    anchoring (absent in Safari) would apply the same shift a second time */
 html, body { overflow-anchor: none; }
-.ch-num { flex: none; font: 700 var(--t-xs) var(--mono); color: var(--you); padding-top: 7px; width: 2.5ch; }
+/* chapter head: number, title, then one quiet line of facts */
+.ch-num { flex: none; align-self: flex-start; margin-top: 4px; min-width: 30px; height: 22px; padding: 0 6px;
+    display: inline-flex; align-items: center; justify-content: center; border-radius: 6px;
+    font: 700 var(--t-xs) var(--mono); color: var(--you); background: var(--you-soft); font-variant-numeric: tabular-nums; }
 .ch-body { min-width: 0; flex: 1; }
-.ch-title { font: 600 var(--t-xl)/1.35 var(--serif); letter-spacing: -.008em; margin: 0; text-wrap: pretty; cursor: pointer; overflow-wrap: anywhere; }
+.ch-title { font: 600 var(--t-xl)/1.3 var(--serif); letter-spacing: -.01em; margin: 0; text-wrap: pretty; cursor: pointer; overflow-wrap: anywhere; }
 .ch-title:hover { color: var(--you); }
-.ch-meta { font: var(--t-xs) var(--mono); color: var(--faint); margin-top: 5px; display: flex; flex-wrap: wrap; gap: 3px 14px; }
-.ch-meta .e { color: var(--err); font-weight: 700; }
+.ch-title.sh { font: 600 var(--t-lg)/1.4 var(--mono); letter-spacing: 0; }
+.ch-title.sh .bang { color: var(--tool); margin-right: .5ch; }
+.ch-meta { font: var(--t-xs) var(--mono); color: var(--dim); margin-top: 7px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
+.ch-meta .cm { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.ch-meta .cm b { color: var(--text); font-weight: 600; }
+.ch-meta .cm .icon { width: 12px; height: 12px; color: var(--faint); }
+.ch-meta .cm.quiet { color: var(--faint); }
+.ch-meta .e { color: var(--err); font-weight: 600; background: var(--err-soft); padding: 0 7px; border-radius: 5px; }
+.ch-meta .e .icon { color: var(--err); }
+.cmdchip.shell { color: var(--tool); background: var(--tool-soft); }
+.cmdchip.shell::before { content: none; }
+.cmdchip .icon { width: 12px; height: 12px; }
+.shcard { margin: 12px 0 0; border: 1px solid var(--edge); border-radius: var(--r); background: var(--out); overflow: hidden; }
+.shcard .cin { padding-right: 12px; }
+.shcard pre.res { font: var(--t-sm)/1.55 var(--mono); max-height: 360px; overflow: auto; }
+/* a chapter's link mark sits beside its number, not above the rule */
+section.chapter > .blink { top: 30px; left: -28px; }
+.chwrap:first-child section.chapter > .blink { top: 12px; }
 .cmdchip { display: inline-flex; align-items: center; gap: 6px; font: 700 var(--t-sm) var(--mono);
     color: var(--you); background: var(--you-soft); border-radius: 5px; padding: 2px 9px; margin-bottom: 6px; }
 .cmdchip::before { content: '❯'; opacity: .6; }
@@ -202,10 +248,7 @@ html, body { overflow-anchor: none; }
 .epi .content { color: var(--dim); font-size: var(--t-md); }
 .epi.clamped .epi-in { max-height: 7.2em; overflow: hidden;
     -webkit-mask-image: linear-gradient(#000 55%, transparent); mask-image: linear-gradient(#000 55%, transparent); }
-.epi-more { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 20px; margin-top: 2px;
-    background: var(--you-soft); border: none; border-radius: 6px; color: var(--you); padding: 0; }
-.epi-more .icon { width: 13px; height: 13px; }
-.epi-more:hover { background: color-mix(in srgb, var(--you) 18%, transparent); }
+.epi .epi-more { margin-top: 6px; }
 
 /* claude passages */
 .passage { margin-top: 20px; }
@@ -218,6 +261,12 @@ html, body { overflow-anchor: none; }
 .content { overflow-wrap: break-word; }
 .content > :first-child { margin-top: 0; } .content > :last-child { margin-bottom: 0; }
 .content p, .content ul, .content ol { margin: 10px 0; }
+/* bold marks a phrase, it should not shout; lists sit close to the text they belong to */
+.content strong, .content b { font-weight: 600; color: color-mix(in srgb, var(--text) 88%, var(--dim)); }
+.content ul, .content ol { padding-left: 1.3em; }
+.content li { margin: 3px 0; padding-left: .15em; }
+.content li > ul, .content li > ol { margin: 3px 0; padding-left: 1.1em; }
+.content li::marker { color: var(--faint); }
 .content h1, .content h2 { font: 600 var(--t-lg)/1.4 var(--serif); margin: 22px 0 8px; }
 .content h3, .content h4 { font: 600 var(--t-lg)/1.4 var(--sans); margin: 18px 0 6px; }
 .content a { color: var(--you); text-decoration-color: color-mix(in srgb, var(--you) 40%, transparent); }
@@ -225,7 +274,10 @@ html, body { overflow-anchor: none; }
 .content pre { background: var(--well); border: 1px solid var(--edge); border-radius: var(--r);
     padding: 12px 14px; overflow-x: auto; font-size: var(--t-sm); line-height: 1.6; }
 .content pre code { background: none; padding: 0; font-size: inherit; }
-.content blockquote { margin: 10px 0; padding: 2px 16px; border-left: 2px solid var(--edge2); color: var(--dim); }
+.content blockquote { margin: 12px 0; padding: 8px 14px; border-left: 2px solid var(--edge2); color: var(--dim);
+    background: color-mix(in srgb, var(--well) 70%, transparent); border-radius: 0 var(--r) var(--r) 0; }
+.content blockquote > :first-child { margin-top: 0; } .content blockquote > :last-child { margin-bottom: 0; }
+.content blockquote .callout-h:first-child { margin-top: 0; }
 /* tables: one outer frame, a tinted header, row rules only */
 .content table { border-collapse: separate; border-spacing: 0; font-size: var(--t-sm); line-height: 1.45; display: block;
     overflow-x: auto; max-width: 100%; width: max-content; border: 1px solid var(--edge); border-radius: var(--r); margin: 12px 0; }
@@ -317,7 +369,8 @@ pre.res.err { color: var(--err); }
 .inj-row { display: flex; align-items: center; gap: 8px; font: var(--t-xs) var(--mono); color: var(--faint);
     background: none; border: none; padding: 2px 0; text-align: left; }
 .inj-row:hover { color: var(--dim); }
-.inj-row .fold { width: 12px; flex: none; }
+.inj-row .fold { width: 11px; height: 11px; flex: none; transition: transform var(--t-fast) var(--ease); }
+.inj-row[aria-expanded="true"] .fold { transform: rotate(90deg); }
 /* an expanded block (skill body, hook text, peer message): its own surface, capped and scrollable */
 .inj-body { margin: 8px 0 4px; padding: 12px 16px; max-height: 420px; overflow: auto; overscroll-behavior: contain;
     background: var(--well); border: 1px solid var(--edge); border-radius: var(--r); color: var(--dim); }
@@ -325,9 +378,16 @@ pre.res.err { color: var(--err); }
 .k-shell { --kc: var(--tool); } .k-file, .k-edit { --kc: var(--you); } .k-find { --kc: var(--claude); }
 .k-web { --kc: var(--sky); } .k-agent, .k-todo { --kc: var(--meta); } .k-mcp { --kc: var(--rose); }
 .k-skill { --kc: var(--add); } .k-think, .k-other { --kc: var(--faint); }
-.ledger { margin-top: 10px; border: none; border-radius: 0; background: none; overflow: visible; }
-.ledger .lg-row { min-height: 26px; padding: 2px 0; gap: 12px; color: var(--faint); font: var(--t-sm) var(--mono); }
-.ledger .lg-row:hover { background: none; color: var(--dim); }
+/* a run of work sits tight under the paragraph it belongs to; the next
+   paragraph starts clear of it */
+.ledger { margin-top: 6px; border: none; border-radius: 0; background: none; overflow: visible; }
+.ledger .lg-row { display: inline-flex; width: auto; max-width: 100%; min-height: 28px; padding: 3px 10px 3px 6px; margin-left: -6px; gap: 10px;
+    border-radius: 8px; color: var(--faint); font: var(--t-sm) var(--mono); }
+.ledger .lg-row:hover { background: var(--sel); color: var(--dim); }
+.ledger.open .lg-row { color: var(--dim); }
+.passage { margin-top: 26px; }
+.passage + .passage { margin-top: 22px; }
+.byline { margin-bottom: 6px; }
 .lg-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; white-space: normal; overflow: visible; }
 .lg-sum b { color: var(--dim); }
 .ls-k { display: inline-flex; align-items: center; gap: 4px; color: color-mix(in srgb, var(--kc) 55%, var(--faint)); }
@@ -363,8 +423,18 @@ pre.res.err { color: var(--err); }
 .rail .evrow { padding: 2px 8px; }
 /* an opened call: the input as a terminal band (a shade darker), the output below */
 .rail .tb-scroll { padding: 0; }
-.cin { padding: 9px 12px; background: var(--term); border-bottom: 1px solid var(--edge); }
-.cout { padding: 8px 12px 10px; }
+.cin { position: relative; padding: 10px 40px 10px 12px; background: var(--term); border-bottom: 1px dashed var(--edge2); }
+.cout { padding: 9px 12px 11px; }
+/* copy the input or the output: a quiet icon, the input's at its top right */
+.ccp { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0;
+    border: 1px solid transparent; border-radius: 6px; background: none; color: var(--faint);
+    transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease); }
+.ccp .icon { width: 13px; height: 13px; }
+.ccp:hover { color: var(--text); background: var(--sel); border-color: var(--edge); }
+.ccp.ok { color: var(--add); }
+.cin > .ccp { position: absolute; top: 7px; right: 8px; }
+.res-head .ccp { margin-left: auto; }
+.res-head .ccp::before { content: none; }
 .cmdline { font: var(--t-sm)/1.6 var(--mono); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .cmdline .ps { color: var(--faint); font-weight: 400; margin-right: 2px; }
 .sh-p { color: var(--tool); font-weight: 700; } .sh-f { color: var(--meta); } .sh-s { color: var(--add); }
@@ -419,9 +489,26 @@ pre.res.err { color: var(--err); }
 .fcard { margin: 10px 0 14px; max-width: 420px; border: 1px solid var(--edge); border-radius: 10px; overflow: hidden; background: var(--bg2); }
 .fcard img { display: block; width: 100%; max-height: 260px; object-fit: contain; background: var(--well); cursor: zoom-in; }
 .fcard figcaption { padding: 6px 10px; font: var(--t-xs) var(--mono); border-top: 1px solid var(--edge); overflow-wrap: anywhere; }
-/* code blocks in prose wrap instead of scrolling sideways */
-.content pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: visible; padding: 8px 12px; }
+/* code blocks in prose wrap instead of scrolling sideways; a box drawn in
+   characters keeps its lines and scrolls instead, or it falls apart */
+.content pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: visible; padding: 10px 14px; position: relative; }
 .content pre code { white-space: inherit; }
+.content code.shline { display: block; padding: 9px 14px; background: var(--well); border: 1px solid var(--edge);
+    border-radius: var(--r); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+.content pre.boxart { white-space: pre; overflow-wrap: normal; overflow-x: auto; line-height: 1.45; }
+.content pre.boxart code { white-space: pre; }
+.content pre[data-lang]::before { content: attr(data-lang); position: absolute; top: 6px; right: 10px;
+    font: var(--t-xs) var(--mono); color: var(--faint); opacity: .8; }
+/* code colours: the same restrained set the shell band uses, in both themes */
+.hljs-comment, .hljs-quote { color: var(--faint); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-type { color: var(--meta); }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-template-string { color: var(--add); }
+.hljs-number, .hljs-literal, .hljs-symbol, .hljs-bullet { color: var(--tool); }
+.hljs-title, .hljs-title.function_, .hljs-section { color: var(--sky); }
+.hljs-attr, .hljs-attribute, .hljs-property, .hljs-variable, .hljs-template-variable, .hljs-name, .hljs-selector-class { color: var(--you); }
+.hljs-deletion { color: var(--del); }
+.hljs-meta, .hljs-tag { color: var(--dim); }
+.hljs-emphasis { font-style: italic; } .hljs-strong { font-weight: 600; }
 /* links: every URL and path opens in a new tab; the copy mark shows on hover */
 .lk { color: var(--you); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--you) 35%, transparent);
     text-underline-offset: 2px; cursor: pointer; overflow-wrap: anywhere; }
@@ -433,10 +520,23 @@ pre.res.err { color: var(--err); }
 .lk-cp.ok { color: var(--add); }
 /* harness turns (hook, peer, task, system) folded into the chapter they interrupted */
 .hturn { margin: 6px 0 0; }
-.hchip { display: inline-flex; background: var(--bg2); border-radius: 5px; padding: 2px 9px; max-width: 100%; align-items: baseline; }
+.hchip { display: inline-flex; background: var(--bg2); border-radius: 6px; padding: 3px 10px; max-width: 100%; align-items: center; gap: 8px; }
 .hchip .hg { flex: none; }
 .hchip .ht { min-width: 0; overflow-wrap: anywhere; }
-.hchip .fold { width: auto; }
+.hchip .fold { width: 11px; height: 11px; flex: none; transition: transform var(--t-fast) var(--ease); }
+.hchip[aria-expanded="true"] .fold { transform: rotate(90deg); }
+/* an opened harness turn: the tool call's card, text at the chip's own weight */
+.hcard { margin: 6px 0 4px; border: 1px solid var(--edge); border-radius: var(--r); background: var(--out); overflow: hidden;
+    animation: open var(--t-slow) cubic-bezier(.2, 0, 0, 1); }
+.hcard .cin { padding-right: 12px; }
+.hc-kind { font: 600 var(--t-xs) var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+.hc-head { margin-top: 3px; font: var(--t-sm)/1.5 var(--mono); color: var(--dim); overflow-wrap: anywhere; }
+.hc-fields { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; margin: 6px 0 0;
+    font: var(--t-xs)/1.5 var(--mono); }
+.hc-fields dt { color: var(--faint); }
+.hc-fields dd { margin: 0; color: var(--dim); overflow-wrap: anywhere; }
+.hcard .cout .content { font: var(--t-sm)/1.6 var(--sans); color: var(--dim); max-height: 380px; overflow: auto; }
+.hcard .cout .content p { margin: 6px 0; }
 .ch-cmds { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
 .cmdline-t { font: var(--t-sm)/1.5 var(--mono); color: var(--dim); overflow-wrap: anywhere; }
 .cmdtag { font-weight: 700; color: var(--you); background: var(--you-soft); border-radius: 4px; padding: 1px 6px; margin-right: 8px; }
@@ -537,6 +637,7 @@ pre.res.err { color: var(--err); }
    becomes this page's title, with a strong ease */
 @view-transition { navigation: auto; }
 .mh-title, .sk-title { view-transition-name: sess-title; }
+.topbar { view-transition-name: topbar; }
 ::view-transition-group(*) { animation-duration: 340ms; animation-timing-function: cubic-bezier(.2, 0, 0, 1); }
 ::view-transition-old(root), ::view-transition-new(root) { animation-duration: 220ms; animation-timing-function: cubic-bezier(.2, 0, 0, 1); }
 @media (prefers-reduced-motion: reduce) { ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none; } }
@@ -588,56 +689,12 @@ mark.qhl { background: var(--mark, rgba(226,176,91,.35)); color: inherit; border
 .vp-seg .sw i { width: 5px; height: 5px; border-radius: 50%; }
 
 @media (max-width: 720px) {
-    :root { --fs-prose: var(--t-md); }
+    :root { --fs-prose: calc(14px * var(--k)); }
     main { padding: 0 16px 34vh; }
     .masthead { padding-top: 14px; }
     .ch-num { width: 2ch; }
     .ch-head { gap: 10px; }
 }
-/* ===== handoff: palette skins (color-only; register is a direction knob, not a palette) ===== */
-:root[data-skin="tty"] { color-scheme: dark;
-    --bg: #14161e; --bg2: #1d212c; --well: #191c26; --sel: #2a2f3d;
-    --edge: rgba(190,200,235,.17); --edge2: rgba(190,200,235,.3);
-    --text: #eef1f9; --dim: #aeb7cc; --faint: #6f7994;
-    --you: oklch(0.76 0.155 268); --claude: oklch(0.76 0.145 180); --tool: #e2b05b;
-    --err: #ea8578; --add: oklch(0.75 0.14 142); --del: #ea8578; --meta: oklch(0.74 0.11 305);
-    --mark: rgba(226,176,91,.3); }
-:root[data-skin="tty"].light { color-scheme: light;
-    --bg: #f6f6f7; --bg2: #ecedef; --well: #f0f0f2; --sel: #e2e4e8;
-    --edge: rgba(30,34,48,.16); --edge2: rgba(30,34,48,.3);
-    --text: #1e2027; --dim: #545866; --faint: #82879a;
-    --you: oklch(0.46 0.16 268); --claude: oklch(0.46 0.15 180); --tool: #8a6410;
-    --err: #b23f33; --add: oklch(0.46 0.14 142); --del: #b23f33; --meta: oklch(0.46 0.13 305);
-    --mark: rgba(216,160,32,.32); }
-:root[data-skin="editorial"] { color-scheme: dark;
-    --bg: #191a21; --bg2: #21232c; --well: #1d1f27; --sel: #2b2d38;
-    --edge: rgba(200,205,225,.13); --edge2: rgba(200,205,225,.24);
-    --text: #edeef4; --dim: #a2a7b8; --faint: #676d80;
-    --you: oklch(0.76 0.15 268); --claude: oklch(0.76 0.14 180); --tool: #e2b05b;
-    --err: #ea8578; --add: oklch(0.75 0.14 142); --del: #ea8578; --meta: oklch(0.74 0.11 305);
-    --mark: rgba(226,176,91,.3); }
-:root[data-skin="editorial"].light { color-scheme: light;
-    --bg: #faf9f6; --bg2: #f1efe9; --well: #f4f2ed; --sel: #e8e5dd;
-    --edge: rgba(35,32,24,.13); --edge2: rgba(35,32,24,.26);
-    --text: #1e1f24; --dim: #565b68; --faint: #8e93a1;
-    --you: oklch(0.46 0.16 268); --claude: oklch(0.46 0.15 180); --tool: #7e5d0e;
-    --err: #b23f33; --add: oklch(0.46 0.14 142); --del: #b23f33; --meta: oklch(0.46 0.13 305);
-    --mark: rgba(216,160,32,.32); }
-:root[data-skin="product"] { color-scheme: dark;
-    --bg: #171923; --bg2: #1f222c; --well: #1c1f28; --sel: #2a2e3a;
-    --edge: rgba(178,190,225,.12); --edge2: rgba(178,190,225,.22);
-    --text: #e8ebf3; --dim: #99a0b4; --faint: #6d7488;
-    --you: oklch(0.72 0.13 268); --claude: oklch(0.72 0.13 180); --tool: #d9ab55;
-    --err: #e07f72; --add: oklch(0.74 0.12 142); --del: #e07f72; --meta: oklch(0.72 0.1 305);
-    --mark: rgba(217,171,85,.3); }
-:root[data-skin="product"].light { color-scheme: light;
-    --bg: #f2f4f8; --bg2: #fff; --well: #eceef4; --sel: #e7eaf1;
-    --edge: rgba(22,28,45,.13); --edge2: rgba(22,28,45,.24);
-    --text: #1a1c23; --dim: #5f6575; --faint: #8a90a0;
-    --you: oklch(0.50 0.15 268); --claude: oklch(0.50 0.15 180); --tool: #8a6614;
-    --err: #b8483b; --add: oklch(0.50 0.13 142); --del: #b8483b; --meta: oklch(0.50 0.13 305);
-    --mark: rgba(200,150,30,.3); }
-
 /* ===== handoff: direction (geometry) presets over the one reader ===== */
 :root[data-dir="command"] .mh-title, :root[data-dir="command"] .ch-title,
 :root[data-dir="inspector"] .mh-title, :root[data-dir="inspector"] .ch-title { font-family: var(--sans); letter-spacing: -.01em; }
@@ -658,17 +715,37 @@ body.no-outline .outline { display: none; }
 .bare .trow, .wcard .trow { min-height: 28px; }
 
 /* ===== handoff: session timeline capability (neutral vocabulary) ===== */
-.cctl { position: fixed; top: var(--tb-h); left: 0; right: 0; height: 46px; z-index: 54; display: none;
-    background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--edge); }
+.cctl { position: sticky; top: var(--tb-h); z-index: 30; display: none; margin: 16px -10px 0; padding: 8px 10px 8px;
+    background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--edge); }
 .cctl.on { display: block; }
-.cctl svg { width: 100%; height: 100%; cursor: crosshair; display: block; }
-.cctl-lb { position: absolute; left: 12px; top: 3px; font: 9.5px var(--mono); letter-spacing: .1em;
-    text-transform: uppercase; color: var(--faint); pointer-events: none; }
-body.has-tl main { padding-top: 46px; }
-body.has-tl .outline { top: calc(var(--tb-h) + 46px); }
+.tl-lb { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 5px;
+    font: var(--t-xs) var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+.tl-hint { opacity: 0; transition: opacity var(--t-fast) var(--ease); }
+.cctl:hover .tl-hint { opacity: 1; }
+.cctl:has(.tl-cur.on) .tl-hint { opacity: 0; }
+.tl-track { position: relative; height: 44px; cursor: crosshair; touch-action: none; user-select: none; }
+.tl-track svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.tl-bars rect { fill: color-mix(in srgb, var(--faint) 55%, transparent); }
+.cctl.anim .tl-bars rect { transform-box: fill-box; transform-origin: bottom; animation: tlgrow 520ms cubic-bezier(.2, 0, 0, 1) both; }
+@keyframes tlgrow { from { transform: scaleY(0); opacity: 0; } }
+.tl-track:hover .tl-bars rect { fill: color-mix(in srgb, var(--dim) 60%, transparent); }
+/* the stretch on screen, and the stretch being picked */
+.tl-view { position: absolute; top: -3px; bottom: -3px; border-radius: 4px; pointer-events: none;
+    background: color-mix(in srgb, var(--you) 13%, transparent); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--you) 55%, transparent);
+    transition: left 160ms var(--ease), width 160ms var(--ease), opacity 160ms; }
+.tl-sel { position: absolute; top: -3px; bottom: -3px; display: none; pointer-events: none; border-radius: 4px;
+    background: color-mix(in srgb, var(--tool) 20%, transparent); box-shadow: inset 0 0 0 1.5px var(--tool); }
+.tl-sel.on { display: block; }
+.tl-cur { position: absolute; top: -3px; bottom: -3px; width: 1.5px; margin-left: -.75px; display: none; pointer-events: none;
+    background: var(--text); opacity: .55; }
+.tl-cur.on { display: block; }
+.tl-cur span { position: absolute; bottom: calc(100% + 4px); left: 50%; translate: -50% 0; padding: 1px 6px; border-radius: 4px;
+    background: var(--text); color: var(--bg); font: 600 var(--t-xs) var(--mono); white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { .cctl.anim .tl-bars rect { animation: none; } }
 
 /* ===== handoff: the View panel (theme · palette · direction · text size · timeline) ===== */
-.viewpanel { position: fixed; top: calc(var(--tb-h) + 8px); right: 12px; z-index: 78; width: 274px;
+.viewpanel { position: fixed; top: calc(var(--tb-h) + 8px); right: 12px; z-index: 78; width: 340px;
     background: var(--bg2); border: 1px solid var(--edge2); border-radius: 13px; box-shadow: var(--shadow);
     padding: 13px 15px; display: none; flex-direction: column; gap: 13px; }
 .viewpanel.open { display: flex; }
@@ -689,7 +766,7 @@ body.has-tl .outline { top: calc(var(--tb-h) + 46px); }
 .vp-range { width: 100%; accent-color: var(--you); }
 .vp-hint { font: var(--t-xs) var(--mono); color: var(--faint); line-height: 1.5; }
 </style>
-<script>(function(){try{var s=localStorage.getItem('cc-skin');if(s&&s!=='native')document.documentElement.dataset.skin=s;var d=localStorage.getItem('hx-dir')||'chapters';document.documentElement.dataset.dir=d;var M={chapters:640,command:720,tty:900,inspector:680};document.documentElement.style.setProperty('--measure',(M[d]||640)+'px');var f=localStorage.getItem('hx-fs');if(f)document.documentElement.style.setProperty('--fs-prose',f+'px');}catch(e){}})()</script>
+<script>(function(){try{var R={tty:'terminal',editorial:'paper',product:'native'},s=localStorage.getItem('cc-skin');s=R[s]||s;if(s&&s!=='native')document.documentElement.dataset.skin=s;document.documentElement.dataset.dir='chapters';var f=parseFloat(localStorage.getItem('hx-fs'));if(f)document.documentElement.style.setProperty('--k',(Math.min(18,Math.max(12,f))/14.5).toFixed(3));}catch(e){}})()</script>
 </head>
 <body>
 
@@ -738,15 +815,18 @@ body.has-tl .outline { top: calc(var(--tb-h) + 46px); }
 </defs></svg>
 
 <div class="topbar" id="topbar">
-  <a class="tb-back" href="/"><svg class="icon" style="width:13px;height:13px"><use href="#i-back"/></svg><span class="tb-back-lb">sessions</span></a>
-  <span class="tb-title" id="tbTitle" title="Back to top"></span><span class="fetchdot" id="fetchDot" hidden title="Fetching the latest"></span>
+  <a class="tb-back" href="/" title="All sessions"><svg class="icon" style="width:13px;height:13px"><use href="#i-back"/></svg><svg class="brand" viewBox="0 0 1200 1200" aria-hidden="true"><use href="#i-claude"/></svg><span class="tb-back-lb">Sessions</span></a>
+  <span class="tb-sep"></span>
+  <span class="tb-title" id="tbTitle" title="Back to the top"></span><span class="fetchdot" id="fetchDot" hidden title="Fetching the latest"></span>
   <span class="tb-ch" id="tbCh"></span>
   <span class="tb-sp"></span>
-  <span class="tb-live working" id="tbLive"><span class="pulse"></span><span id="tbLiveLb">working</span></span>
-  <button class="tbtn" id="olBtn" aria-pressed="false"><svg class="icon"><use href="#i-list"/></svg><span class="lb">outline</span></button>
-  <button class="tbtn" id="findBtn"><svg class="icon"><use href="#i-search"/></svg><span class="lb">search</span></button>
-  <button class="tbtn" id="viewBtn" title="Text size and colours" aria-pressed="false"><svg class="icon"><use href="#i-type"/></svg></button>
-  <button class="tbtn" id="themeBtn" title="Toggle theme"><svg class="icon"><use href="#i-moon"/></svg></button>
+  <span class="tb-live working" id="tbLive"><span class="pulse"></span><span class="lv-state" id="tbLiveLb">Working</span><span class="lv-for" id="tbLiveFor"></span><span class="lv-what" id="tbLiveWhat"></span></span>
+  <span class="tb-grp">
+    <button class="tbtn" id="olBtn" aria-pressed="false" title="Chapters"><svg class="icon"><use href="#i-list"/></svg></button>
+    <button class="tbtn" id="findBtn" title="Search this session (/ or ⌘K)"><svg class="icon"><use href="#i-search"/></svg></button>
+    <button class="tbtn" id="viewBtn" title="Palette, text size, timeline" aria-pressed="false"><svg class="icon"><use href="#i-type"/></svg></button>
+    <button class="tbtn" id="themeBtn" title="Dark or light (t)"><svg class="icon"><use href="#i-moon"/></svg></button>
+  </span>
 </div>
 <div class="connbar" id="connbar" role="status"><svg class="icon"><use href="#i-alert"/></svg><b>Disconnected, retrying</b><span id="connLast"></span></div>
 <div class="scrim" id="scrim"></div>
@@ -759,17 +839,16 @@ body.has-tl .outline { top: calc(var(--tb-h) + 46px); }
     <span class="vp-hint" id="vpDirHint"></span>
   </div>
   <div class="vp-grp"><span class="vp-lb">Palette</span>
-    <div class="vp-seg" id="vpSkin">
-      <button data-skin="native"><span class="sw" style="background:#191a21"><i style="background:oklch(0.76 0.15 268)"></i></span>Native</button><button data-skin="tty"><span class="sw" style="background:#14161e"><i style="background:#aeb7cc"></i></span>TTY</button><button data-skin="editorial"><span class="sw" style="background:#191a21"><i style="background:oklch(0.74 0.11 305)"></i></span>Editorial</button><button data-skin="product"><span class="sw" style="background:#171923"><i style="background:oklch(0.72 0.13 180)"></i></span>Product</button>
-    </div>
+    <div id="vpSkin"></div>
   </div>
   <div class="vp-grp"><span class="vp-lb">Theme</span>
     <div class="vp-seg" id="vpTheme"><button data-theme="dark"><svg class="icon"><use href="#i-moon"/></svg>Dark</button><button data-theme="light"><svg class="icon"><use href="#i-sun"/></svg>Light</button></div>
   </div>
-  <div class="vp-grp"><span class="vp-lb">Text size <b id="vpFsVal">15.5</b>px</span>
-    <input class="vp-range" type="range" id="vpFs" min="13" max="19" step="0.5" value="15.5">
+  <div class="vp-grp"><span class="vp-lb">Text size <b id="vpFsVal">100%</b></span>
+    <input class="vp-range" type="range" id="vpFs" min="12" max="18" step="0.5" value="14.5">
+    <span class="vp-hint">Scales every text on both pages, the board included.</span>
   </div>
-  <div class="vp-grp"><label class="vp-tog"><input type="checkbox" id="vpTl"> Session timeline</label></div>
+  <div class="vp-grp"><label class="vp-tog"><input type="checkbox" id="vpTl"> Session timeline under the title</label></div>
 </div>
 
 <div class="layout">
@@ -806,6 +885,7 @@ body.has-tl .outline { top: calc(var(--tb-h) + 46px); }
 <!-- marked 12.0.2 and highlight.js 11.9.0, vendored in lib/vendor and served by the hub -->
 <script src="/vendor/marked.min.js"></script>
 <script src="/vendor/highlight.min.js"></script>
+<script src="/vendor/hub-shared.js?v=1"></script>
 <script>
 "use strict";
 const $ = s => document.querySelector(s);
@@ -816,11 +896,8 @@ const kfmt = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed
 // OS-resolved values saved at load, so it is dropped (see hub-index.html).
 const SS = { theme: 'hub-theme' };
 try { localStorage.removeItem('cv-theme'); } catch (e) {}
-const hljsLink = document.createElement('link');
-hljsLink.rel = 'stylesheet'; document.head.appendChild(hljsLink);
 function applyTheme(t) {
     document.documentElement.classList.toggle('light', t === 'light');
-    hljsLink.href = t === 'light' ? '/vendor/hljs-github.min.css' : '/vendor/hljs-github-dark.min.css';
     $('#themeBtn').innerHTML = ic(t === 'light' ? 'sun' : 'moon');
     document.querySelectorAll('#vpTheme button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.theme === t)));
 }
@@ -979,8 +1056,34 @@ function sanitizeHTML(html) {
 }
 /* Terminal decoration in Claude's replies (═══ rule lines, `★ Insight ───`
    markers) becomes a real rule and a small label instead of wrapping glyphs. */
+/* A box drawn in prose (┌─ Title ─┐ / │ body / └───┘) becomes a quoted
+   callout with its title as a label. Code fences are left alone. */
+function boxCallouts(s) {
+    const lines = s.split('\n'), out = [];
+    let fence = false;
+    for (let i = 0; i < lines.length; i++) {
+        const l = lines[i];
+        if (/^\s*(```|~~~)/.test(l)) fence = !fence;
+        const top = !fence && l.match(/^\s*(?:>\s*)?[┌╭┏]\s*[─━]*\s*(.*?)\s*[─━]*\s*[┐╮┓]?\s*$/);
+        if (!top) { out.push(l); continue; }
+        const body = [];
+        let j = i + 1;
+        for (; j < lines.length; j++) {
+            const b = lines[j];
+            if (/^\s*(?:>\s*)?[└╰┗]/.test(b)) break;
+            if (/^\s*(?:>\s*)?[─━\s]+$/.test(b) && /[─━]/.test(b)) continue;
+            body.push(b.replace(/^\s*(?:>\s*)?(?:[─━]+\s*)?[│┃|]\s?/, '').replace(/\s*[│┃]\s*$/, ''));
+        }
+        if (j >= lines.length) { out.push(l); continue; }   // never closed: not a box
+        out.push('', `> <span class="callout-h">${esc(top[1] || 'note')}</span>`, '>');
+        body.forEach(b => out.push('> ' + b + (b.trim() ? '  ' : '')));   // each boxed line keeps its own line
+        out.push('');
+        i = j;
+    }
+    return out.join('\n');
+}
 function tidyMd(s) {
-    return s
+    return boxCallouts(s)
         .replace(/^[ \t]*[═━─]{6,}[ \t]*$/gm, '\n\n<hr>\n\n')
         .replace(/[═━]{6,}/g, '')
         .replace(/`([^`\n]*?)─{3,}[^`\n]*`/g, (m, a) => a.trim() ? `<span class="callout-h">${esc(a.trim())}</span>` : '');
@@ -988,9 +1091,37 @@ function tidyMd(s) {
 function mdRender(el) {
     if (window.marked) {
         el.innerHTML = sanitizeHTML(marked.parse(tidyMd(el.getAttribute('data-raw') || '')));
-        el.querySelectorAll('pre code').forEach(b => { try { hljs.highlightElement(b); } catch (e) {} });
+        el.querySelectorAll('pre code').forEach(colourBlock);
+        // a paragraph that is only a `shell command` reads as one, coloured like the terminal band
+        el.querySelectorAll('p > code:only-child').forEach(c => {
+            if (c.parentElement.childNodes.length === 1 && CLI_START.test(c.textContent)) {
+                c.innerHTML = shHTML(c.textContent); c.classList.add('shline');
+            }
+        });
     } else el.textContent = el.getAttribute('data-raw') || '';
     el.removeAttribute('data-raw');
+}
+/* A fenced block is coloured only when it says what it is, or when it is
+   plainly a shell command. Guessing turned English prose into a rainbow. */
+const SHELL_LANGS = /^(bash|sh|shell|zsh|console|terminal)$/i;
+const LANG_ALIAS = { jsonc: 'json', json5: 'json', yml: 'yaml', ts: 'typescript', js: 'javascript', py: 'python' };
+const CLI_START = /^\s*(?:\$\s+)?(?:sudo\s+)?(?:git|gh|gcloud|npm|npx|pnpm|yarn|bun|node|deno|python3?|pip3?|uv|brew|curl|wget|docker|kubectl|make|cargo|go|rg|grep|sed|awk|cat|ls|cd|cp|mv|mkdir|echo|export|source|bash|zsh|sh|ssh|scp|rsync|tar|claude|launchctl|defaults|open|pm2|swift|swiftc|xcodebuild|trash|jq|find|fd|env|chmod|chown|tail|head|touch|killall|kill|lsof|ps|psql|redis-cli|sqlite3|terraform|aws|vercel|flyctl|fly)\b/;
+const BOX_CHARS = /[┌┐└┘│├┤┬┴┼╭╮╰╯═║╔╗╚╝╠╣━┃▶►◀]/;
+function colourBlock(code) {
+    const pre = code.parentElement, text = code.textContent;
+    const m = (code.className.match(/language-([\w+-]+)/) || [])[1];
+    const lang = m ? (LANG_ALIAS[m.toLowerCase()] || m.toLowerCase()) : '';
+    if (BOX_CHARS.test(text) && (text.match(/[│┃║|]/g) || []).length >= 2) { pre.classList.add('boxart'); return; }
+    const lines = text.split('\n').filter(l => l.trim());
+    if (SHELL_LANGS.test(lang) || (!lang && lines.length && lines.length <= 12 && lines.every(l => CLI_START.test(l) || /^\s*(#|\\|&&|\||--?\w)/.test(l)))) {
+        code.innerHTML = shHTML(text.replace(/^\s*\$\s+/gm, ''));
+        pre.dataset.lang = 'shell';
+        return;
+    }
+    if (lang && window.hljs && hljs.getLanguage(lang)) {
+        try { code.innerHTML = hljs.highlight(text, { language: lang, ignoreIllegals: true }).value; code.classList.add('hljs'); } catch (e) {}
+        pre.dataset.lang = m;
+    }
 }
 
 /* ================= data → chapters */
@@ -1174,32 +1305,35 @@ function renderMasthead() {
         `<span class="bi branch">${ic('branch')}${esc(m.git_branch)}</span>` +
         `<span class="bi perm">${ic('shield')}${esc(m.permission_mode || 'normal')}</span>` +
         (range ? `<span class="bi">${ic('clock')}${range}</span>` : '') + `</div>` +
-        `<div class="mh-colophon">` +
-        `<span><b>${state.chapters.length}</b> chapters</span>` +
-        `<span><b>${m.total_tool_calls}</b> tool calls</span>` +
-        `<span><b>${m.subagent_count}</b> agents</span>` +
-        `<span class="in"><b>↓${kfmt(t.input)}</b></span>` +
-        `<span class="out"><b>↑${kfmt(t.output)}</b></span>` +
-        `<span><b>${kfmt(t.cache_read)}</b> cache</span></div>` +
+        `<div class="mh-stats">` +
+        stat(state.chapters.length, 'chapters', 'Your messages') +
+        stat(m.total_tool_calls, 'tool calls') +
+        (m.subagent_count ? stat(m.subagent_count, 'agents', 'Sub-agents this session started') : '') +
+        stat(kfmt(t.input), 'tokens in', 'Fresh input tokens, cache reads not counted', 'in') +
+        stat(kfmt(t.output), 'tokens out', 'Tokens Claude wrote', 'out') +
+        stat(kfmt(t.cache_read), 'cache read', 'Input tokens served from the prompt cache') + `</div>` +
         `<div class="spine${state.chapters.length > 60 ? ' dense' : ''}" id="spine">` +
         state.chapters.map((c, i) => `<span data-ch="${i}" title="${esc(c.title)}${c.tools ? ` · ${c.tools} tools` : ''}${c.mins ? ` · ${c.mins}m` : ''}" class="${c.errs ? 'err' : ''}" style="flex:${Math.sqrt(1 + c.tools * 2 + c.toks / 1500 + c.mins * 3).toFixed(2)}"></span>`).join('') +
         `</div>` +
         `<div class="spine-cap"><span>${esc(state.chapters[0] && state.chapters[0].ts ? state.chapters[0].ts.slice(0,5) : '')}${d0 ? ' · ' + d0 : ''}</span><span id="spineCap">chapter 1 of ${state.chapters.length}</span></div>`;
     $('#tbTitle').textContent = TITLE;
 }
+/* Under a chapter title: when, how long, how much, and what went wrong, most
+   useful first; the tool mix is the quietest part. */
+const stat = (v, label, tip, cls) =>
+    `<div class="st${cls ? ' ' + cls : ''}"${tip ? ` title="${esc(tip)}"` : ''}><span class="v">${esc(String(v))}</span><span class="l">${esc(label)}</span></div>`;
 function chMetaLine(c) {
     const top = Object.entries(c.byTool).sort((a, b) => b[1] - a[1]).slice(0, 3)
-        .map(([n, k]) => `${n} ×${k}`).join(' · ');
+        .map(([n, k]) => `${esc(n)} ${k}`).join(', ');
     return [
-        c.ts ? c.ts.slice(0, 5) : '',
-        c.mins ? `worked ${c.mins}m` : '',
-        c.tools ? `${c.tools} tools` : 'no tools',
-        c.agents ? `${c.agents} agent${c.agents > 1 ? 's' : ''}` : '',
-        c.toks ? `↑${kfmt(c.toks)}` : '',
-        top,
-        c.user && c.user.system_reminders ? `${c.user.system_reminders} reminder${c.user.system_reminders > 1 ? 's' : ''}` : '',
-        c.errs ? `<span class="e">${c.errs} error${c.errs > 1 ? 's' : ''}</span>` : '',
-    ].filter(Boolean).join(' · ');
+        c.ts ? `<span class="cm">${ic('clock')}${c.ts.slice(0, 5)}</span>` : '',
+        c.mins ? `<span class="cm">worked <b>${c.mins}m</b></span>` : '',
+        c.tools ? `<span class="cm"><b>${c.tools}</b> tool${c.tools > 1 ? 's' : ''}</span>` : '',
+        c.agents ? `<span class="cm">${ic('bot')}<b>${c.agents}</b></span>` : '',
+        c.toks ? `<span class="cm" title="output tokens">↑${kfmt(c.toks)}</span>` : '',
+        top ? `<span class="cm quiet">${top}</span>` : '',
+        c.errs ? `<span class="cm e">${ic('alert')}${c.errs} error${c.errs > 1 ? 's' : ''}</span>` : '',
+    ].filter(Boolean).join('');
 }
 /* The outline is for jumping: a short title (the first clause; a shell
    command's first words), the time, and the two counts worth scanning for. */
@@ -1358,8 +1492,8 @@ function ledgerSummary(run) {
 function ledgerHTML(run, key) {
     const open = state.expanded.has(key);
     const sum = ledgerSummary(run);
-    return `<div class="ledger${open ? ' open' : ''}"><button class="lg-row" data-lg="${esc(key)}" aria-expanded="${open}">` +
-        `<span class="lg-sum">${sum.html}</span><svg class="icon lg-chev"><use href="#i-chev"/></svg></button>` +
+    return `<div class="ledger${open ? ' open' : ''}"><button class="lg-row" data-lg="${esc(key)}" aria-expanded="${open}" title="${open ? 'Hide the calls' : 'Show each call'}">` +
+        `<svg class="icon lg-chev"><use href="#i-chev"/></svg><span class="lg-sum">${sum.html}</span></button>` +
         (open ? `<div class="rail">${ledgerRowsHTML(run)}</div>` : '') + `</div>`;
 }
 /* One chapter, wrapped with its divider so it can be swapped as a unit. An
@@ -1381,8 +1515,43 @@ function harnessChipHTML(r) {
     const what = k === 'command' || k === 'hook' ? r.label : `${k} · ${r.label || ''}`;
     return `<div class="injected hturn ${k}" data-seq="${r.seq}"><button class="inj-row hchip" data-key="${esc(key)}" aria-expanded="${open}">` +
         (HGLYPH[k] ? `<span class="hg">${HGLYPH[k]}</span>` : '') + `<span class="ht">${esc(what)}</span>` +
-        `<span class="fold">${open ? '▾' : '›'}</span></button>` +
-        (open ? `<div class="inj-body"><div class="content" data-md data-raw="${esc(r.text)}"></div></div>` : '') + `</div>`;
+        `<svg class="icon fold"><use href="#i-chev"/></svg></button>` +
+        (open ? hcardHTML(r, k) : '') + `</div>`;
+}
+/* An opened harness turn, in the tool call's two-part card: what it is and its
+   fields in the top band, what it says below the dashed line. Tagged fields
+   (<status>, <output-file>…) become labelled rows instead of run-on text. */
+const FIELD_NAME = { 'task-id': 'task', 'tool-use-id': 'tool call', 'output-file': 'output', 'status': 'status',
+    'summary': 'summary', 'teammate-id': 'from', 'agent-id': 'agent', 'event': 'event' };
+function hcardHTML(r, k) {
+    const text = String(r.text || '');
+    const fields = [];
+    const pass = s => s.replace(/<([a-z][\w-]*)(\s[^>]*)?>([\s\S]*?)<\/\1>/g, (m, tag, attrs, val) => {
+        if (/notification|message$/.test(tag)) {
+            (attrs || '').replace(/([\w-]+)="([^"]*)"/g, (a, n, v) => { fields.push([n.replace(/_/g, '-'), v]); return a; });
+            return val;   // a wrapper: keep what it wraps, and read its fields on the next pass
+        }
+        fields.push([tag, val.trim()]);
+        return '';
+    });
+    let rest = text;
+    for (let i = 0; i < 3; i++) { const next = pass(rest); if (next === rest) break; rest = next; }
+    rest = rest.replace(/<\/?[a-z][\w-]*[^>]*>/g, '').trim();
+    const summary = fields.find(f => f[0] === 'summary');
+    const shown = fields.filter(f => f !== summary && f[1]);
+    let head = '', body = rest;
+    if (!shown.length) {                     // no fields: the first line heads the card
+        const nl = rest.indexOf('\n');
+        head = nl > 0 && nl < 160 ? rest.slice(0, nl) : '';
+        body = head ? rest.slice(nl + 1).trim() : rest;
+    }
+    if (summary) body = summary[1] + (body ? '\n\n' + body : '');
+    return `<div class="tbody hcard"><div class="cin">` +
+        `<div class="hc-kind">${esc(k)}${r.ts ? ` · ${esc(r.ts)}` : ''}</div>` +
+        (head ? `<div class="hc-head">${esc(head)}</div>` : '') +
+        (shown.length ? `<dl class="hc-fields">${shown.map(([n, v]) =>
+            `<dt>${esc(FIELD_NAME[n] || n.replace(/-/g, ' '))}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : '') +
+        `</div>` + (body ? `<div class="cout"><div class="content" data-md data-raw="${esc(body)}"></div></div>` : '') + `</div>`;
 }
 /* What an event says in words, or '' when it has nothing worth a line: a hook
    run that neither failed nor blocked is routine. */
@@ -1423,7 +1592,14 @@ function chapterHTML(c, i, full) {
     if (state.newSince != null && c.firstSeq === state.newSince) h += `<div class="newmark" id="newmark">new</div>`;
     h += `<section class="chapter${full ? '' : ' ph'}" data-ch="${i}" data-seq="${c.firstSeq}" data-screen-label="chapter ${num}">`;
     h += `<header class="ch-head"><span class="ch-num">${num}</span><div class="ch-body">`;
-    if (c.user) {
+    if (c.user && c.user.turn === 'shell') {
+        // a command the owner ran with "!": the title is the command, the body its terminal card
+        const cmd = String(c.user.label || '').replace(/^!\s*/, '');
+        h += `<span class="cmdchip shell">${ic('terminal')}ran in the shell</span>`;
+        h += `<h2 class="ch-title sh" title="jump here"><span class="bang">!</span>${esc(olTitle(c).replace(/^!\s*/, ''))}</h2>`;
+        h += `<div class="ch-meta">${chMetaLine(c)}</div>`;
+        if (full) h += shellCardHTML(cmd, c);
+    } else if (c.user) {
         const { chip, body } = userParts(c.user.text);
         h += (chip ? `<span class="cmdchip">${esc(chip)}</span>` : '');
         const short = olTitle(c);
@@ -1434,8 +1610,7 @@ function chapterHTML(c, i, full) {
         if (full && rest && rest !== short) {
             const ek = 'epi:' + c.firstSeq, open = state.epis.has(ek);
             h += `<div class="epi${open ? '' : ' clamped'}"><div class="epi-in"><div class="content" data-md data-raw="${esc(rest)}"></div></div>` +
-                `<button class="epi-more" data-epi="${ek}" aria-label="${open ? 'Collapse the message' : 'Show the whole message'}" title="${open ? 'Collapse' : 'Show all'}">` +
-                `<svg class="icon" style="transform:rotate(${open ? -90 : 90}deg)"><use href="#i-chev"/></svg></button></div>`;
+                `<button class="res-more epi-more" data-epi="${ek}">${ic(open ? 'up' : 'down')}${open ? 'show less' : `show the whole message · ${rest.split(/\s+/).length} words`}</button></div>`;
         }
     } else {
         h += `<h2 class="ch-title">${esc(c.title)}</h2><div class="ch-meta">${chMetaLine(c)}</div>` + cmdsHTML(c);
@@ -1465,9 +1640,9 @@ function chapterHTML(c, i, full) {
             const ik = 'inj:' + r.id, iopen = state.expanded.has(ik);
             const lines = String(r.text || '').split('\n').length;
             h += `<div class="injected"><button class="inj-row" data-key="${esc(ik)}" aria-expanded="${iopen}">` +
-                `<span class="fold">${iopen ? '▾' : '▸'}</span>injected · skill preamble · ${lines} lines` +
+                `<svg class="icon fold"><use href="#i-chev"/></svg>injected · skill preamble · ${lines} lines` +
                 (r.system_reminders ? ` · ${r.system_reminders} reminders` : '') + `</button>` +
-                (iopen ? `<div class="inj-body"><div class="content" data-md data-raw="${esc(r.text)}"></div></div>` : '') + `</div>`;
+                (iopen ? `<div class="tbody hcard"><div class="cout"><div class="content" data-md data-raw="${esc(r.text)}"></div></div></div>` : '') + `</div>`;
             continue;
         }
         if (r.role === 'assistant')
@@ -1479,6 +1654,20 @@ function chapterHTML(c, i, full) {
     flush();
     h += `</section></div>`;
     return h;
+}
+/* A "!" command and what it printed, as a tool call's card: Claude Code keeps
+   the output in the hidden <bash-stdout> record that follows it. */
+function shellCardHTML(cmd, c) {
+    const outRec = c.items.find(x => x.role === 'user' && /^\s*<bash-std(out|err)>/.test(x.text || ''));
+    const raw = outRec ? String(outRec.text) : '';
+    const pick = tag => ((raw.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`)) || [])[1] || '').trim();
+    const out = pick('bash-stdout'), err = pick('bash-stderr');
+    const text = [out, err].filter(Boolean).join('\n');
+    const lines = text ? text.split('\n').length : 0;
+    return `<div class="tbody shcard"><div class="cin"><div class="cmdline"><span class="ps">$</span> ${shHTML(cmd)}</div></div>` +
+        `<div class="cout"><div class="res-head${err && !out ? ' err' : ''}">${ic(err && !out ? 'alert' : 'inbox')}<b>${err && !out ? 'error' : 'output'}</b>` +
+        (text ? `<span>${lines} line${lines === 1 ? '' : 's'}</span>` : '') + `</div>` +
+        `<pre class="res">${text ? esc(text) : '<span class="cap">no output recorded</span>'}</pre></div></div>`;
 }
 /* A rough height for an unfilled chapter, so the scrollbar and outline jumps
    land near the right place before the chapter is built. */
@@ -1541,8 +1730,8 @@ function fillChapter(i) {
     old.replaceWith(fresh);
     fresh.querySelectorAll('.content[data-md]').forEach(mdRender);
     addPermalinks(fresh); linkify(fresh); addPreviews(fresh);
-    const tb = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--tb-h')) || 44;
-    if (r0.bottom <= tb) {
+    // above the reading line (under the top bar and the sticky timeline): hold the reader's place
+    if (r0.bottom <= headOffset()) {
         const delta = fresh.getBoundingClientRect().height - r0.height;
         if (delta) window.scrollBy(0, delta);
     }
@@ -1576,6 +1765,13 @@ function refillWhere(sel) {
 }
 
 /* ================= navigation */
+/* How far below the window's top a jump should land: the top bar, plus the
+   timeline when it is showing (it sticks under the bar). */
+function headOffset() {
+    const tl = $('#cctl');
+    return (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--tb-h')) || 52) +
+        (tl && tl.classList.contains('on') ? tl.offsetHeight : 0) + 12;
+}
 function jumpToChapter(i, smooth = true) {
     if (!state.filled.has(i)) fillChapter(i);
     const el = document.querySelector(`.chapter[data-ch="${i}"] .ch-head`);
@@ -1584,10 +1780,10 @@ function jumpToChapter(i, smooth = true) {
     // A long smooth scroll passes placeholders that grow as they fill and would
     // move the target, so a far jump lands one screen short, then glides in.
     if (smooth && Math.abs(top) > innerHeight * 3) {
-        window.scrollTo({ top: top + scrollY - 54 - Math.sign(top) * innerHeight, behavior: 'auto' });
+        window.scrollTo({ top: top + scrollY - headOffset() - Math.sign(top) * innerHeight, behavior: 'auto' });
         top = el.getBoundingClientRect().top;
     }
-    window.scrollTo({ top: top + scrollY - 54, behavior: smooth ? 'smooth' : 'auto' });
+    window.scrollTo({ top: top + scrollY - headOffset(), behavior: smooth ? 'smooth' : 'auto' });
 }
 /* Build the chapter holding `seq` if it is still a placeholder; its index. */
 function ensureFilled(seq) {
@@ -1602,7 +1798,7 @@ function jumpToSeq(seq) {
         if (ch >= 0) jumpToChapter(ch);
         return;
     }
-    window.scrollTo({ top: el.getBoundingClientRect().top + scrollY - 70, behavior: 'smooth' });
+    window.scrollTo({ top: el.getBoundingClientRect().top + scrollY - headOffset() - 16, behavior: 'smooth' });
     el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
 }
 /* Per-block permalinks + deep links: #r<seq> jumps and marks the block;
@@ -1701,6 +1897,7 @@ addEventListener('scroll', () => {
             document.querySelectorAll('.ol-item').forEach((el, i) => { el.classList.toggle('cur', i === cur); if (i === cur) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); });
         }
         if (innerHeight + scrollY > document.body.scrollHeight - 300) { state.newSince = null; $('#jumpNew').classList.remove('on'); }
+        updateTimelineView();
     });
 }, { passive: true });
 $('#chPrev').onclick = () => jumpToChapter(Math.max(0, state.curCh - 1));
@@ -1839,7 +2036,7 @@ async function hitJump(n) {
     }
     if (!row) { jumpToSeq(h.seq); highlightIn(document.querySelector(`#chapters [data-seq="${h.seq}"]`), term); return; }
     const body = row.nextElementSibling;
-    window.scrollTo({ top: row.getBoundingClientRect().top + scrollY - 90, behavior: 'auto' });
+    window.scrollTo({ top: row.getBoundingClientRect().top + scrollY - headOffset() - 36, behavior: 'auto' });
     highlightIn(body || row, term);
     const m = (body || row).querySelector('mark.qhl');
     if (m) {
@@ -1888,11 +2085,30 @@ function ago(iso) {
    Code last changed the status, shown as how long it has held. */
 function setLiveState(kind, since, raw) {
     const el = $('#tbLive');
-    el.className = 'tb-live ' + (kind === 'working' ? 'working' : kind === 'yourturn' ? 'yourturn' : '');
-    const lb = kind === 'working' ? 'working' : kind === 'yourturn' ? 'your turn' : 'ended';
-    const d = since ? ago(since) : '';
-    $('#tbLiveLb').textContent = d && d !== 'now' ? `${lb} ${d}` : lb;
-    el.title = raw ? `Claude Code status: ${raw}${since ? ' since ' + new Date(since).toLocaleTimeString() : ''}` : '';
+    el.className = 'tb-live ' + (kind === 'working' ? 'working' : kind === 'yourturn' ? 'yourturn' : 'ended');
+    $('#tbLiveLb').textContent = kind === 'working' ? 'Working' : kind === 'yourturn' ? 'Your turn' : 'Ended';
+    const lastTs = (state.records.findLast ? state.records.findLast(r => r.ts_iso) : null) || {};
+    const d = since ? ago(since) : kind === 'ended' && lastTs.ts_iso ? ago(lastTs.ts_iso) : '';
+    $('#tbLiveFor').textContent = d && d !== 'now' ? (kind === 'ended' ? `${d} ago` : d) : '';
+    const what = liveWhat(kind);
+    $('#tbLiveWhat').textContent = what;
+    const at = since ? new Date(since).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    el.dataset.tip = [kind === 'working' ? 'Claude is working' : kind === 'yourturn' ? 'Claude is waiting for you' : 'This session has ended',
+        at ? `since ${at}` : '', raw ? `Claude Code status: ${raw}` : '', what].filter(Boolean).join('\n');
+}
+/* What the session is doing or last said, for the state pill: the newest
+   call while working, Claude's last words when it is your turn. */
+function liveWhat(kind) {
+    const recs = state.records;
+    for (let i = recs.length - 1; i >= 0 && i > recs.length - 40; i--) {
+        const r = recs[i];
+        if (kind === 'working' && r.role === 'tools' && r.tools.length) {
+            const t = r.tools[r.tools.length - 1];
+            return `${toolKind(t).label} ${String((t.input && t.input.command) || t.preview || '').split('\n')[0]}`.trim();
+        }
+        if (r.role === 'assistant' && firstLine(r.text)) return firstLine(r.text).replace(/[*`_]/g, '');
+    }
+    return '';
 }
 /* Status comes from the hub (Claude Code's session file). Only a feed
    without it falls back to guessing from quiet polls. */
@@ -2057,7 +2273,8 @@ function setMode(mode) {
     $('#masthead').style.display = (mode === 'loading' || mode === 'error') ? 'none' : '';
     $('#chbar').style.display = mode === 'normal' ? '' : 'none';
     const sw = $('#statewrap'); sw.innerHTML = '';
-    if (mode === 'normal') { renderMasthead(); renderChapters(); renderMasthead(); return; }
+    if (mode === 'normal') { renderMasthead(); renderChapters(); renderMasthead(); rebuildTimeline(); return; }
+    const tl = $('#cctl'); if (tl) tl.remove(); TL = null; tlBuilt = false;
     if (mode === 'loading') sw.innerHTML = loadingHTML();
     if (mode === 'error') sw.innerHTML =
         `<div class="errbanner">${ic('alert')}<div class="t"><b>Couldn't load the session</b>` +
@@ -2070,10 +2287,17 @@ function setMode(mode) {
 window.setMode = setMode;
 $('#themeBtn').onclick = () => vt(() => chooseTheme(document.documentElement.classList.contains('light') ? 'dark' : 'light'));
 $('#tbTitle').onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
+/* Going back to the board: tell it which card to carry this title into. */
+function markBack() {
+    const sid = (location.pathname.match(/^\/s\/([\w-]+)/) || [])[1];
+    if (sid) try { sessionStorage.setItem('hub-back', sid); } catch (e) {}
+}
+$('.tb-back').addEventListener('click', markBack);
+addEventListener('pagehide', markBack);
 
 /* ================= handoff view controls (theme · palette · direction · text size · timeline) */
 const DIRECTIONS = {
-    chapters:  { measure: 640, sidebar: true,  toolrow: 'well', timeline: false, hint: 'Reading view. Your messages are chapters; tool work folds into one line per run.' },
+    chapters:  { measure: 680, sidebar: true,  toolrow: 'well', timeline: true, hint: 'Reading view. Your messages are chapters; tool work folds into one line per run.' },
     command:   { measure: 720, sidebar: false, toolrow: 'card', timeline: true,  hint: 'Wider column, tool runs as cards, a timeline, no sidebar.' },
     tty:       { measure: 900, sidebar: false, toolrow: 'bare', timeline: false, hint: 'Terminal look. Wide column, monospace, tool rows on a rail.' },
     inspector: { measure: 680, sidebar: true,  toolrow: 'card', timeline: false, hint: 'Sidebar, denser lines, tool runs as cards.' },
@@ -2141,7 +2365,7 @@ function resultHTML(t) {
     const text = full != null ? full : res.preview;
     const more = full == null && res.chars > (res.preview || '').length;
     return `<div class="res-head${res.is_error ? ' err' : ''}">${ic(res.is_error ? 'alert' : 'inbox')}<b>${res.is_error ? 'error' : 'output'}</b>` +
-        `<span>${res.lines} line${res.lines === 1 ? '' : 's'}</span><span>${kfmt(res.chars)} chars</span></div>` +
+        `<span>${res.lines} line${res.lines === 1 ? '' : 's'}</span><span>${kfmt(res.chars)} chars</span>${copyBtn('out', t.id, 'Copy the output')}</div>` +
         `<pre class="res${res.is_error ? ' err' : ''}">${text ? (res.is_error ? esc(text) : colourText(text, outputLang(t))) : '<span class="cap">(empty)</span>'}</pre>` +
         (more ? `<button class="res-more" data-full="${esc(t.id)}">${ic('down')}show all ${kfmt(res.chars)} chars</button>` : '');
 }
@@ -2159,8 +2383,38 @@ function callBody(t) {
         fetchFull(t.id);
         return `<div class="cin"><div class="cap">loading ${kfmt(t.input_chars)} chars of input…</div></div><div class="cout">${resultHTML(t)}</div>`;
     }
-    return `<div class="cin">${toolBody(withInput(t))}</div><div class="cout">${resultHTML(t)}</div>`;
+    return `<div class="cin">${copyBtn('in', t.id, 'Copy the input')}${toolBody(withInput(t))}</div><div class="cout">${resultHTML(t)}</div>`;
 }
+const copyBtn = (which, id, tip) => `<button class="ccp" data-cp="${which}" data-ref="${esc(id || '')}" title="${tip}">${ic('copy')}</button>`;
+function findTool(id) {
+    for (const r of state.records) if (r.role === 'tools') for (const t of r.tools) if (t.id === id) return withInput(t);
+    return null;
+}
+/* What "copy" means for a call: the command for Bash, the new text for an
+   edit, the input as JSON otherwise; the output in full, fetched if needed. */
+async function copyCall(btn) {
+    const t = findTool(btn.dataset.ref);
+    if (!t) return;
+    let txt = '';
+    if (btn.dataset.cp === 'in') {
+        const i = t.input || {};
+        txt = t.name === 'Bash' ? i.command || '' : t.name === 'Write' ? i.content || ''
+            : /Edit/.test(t.name) ? i.new_string || '' : JSON.stringify(i, null, 2);
+    } else {
+        if (!FULL.has(t.id) && t.result && t.result.chars > (t.result.preview || '').length) await fetchFull(t.id);
+        txt = FULL.has(t.id) ? FULL.get(t.id) : (t.result && t.result.preview) || '';
+    }
+    copyText(txt);
+    const b = document.querySelector(`.ccp[data-cp="${btn.dataset.cp}"][data-ref="${CSS.escape(btn.dataset.ref)}"]`) || btn;
+    b.classList.add('ok'); b.innerHTML = ic('check');
+    setTimeout(() => { b.classList.remove('ok'); b.innerHTML = ic('copy'); }, 1200);
+}
+document.addEventListener('click', e => {
+    const b = e.target.closest('.ccp');
+    if (!b) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    copyCall(b);
+}, true);
 function fetchFull(id) {
     if (!id || FULL.has(id)) return Promise.resolve();
     if (_fullFetching.has(id)) return _fullFetching.get(id);
@@ -2201,63 +2455,112 @@ function applyDir(name) {
     save('hx-dir', name);
     if (state.mode === 'normal') renderChapters();
 }
-function applyPalette(skin) {
-    if (skin === 'native') delete document.documentElement.dataset.skin;
-    else document.documentElement.dataset.skin = skin;
-    seg('#vpSkin', skin, 'skin'); save('cc-skin', skin);
-}
+const applyPalette = HubShared.applyPalette;
+/* One text size for every size on the page (and the board, which reads the
+   same setting): 14.5 is 100%. */
 function applyTextSize(px) {
-    document.documentElement.style.setProperty('--fs-prose', px + 'px');
-    const v = $('#vpFsVal'); if (v) v.textContent = px;
+    document.documentElement.style.setProperty('--k', (px / HubShared.FS_DEFAULT).toFixed(3));
+    const v = $('#vpFsVal'); if (v) v.textContent = Math.round(px / HubShared.FS_DEFAULT * 100) + '%';
     const r = $('#vpFs'); if (r) r.value = px;
     save('hx-fs', px);
 }
-/* timeline capability — neutral bars, blue prompt ticks, red error ticks, click to jump */
-let tlBuilt = false;
-function buildTimeline() {
-    const rs = window.SESSION.records.filter(r => r.ts_iso);
-    if (rs.length < 2) return;
+/* The session timeline: work per slice of time as bars, your messages as blue
+   ticks under them, errors as red ticks over them. It sits under the title
+   and sticks there. The stretch on screen is shaded; dragging shows the stretch
+   being picked, and letting go jumps to its start (a plain click jumps there). */
+let tlBuilt = false, TL = null;
+function clockOf(ms, withDay) {
+    const d = new Date(ms);
+    const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return withDay ? `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${hm}` : hm;
+}
+function buildTimeline(animate) {
+    const rs = state.records.filter(r => r.ts_iso);
+    if (rs.length < 2 || !$('#masthead')) return;
     const t0 = +new Date(rs[0].ts_iso), t1 = +new Date(rs[rs.length - 1].ts_iso), span = Math.max(1, t1 - t0);
-    const N = 120, work = new Array(N).fill(0), pr = [], er = [];
+    const N = 140, work = new Array(N).fill(0), pr = [], er = [];
     for (const r of rs) {
         const x = (+new Date(r.ts_iso) - t0) / span;
         if (r.role === 'tools') work[Math.min(N - 1, Math.floor(x * N))] += (r.tools || []).length || 1;
-        if (r.role === 'user') pr.push(x);
+        if (r.role === 'user' && ['typed', 'shell'].includes(turnOf(r))) pr.push(x);
         if (r.cls === 'err' || (r.role === 'tools' && (r.tools || []).some(t => t.is_error))) er.push(x);
     }
-    const max = Math.max(...work, 1), W = 1000, H = 46, base = H - 6;
+    const max = Math.max(...work, 1), W = 1000, H = 44, base = H - 7;
     let bars = '';
     for (let i = 0; i < N; i++) { if (!work[i]) continue;
-        const h = 4 + Math.round(Math.log(1 + work[i]) / Math.log(1 + max) * (H - 18));
-        bars += `<rect x="${(i / N * W).toFixed(1)}" y="${base - h}" width="${(W / N * .72).toFixed(1)}" height="${h}" rx="1"></rect>`; }
-    const pt = pr.map(x => `<line x1="${(x * W).toFixed(1)}" x2="${(x * W).toFixed(1)}" y1="${base + 1}" y2="${base + 5}"></line>`).join('');
-    const et = er.map(x => `<line x1="${(x * W).toFixed(1)}" x2="${(x * W).toFixed(1)}" y1="6" y2="12"></line>`).join('');
-    const strip = document.createElement('div'); strip.className = 'cctl'; strip.id = 'cctl';
-    strip.innerHTML = `<span class="cctl-lb">session timeline · click to jump</span>` +
-        `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><g fill="var(--faint)" opacity=".45">${bars}</g>` +
-        `<g stroke="var(--you)" stroke-width="2">${pt}</g><g stroke="var(--err)" stroke-width="2">${et}</g></svg>`;
-    strip.addEventListener('click', ev => {
-        const r = strip.querySelector('svg').getBoundingClientRect();
-        const tt = t0 + ((ev.clientX - r.left) / r.width) * span;
+        const h = 3 + Math.round(Math.log(1 + work[i]) / Math.log(1 + max) * (H - 16));
+        bars += `<rect x="${(i / N * W).toFixed(1)}" y="${base - h}" width="${(W / N * .7).toFixed(1)}" height="${h}" rx="1.5" style="animation-delay:${(i * 4)}ms"></rect>`; }
+    const pt = pr.map(x => `<line x1="${(x * W).toFixed(1)}" x2="${(x * W).toFixed(1)}" y1="${base + 2}" y2="${H}"></line>`).join('');
+    const et = er.map(x => `<line x1="${(x * W).toFixed(1)}" x2="${(x * W).toFixed(1)}" y1="0" y2="6"></line>`).join('');
+    const multiDay = new Date(t0).toDateString() !== new Date(t1).toDateString();
+    const el = document.createElement('div'); el.className = 'cctl' + (animate ? ' anim' : ''); el.id = 'cctl';
+    el.innerHTML = `<div class="tl-lb"><span>${clockOf(t0, multiDay)}</span><span class="tl-hint">drag to pick a stretch, let go to jump</span><span>${clockOf(t1, multiDay)}</span></div>` +
+        `<div class="tl-track"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><g class="tl-bars">${bars}</g>` +
+        `<g stroke="var(--you)" stroke-width="2.5">${pt}</g><g stroke="var(--err)" stroke-width="2.5">${et}</g></svg>` +
+        `<div class="tl-view"></div><div class="tl-sel"></div><div class="tl-cur"><span></span></div></div>`;
+    $('#masthead').after(el);
+    TL = { el, rs, t0, t1, span, multiDay };
+    const track = el.querySelector('.tl-track'), sel = el.querySelector('.tl-sel'), cur = el.querySelector('.tl-cur');
+    const fx = ev => { const r = track.getBoundingClientRect(); return Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)); };
+    let down = null;
+    track.addEventListener('pointerdown', ev => {
+        down = fx(ev); track.setPointerCapture(ev.pointerId);
+        sel.style.left = down * 100 + '%'; sel.style.width = '0'; sel.classList.add('on');
+    });
+    track.addEventListener('pointermove', ev => {
+        const x = fx(ev);
+        cur.style.left = x * 100 + '%'; cur.classList.add('on');
+        cur.querySelector('span').textContent = clockOf(t0 + x * span, multiDay);
+        if (down == null) return;
+        sel.style.left = Math.min(down, x) * 100 + '%'; sel.style.width = Math.abs(x - down) * 100 + '%';
+    });
+    track.addEventListener('pointerleave', () => { if (down == null) cur.classList.remove('on'); });
+    track.addEventListener('pointerup', ev => {
+        if (down == null) return;
+        const x = fx(ev), from = Math.abs(x - down) < .004 ? x : Math.min(down, x);
+        down = null;
+        setTimeout(() => sel.classList.remove('on'), 700);
+        const tt = t0 + from * span;
         let best = rs[0]; for (const rec of rs) { if (+new Date(rec.ts_iso) <= tt) best = rec; else break; }
         jumpToSeq(best.seq);
     });
-    document.body.appendChild(strip);
+    if (animate) setTimeout(() => el.classList.remove('anim'), 1200);
+    updateTimelineView();
+}
+/* Shade the stretch of time the reader has on screen. */
+function updateTimelineView() {
+    if (!TL || !TL.el.classList.contains('on')) return;
+    const seqAt = y => {
+        const el = document.elementFromPoint(Math.min(innerWidth - 20, Math.max(20, ($('.colwrap') || document.body).getBoundingClientRect().left + 40)), y);
+        const n = el && el.closest('[data-seq]');
+        return n ? +n.dataset.seq : null;
+    };
+    const top = TL.el.getBoundingClientRect().bottom + 8;
+    const a = seqAt(top), b = seqAt(innerHeight - 30);
+    const tsOf = seq => { let best = null; for (const r of TL.rs) { if (r.seq <= seq) best = r; else break; } return best ? +new Date(best.ts_iso) : null; };
+    const ta = a != null ? tsOf(a) : null, tb = b != null ? tsOf(b) : ta;
+    const v = TL.el.querySelector('.tl-view');
+    if (ta == null) { v.style.opacity = '0'; return; }
+    const l = (ta - TL.t0) / TL.span, r = ((tb || ta) - TL.t0) / TL.span;
+    v.style.opacity = '1';
+    v.style.left = Math.max(0, l) * 100 + '%';
+    v.style.width = Math.max(1.4, (Math.min(1, r) - l) * 100) + '%';
 }
 function setTimeline(on, byUser) {
-    if (byUser) save('hx-tl', on ? '1' : '0');   // a user's choice outlives direction switches and reloads
-    if (on && !tlBuilt) { buildTimeline(); tlBuilt = true; }
+    if (byUser) save('hx-tl', on ? '1' : '0');   // a user's choice outlives reloads
+    if (on && !tlBuilt && state.mode === 'normal') { buildTimeline(true); tlBuilt = !!$('#cctl'); }
     const s = $('#cctl'); if (s) s.classList.toggle('on', on);
     const t = $('#vpTl'); if (t) t.checked = on;
-    document.body.classList.toggle('has-tl', on);
+    updateTimelineView();
 }
-/* live records shift the time span — swap the strip rather than let it go stale */
+/* live records shift the time span, and a re-rendered masthead drops the
+   strip: swap in a fresh one rather than let it go stale */
 function rebuildTimeline() {
-    if (!tlBuilt) return;
-    const old = $('#cctl'), wasOn = old ? old.classList.contains('on') : false;
+    const want = load('hx-tl', '1') === '1';
+    const old = $('#cctl');
     if (old) old.remove();
-    buildTimeline();
-    const s = $('#cctl'); if (s && wasOn) s.classList.add('on');
+    TL = null; tlBuilt = false;
+    if (want && state.mode === 'normal') { buildTimeline(false); tlBuilt = !!$('#cctl'); const s = $('#cctl'); if (s) s.classList.add('on'); updateTimelineView(); }
 }
 /* view panel wiring */
 /* View Transitions: soft crossfade on user-initiated look changes only —
@@ -2277,9 +2580,11 @@ $('#vpTl').onchange = e => setTimeline(e.target.checked, true);
 /* ================= init — fetch the real session, then go live */
 applyTheme(savedTheme() || (osTheme.matches ? 'light' : 'dark'));
 osTheme.addEventListener('change', e => { if (!savedTheme()) applyTheme(e.matches ? 'light' : 'dark'); });
+HubShared.paletteButtons($('#vpSkin'));
 applyDir('chapters');   // the reading view; the other directions are retired
-applyPalette(load('cc-skin', 'native'));
-applyTextSize(parseFloat(load('hx-fs', '15.5')));
+applyPalette(HubShared.savedPalette());
+applyTextSize(HubShared.savedSize());
+HubShared.blockCopy('.content p, .content li, .content td, .content th, .content pre, .content blockquote', ic('copy'));
 setLiveState('working');
 /* Stale-while-revalidate: the last copy of this session's /data lives in the
    browser's Cache (the hub also refreshes it when a card is hovered), so a
@@ -2308,8 +2613,12 @@ function showData(data) {
     setMode(data.records.length ? 'normal' : 'empty');
 }
 async function boot() {
+    // Paint the named loading title before the first await: a view transition
+    // snapshots this page at its first frame, and a title that only appears
+    // after the cache answers has nothing to morph into.
+    setMode('loading');
     const stale = await cachedData();
-    if (stale && stale.records) showData(stale); else setMode('loading');
+    if (stale && stale.records) showData(stale);
     fetching(true);
     try {
         const res = await fetch(API + 'data', { cache: 'no-cache' });
