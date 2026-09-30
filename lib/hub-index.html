@@ -74,6 +74,31 @@ button, select { font: inherit; cursor: pointer; -webkit-tap-highlight-color: tr
 select.tbtn { appearance: none; padding-right: 22px;
     background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
     background-position: calc(100% - 14px) 55%, calc(100% - 10px) 55%; background-size: 4px 4px; background-repeat: no-repeat; }
+/* top bar controls (owner D2a): one height, one border, one pressed look */
+.seg { display: inline-flex; align-items: center; gap: 2px; height: 30px; padding: 2px;
+    border: 1px solid var(--edge); border-radius: 8px; background: var(--panel); }
+.seg button { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border: none;
+    border-radius: 6px; background: none; color: var(--dim); font: 600 var(--t-sm) var(--sans);
+    transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.seg button:hover { color: var(--text); background: var(--sel); }
+.seg button[aria-pressed="true"] { color: var(--text); background: var(--bg); box-shadow: 0 0 0 1px var(--edge2); }
+.seg .icon { width: 14px; height: 14px; }
+.seg .n { font: 600 var(--t-xs) var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+.st-all { --sc: var(--dim); } .st-you { --sc: var(--you); } .st-work { --sc: var(--claude); } .st-ended { --sc: var(--faint); }
+.st-seg button .icon { color: var(--sc); }
+.st-seg button[aria-pressed="true"] .n { color: var(--sc); }
+.icon-seg button { width: 30px; padding: 0; justify-content: center; }
+.tctl { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px;
+    border: 1px solid var(--edge); border-radius: 8px; background: var(--panel); color: var(--dim);
+    font: 600 var(--t-sm) var(--sans); transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.tctl:hover { color: var(--text); background: var(--sel); }
+.tctl.icon { width: 30px; padding: 0; justify-content: center; }
+.tctl[aria-pressed="true"] { color: var(--text); box-shadow: 0 0 0 1px var(--edge2); }
+.tctl .icon { width: 14px; height: 14px; }
+.tctl select { appearance: none; border: none; background: none; color: var(--text); font: inherit; padding: 0; cursor: pointer; }
+.tctl select:focus { outline: none; }
+.tctl .chev { width: 12px; height: 12px; color: var(--faint); margin-left: -2px; pointer-events: none; }
+.vp-grp:has(#vpDir), .vp-grp:has(#vpTheme) { display: none; }
 
 main { max-width: 1120px; margin: 0 auto; padding: calc(var(--tb-h) + 22px) 18px 70px; }
 .mh-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 22px; }
@@ -101,7 +126,8 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
 .p-hit mark { background: rgba(226,176,91,.3); color: var(--text); border-radius: 2px; }
 
 /* ---------------- peeks density (V5) ---------------- */
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; margin-top: 18px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; margin-top: 18px;
+    align-items: start; }   /* each card its own height: no empty band above a short tail */
 .pane { display: flex; flex-direction: column; text-decoration: none; color: inherit;
     background: var(--panel); border: 1px solid var(--edge); border-radius: var(--r); overflow: hidden;
     transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease); }
@@ -426,24 +452,34 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
 <symbol id="i-stop" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><rect x="9" y="9" width="6" height="6" rx="1"/></symbol>
 <symbol id="i-hand" viewBox="0 0 24 24"><path d="M8 13V5a1.5 1.5 0 0 1 3 0v6M11 11V4a1.5 1.5 0 0 1 3 0v7M14 11V5a1.5 1.5 0 0 1 3 0v8c0 4-3 7-6 7s-5-2-6-4l-2-4a1.5 1.5 0 0 1 2.5-1.5L8 13"/></symbol>
 <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></symbol>
+<symbol id="i-down" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
 <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-10 7"/></symbol>
 </defs></svg>
 
 <div class="topbar">
   <span class="tb-brand">Claude</span><span class="tb-host">Aakarshs-M5-Pro</span>
   <span class="tb-sp"></span>
-  <span class="chip live" id="chipLive"></span>
-  <span class="chip turn" id="chipTurn"></span>
+  <div class="seg st-seg" id="stSeg" role="tablist" aria-label="Show sessions">
+    <button data-st="all" class="st-all" title="All sessions"><svg class="icon"><use href="#i-layers"/></svg>All<span class="n" id="nAll"></span></button>
+    <button data-st="you" class="st-you" title="Waiting on you"><svg class="icon"><use href="#i-hand"/></svg>Needs you<span class="n" id="nYou"></span></button>
+    <button data-st="work" class="st-work" title="Claude is working"><svg class="icon"><use href="#i-play"/></svg>Working<span class="n" id="nWork"></span></button>
+    <button data-st="ended" class="st-ended" title="Ended recently"><svg class="icon"><use href="#i-stop"/></svg>Ended<span class="n" id="nEnded"></span></button>
+  </div>
+  <span class="tb-sp"></span>
   <span class="chip refresh" id="chipRefresh" style="display:none"><span class="pulse"></span>refreshing…</span>
-  <select class="tbtn" id="sortSel" title="Sort within groups">
-    <option value="urgency">sort: urgency</option>
-    <option value="recency">sort: recency</option>
-    <option value="cost">sort: cost</option>
-    <option value="ctx">sort: ctx left</option>
-  </select>
-  <button class="tbtn" id="densBtn" title="Toggle density (d)"></button>
-  <button class="tbtn" id="viewBtn" title="View options" aria-pressed="false"><svg class="icon"><use href="#i-gear"/></svg><span class="lb">view</span></button>
-  <button class="tbtn" id="themeBtn" title="Toggle theme"><svg class="icon"><use href="#i-moon"/></svg></button>
+  <label class="tctl" title="Sort within groups"><svg class="icon"><use href="#i-sort"/></svg>
+    <select id="sortSel" aria-label="Sort">
+      <option value="urgency">Urgency</option>
+      <option value="recency">Recency</option>
+      <option value="cost">Cost</option>
+      <option value="ctx">Context left</option>
+    </select><svg class="icon chev"><use href="#i-down"/></svg></label>
+  <div class="seg icon-seg" id="densSeg" aria-label="Layout">
+    <button data-dens="peeks" title="Cards (d)"><svg class="icon"><use href="#i-grid"/></svg></button>
+    <button data-dens="table" title="Table (d)"><svg class="icon"><use href="#i-rows"/></svg></button>
+  </div>
+  <button class="tctl icon" id="viewBtn" title="Text size and colours" aria-pressed="false"><svg class="icon"><use href="#i-type"/></svg></button>
+  <button class="tctl icon" id="themeBtn" title="Toggle theme"><svg class="icon"><use href="#i-moon"/></svg></button>
 </div>
 
 <main id="main"></main>
@@ -602,12 +638,23 @@ let sortBy = (() => { try { return localStorage.getItem(SS.sort) || 'urgency'; }
 let curQ = '';
 let cursor = -1; // keyboard selection over rendered items
 
-function densLabel() { $('#densBtn').innerHTML = density === 'peeks' ? ic('rows') + 'table' : ic('grid') + 'peeks'; }
-$('#densBtn').onclick = () => {
-    density = density === 'peeks' ? 'table' : 'peeks';
+/* cards or table: an icon pair, the pressed one is the current layout */
+function densLabel() { document.querySelectorAll('#densSeg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.dens === density))); }
+function setDensity(d) {
+    density = d;
     try { localStorage.setItem(SS.dens, density); } catch (e) {}
     densLabel(); vt(() => renderBoard(curQ));
+}
+$('#densSeg').onclick = e => { const b = e.target.closest('button'); if (b && b.dataset.dens !== density) setDensity(b.dataset.dens); };
+/* which state groups show (owner D2a): all, or one of needs you / working / ended */
+let stFilter = (() => { try { return localStorage.getItem('hub-st') || 'all'; } catch (e) { return 'all'; } })();
+function stLabel() { document.querySelectorAll('#stSeg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.st === stFilter))); }
+$('#stSeg').onclick = e => {
+    const b = e.target.closest('button'); if (!b) return;
+    stFilter = b.dataset.st; try { localStorage.setItem('hub-st', stFilter); } catch (err) {}
+    stLabel(); vt(() => renderBoard(curQ));
 };
+stLabel();
 $('#sortSel').value = sortBy;
 $('#sortSel').onchange = () => { sortBy = $('#sortSel').value; try { localStorage.setItem(SS.sort, sortBy); } catch (e) {} renderBoard(curQ); };
 
@@ -1048,9 +1095,10 @@ function render() {
     const turn = live.filter(s => s.state === 'idle').length;
     const hostEl = document.querySelector('.tb-host'); if (hostEl) hostEl.textContent = FEED.host || '';
     const wasFocused = document.activeElement && document.activeElement.id === 'fq';
-    $('#chipLive').innerHTML = `<span class="pulse"></span>${live.length} live`;
-    $('#chipTurn').innerHTML = `<span class="pulse"></span>${turn} your turn`;
-    $('#chipTurn').style.display = turn ? '' : 'none';
+    $('#nAll').textContent = live.length + FEED.recent.length;
+    $('#nYou').textContent = turn;
+    $('#nWork').textContent = live.length - turn;
+    $('#nEnded').textContent = FEED.recent.length;
     $('#main').innerHTML =
         `<div class="mh-row"><h1>Sessions</h1>` +
         `<div class="mh-line">` +
@@ -1108,9 +1156,10 @@ function renderBoard(q) {
              : `<div class="grid">${items.map(x => fn(x.s, x.m.hit)).join('')}</div>`) : '';
     let boardHTML;
     if (D.grouped) {
-        boardHTML = group('you', 'Needs you', need, paneHTML) +
-            group('cl', 'Working', work, paneHTML) +
-            group('', 'Ended', ended, endedPaneHTML);
+        const on = st => stFilter === 'all' || stFilter === st;
+        boardHTML = (on('you') ? group('you', 'Needs you', need, paneHTML) : '') +
+            (on('work') ? group('cl', 'Working', work, paneHTML) : '') +
+            (on('ended') ? group('', 'Ended', ended, endedPaneHTML) : '');
     } else {
         const liveAll = need.concat(work);
         if (tbl) {
@@ -1140,7 +1189,7 @@ document.addEventListener('keydown', e => {
         return;
     }
     if (e.key === '/') { e.preventDefault(); const fq = $('#fq'); fq && fq.focus(); return; }
-    if (e.key === 'd') { $('#densBtn').click(); return; }
+    if (e.key === 'd') { setDensity(density === 'peeks' ? 'table' : 'peeks'); return; }
     if (e.key === 't') { $('#themeBtn').click(); return; }
     const items = [...document.querySelectorAll('#board .pane, #board .trow')];
     if (!items.length) return;
@@ -1243,7 +1292,7 @@ function applyDir(name) {
     const d = DIRECTIONS[name] || DIRECTIONS.fleet; VDIR = d;
     document.documentElement.dataset.dir = name;
     const ss = $('#sortSel'); if (ss) ss.style.display = d.sort ? '' : 'none';
-    const db = $('#densBtn'); if (db) db.style.display = d.layout === 'auto' ? '' : 'none';
+    const db = $('#densSeg'); if (db) db.style.display = d.layout === 'auto' ? '' : 'none';
     seg('#vpDir', name, 'dir');
     const hint = $('#vpDirHint'); if (hint) hint.textContent = d.hint;
     save('hx-idir', name);
@@ -1278,7 +1327,7 @@ $('#vpFs').oninput = e => applyTextSize(+e.target.value);
 
 window.setMode = setMode;
 densLabel();
-applyDir(load('hx-idir', 'fleet'));
+applyDir('fleet');   // the state tabs and the cards/table pair replaced the old directions
 applyPalette(load('cc-skin', 'native'));
 applyTextSize(parseFloat(load('hx-fs', '14.5')));
 setMode('loading');
