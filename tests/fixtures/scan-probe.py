@@ -209,6 +209,38 @@ def main(argv):
             print(f"{none}:{count(main)}:{count('')}")
         finally:
             shutil.rmtree(root, ignore_errors=True)
+    elif op == "history_identity":
+        # An ended session must keep the name, project and model it showed while
+        # live: its title from the transcript, its project from the real cwd
+        # (the folder name decodes '-' ambiguously), and its model family with
+        # the full id kept. Live sessions never use up history slots.
+        import tempfile, shutil
+        root = tempfile.mkdtemp(prefix="hid-")
+        try:
+            proj = os.path.join(root, "projects", "-Users-x-my-app")
+            os.makedirs(proj)
+
+            def write(sid, turns, title=None, model="claude-fable-5-1"):
+                with open(os.path.join(proj, f"{sid}.jsonl"), "w") as fh:
+                    fh.write(json.dumps({"type": "user", "cwd": "/Users/x/my-app",
+                                         "message": {"role": "user", "content": "go"}}) + "\n")
+                    for i in range(turns):
+                        fh.write(json.dumps({"type": "assistant", "message": {
+                            "id": f"{sid}-{i}", "model": model,
+                            "usage": {"input_tokens": 1, "output_tokens": 1}}}) + "\n")
+                    if title:
+                        fh.write(json.dumps({"type": "custom-title", "customTitle": title}) + "\n")
+            write("ended-1", 5, title="nice-name")
+            write("stub-1", 2)
+            write("live-1", 6)
+            ns2 = _load_at(os.path.join(root, "projects"))
+            rows = ns2["get_session_history"](live_sids={"live-1"})
+            r = rows[0] if rows else {}
+            live_absent = "live_absent" if all(x["session_id"] != "live-1" for x in rows) else "live_present"
+            print(f"{len(rows)}|{r.get('name')}|{r.get('project')}|{r.get('model')}|{r.get('model_full')}|{live_absent}"
+                  f"|{ns2['short_model']('claude-opus-5-5')},{ns2['short_model']('claude-sonnet-4-6')},{ns2['short_model']('opus')}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
     elif op == "read_pid_file":
         print(load()["read_pid_file"](int(argv[1]), argv[2]).strip())
     elif op == "tokens":

@@ -502,7 +502,7 @@ function adaptFeed(d) {
         git_modified: +s.git_modified || 0,
         elapsed: fmtElapsed(s.elapsed), _ageMin: etimeMin(s.elapsed),
         cwd_short: cleanTitle(s.name) || cleanTitle(s.tab_title) || s.cwd_short || baseName(s.cwd) || '(session)',
-        model: prettyModel(s.model),
+        model: prettyModel(s.model_full || s.model),
     }));
     const liveIds = new Set(FEED.live.map(s => s.session_id));
     FEED.recent = (d.recent || [])
@@ -510,10 +510,10 @@ function adaptFeed(d) {
         .filter(r => (r.cwd_short || r.project) !== 'subagents')   // sub-agent transcripts aren't sessions (scan-side fix waits on the provider work landing)
         .slice(0, 12).map(s => Object.assign({}, s, {
         state: 'ended', cost_usd: s.cost_usd == null ? null : +s.cost_usd, turns: +s.turns || 0,
-        model: prettyModel(s.model), git_branch: '',
+        model: prettyModel(s.model_full || s.model), git_branch: '',
         ago: relTime(s.modified),
         _ageMin: s.modified ? Math.max(0, (Date.now() - new Date(s.modified).getTime()) / 60000) : 9e9,
-        cwd_short: s.cwd_short || '(session)',
+        cwd_short: cleanTitle(s.name) || s.cwd_short || '(session)',
     }));
 }
 

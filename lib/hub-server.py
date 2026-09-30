@@ -533,6 +533,7 @@ def sessions_payload():
             # Only claude transcripts are readable here — see _serve_app.
             "provider": inst.get("provider", "claude"),
             "model": inst.get("model", ""),
+            "model_full": inst.get("model_full", ""),
             "cwd_short": inst.get("cwd_short", ""),
             "cwd": inst.get("cwd", ""),
             "elapsed": inst.get("elapsed", ""),
@@ -565,6 +566,9 @@ def sessions_payload():
             "session_id": h.get("session_id", ""),
             "provider": h.get("provider", "claude"),
             "model": h.get("model", ""),
+            "model_full": h.get("model_full", ""),
+            "name": h.get("name", ""),
+            "cwd": h.get("cwd", ""),
             "cwd_short": h.get("project", ""),
             "turns": h.get("turns", 0),
             "modified": h.get("modified", ""),

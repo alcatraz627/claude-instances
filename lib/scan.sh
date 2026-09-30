@@ -669,12 +669,25 @@ def claude_parse_session(filepath):
     """
     model = 'unknown'
     usage_by_msg = {}
+    title = ''
+    cwd = ''
     try:
         first_lines = []
         with open(filepath, 'r', errors='replace') as f:
             for i, line in enumerate(f):
                 if i < 50:
                     first_lines.append(line.strip())
+                # The session's name, as its session file showed it while live;
+                # the last rename wins.
+                if '"custom-title"' in line or '"ai-title"' in line:
+                    try:
+                        t = json.loads(line)
+                        t = t.get('customTitle') or t.get('aiTitle') or ''
+                        if isinstance(t, str) and t.strip():
+                            title = t.strip()
+                    except (json.JSONDecodeError, ValueError, AttributeError):
+                        pass
+                    continue
                 if '"assistant"' not in line:
                     continue
                 try:
@@ -694,6 +707,8 @@ def claude_parse_session(filepath):
         for line in first_lines:
             try:
                 obj = json.loads(line)
+                if not cwd and isinstance(obj.get('cwd'), str):
+                    cwd = obj['cwd']
                 msg_type = obj.get('type', '')
                 if msg_type == 'assistant':
                     m = obj.get('message', {}).get('model', '')
@@ -723,6 +738,8 @@ def claude_parse_session(filepath):
         'turns': turn_count,
         'tokens_in': total_input,
         'tokens_out': total_output,
+        'title': title,
+        'cwd': cwd,
     }
 
 claude_provider = {
@@ -1127,7 +1144,9 @@ def _build_claude_instance(pid, cmdline, provider, sess=None):
 
     # Get session tokens and model from JSONL
     session_data = get_session_tokens(pid, cwd, prefer_sid=resume_id, file_sid=file_sid)
-    if model_flag == 'unknown' and session_data['model'] != 'unknown':
+    # The transcript names the model actually answering; the --model flag is
+    # only an alias ('opus'), so it is the fallback, not the answer.
+    if session_data['model'] != 'unknown':
         model_flag = session_data['model']
 
     # Read tab title
@@ -1148,14 +1167,7 @@ def _build_claude_instance(pid, cmdline, provider, sess=None):
 
     session_state = infer_session_state(session_data['tail'])
 
-    # Shorten model name for display
-    model_display = model_flag
-    if 'opus' in model_flag:
-        model_display = 'opus'
-    elif 'sonnet' in model_flag:
-        model_display = 'sonnet'
-    elif 'haiku' in model_flag:
-        model_display = 'haiku'
+    model_display = short_model(model_flag)
 
     # What it cost, straight from the process; the estimate is only a fallback
     # for a session whose statusline has never rendered.
@@ -1371,12 +1383,27 @@ def get_live_instances():
 # or a one-shot helper) and are left out of the ended list.
 MIN_HISTORY_TURNS = 4
 
-def get_session_history(max_sessions=20):
-    """The most recent ended-or-live sessions worth listing, newest first.
+def _project_label(cwd, filepath):
+    """The last two folders of a session's working directory.
 
-    Stubs under MIN_HISTORY_TURNS are skipped, so up to 3x max_sessions files
-    are read to fill the list.
+    The real cwd comes from the transcript. The project folder's name is only
+    a fallback: Claude Code writes both '/' and '.' as '-', so a path like
+    ~/Code/my-app decodes wrongly from it.
     """
+    if cwd:
+        segs = [s for s in cwd.split('/') if s]
+    else:
+        segs = [s for s in Path(filepath).parent.name.replace('-', '/').split('/') if s]
+    return '/'.join(segs[-2:])
+
+def get_session_history(max_sessions=20, live_sids=()):
+    """The most recent ended sessions worth listing, newest first.
+
+    Live sessions are skipped before they count toward the list, since their
+    transcripts are always the newest files; stubs under MIN_HISTORY_TURNS are
+    skipped too. Up to 3x max_sessions ended files are read to fill the list.
+    """
+    live_sids = set(live_sids)
     sessions = []
     files = []
     for provider in PROVIDERS:
@@ -1387,6 +1414,7 @@ def get_session_history(max_sessions=20):
                 continue
     files.sort(key=lambda t: t[0], reverse=True)
 
+    files = [t for t in files if Path(t[1]).stem not in live_sids]
     for mtime, filepath, provider in files[:max_sessions * 3]:
         if len(sessions) >= max_sessions:
             break
@@ -1402,12 +1430,7 @@ def get_session_history(max_sessions=20):
         total_input = parsed.get('tokens_in', 0)
         total_output = parsed.get('tokens_out', 0)
 
-        # Project display decodes the project dir name.
-        project_display = Path(filepath).parent.name.replace('-', '/').lstrip('/')
-        segs = [s for s in project_display.split('/') if s]
-        if len(segs) > 2:
-            project_display = '/'.join(segs[-2:])
-
+        project_display = _project_label(parsed.get('cwd', ''), filepath)
         model_short = short_model(model)
         # `or 0`: a token count may be None (unknown), never a crash.
         cost_usd = estimate_cost(model_short, total_input or 0, total_output or 0)
@@ -1422,8 +1445,11 @@ def get_session_history(max_sessions=20):
 
         sessions.append({
             'session_id': session_id,
+            'name': parsed.get('title', ''),
+            'cwd': parsed.get('cwd', ''),
             'project': project_display,
             'model': model_short,
+            'model_full': model,
             'turns': turn_count,
             'modified': modified,
             'size_kb': round(size / 1024, 1) if size else 0,
@@ -1436,11 +1462,18 @@ def get_session_history(max_sessions=20):
     return sessions
 
 def short_model(model):
-    """Family name ('opus') out of a full model id ('claude-opus-4-8')."""
+    """Family name ('opus', 'fable') out of a full model id ('claude-opus-4-8').
+
+    Any 'claude-<family>-...' id yields its family, so a family this file has
+    never heard of reads the same live and ended instead of one short and one
+    full.
+    """
+    model = model or ''
     for family in ('opus', 'sonnet', 'haiku'):
         if family in model:
             return family
-    return model
+    m = re.match(r'claude-([a-z]+)(?:-|$)', model)
+    return m.group(1) if m else model
 
 # ─── Assemble ────────────────────────────────────────────────────
 
@@ -1453,7 +1486,8 @@ output = {
     'live_count': len(live),
     'live': live,
     # History is a full-scan read; --quick leaves it empty.
-    'history': [] if quick_mode else get_session_history(),
+    'history': [] if quick_mode else get_session_history(
+        live_sids={i.get('session_id') for i in live if i.get('session_id')}),
 }
 
 print(json.dumps(output))

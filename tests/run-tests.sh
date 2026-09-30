@@ -511,6 +511,10 @@ t_eq "a multi-line message counts once"      "live=2:20:150:1000:2|hist=2:20:150
      "$(python3 "$SCAN_PROBE" dedup_usage)"
 # Sub-agents were counted as child processes, which are background shells.
 t_eq "sub-agents are recent agent transcripts" "0:1:0" "$(python3 "$SCAN_PROBE" subagents)"
+# An ended session used to change name, project and model the moment it ended.
+t_eq "an ended session keeps its identity" \
+     "1|nice-name|x/my-app|fable|claude-fable-5-1|live_absent|opus,sonnet,opus" \
+     "$(python3 "$SCAN_PROBE" history_identity)"
 
 # ── Day boundaries ───────────────────────────────────────────────────────────
 #
