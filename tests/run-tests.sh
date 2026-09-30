@@ -61,6 +61,18 @@ t_check "tests/run-tests.sh parses" bash -n tests/run-tests.sh
 # ── T2 — swift compile check ─────────────────────────────────────────────────
 
 t_section "swift compile"
+
+# The bar waited for the scanner to exit before reading its output, which hangs
+# forever once the JSON passes the 64 KB pipe buffer. The probe writes 256 KB;
+# the alarm is the assertion (a wait-first helper is killed, exit 142).
+DRAIN_BIN=$(mktemp)
+if /usr/bin/swiftc -O native/ProcessRun.swift tests/fixtures/drain-probe/main.swift -o "$DRAIN_BIN" 2>/dev/null; then
+    t_eq "scanner output past the pipe buffer is read, not hung" "262144:warn:0" \
+         "$(perl -e 'alarm 8; exec @ARGV' "$DRAIN_BIN" 2>/dev/null)"
+else
+    t_fail "drain probe did not compile"
+fi
+rm -f "$DRAIN_BIN"
 SWIFT_OUT=$(mktemp)
 # The bar is split across logical files; compile them as one module. The list is
 # read from build.sh rather than copied, because a copy drifts silently.

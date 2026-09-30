@@ -219,28 +219,16 @@ func scanAllSessions() -> [FullSession] {
 // ─── Scanner ─────────────────────────────────────────────────────────────────
 
 func runScanner(quick: Bool = false) -> ScanResult? {
-    let task = Process()
-    task.executableURL = URL(fileURLWithPath: "/bin/bash")
-    task.arguments = quick ? [scanScript, "--quick"] : [scanScript]
-    task.environment = ProcessInfo.processInfo.environment
-
-    let outPipe = Pipe()
-    let errPipe = Pipe()
-    task.standardOutput = outPipe
-    task.standardError  = errPipe
-
     do {
-        try task.run()
-        task.waitUntilExit()
-
-        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        let (outData, errData, status) = try runCollecting(
+            "/bin/bash", quick ? [scanScript, "--quick"] : [scanScript],
+            environment: ProcessInfo.processInfo.environment)
         let stderr  = String(data: errData, encoding: .utf8)?
                         .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        if task.terminationStatus != 0 {
+        if status != 0 {
             let mode = quick ? "--quick" : "full"
-            derr("scanner \(mode) exit=\(task.terminationStatus)" +
+            derr("scanner \(mode) exit=\(status)" +
                  (stderr.isEmpty ? "" : " stderr=\(stderr.prefix(400))"))
             return nil
         }
