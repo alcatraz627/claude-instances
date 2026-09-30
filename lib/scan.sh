@@ -1216,12 +1216,12 @@ FALLBACK_GRACE_S = 60
 _HEADLESS_FLAGS = ('-p', '--print', '--output-format', '--input-format')
 
 def _ps_snapshot():
-    """Raw `ps` text: pid, start time, argv for every process.
+    """Raw `ps` text: pid, controlling tty, start time, argv for every process.
 
     `ps`, not `pgrep -f`: the compiled claude binary's argv is not readable
     through pgrep on this machine, so pgrep silently finds no sessions.
     """
-    r = subprocess.run(['ps', '-Ao', 'pid=,lstart=,args='],
+    r = subprocess.run(['ps', '-Ao', 'pid=,tty=,lstart=,args='],
                        capture_output=True, text=True, timeout=3)
     return r.stdout if r.returncode == 0 else ''
 
@@ -1235,13 +1235,17 @@ def _parse_start(text, utc):
     return calendar.timegm(st) if utc else time.mktime(st)
 
 def parse_ps(text):
-    """pid -> (start_epoch, cmdline) from `ps -Ao pid=,lstart=,args=` text."""
+    """pid -> (start_epoch, cmdline, tty) from `ps -Ao pid=,tty=,lstart=,args=` text.
+
+    tty is '' for a process with no controlling terminal (ps prints '??').
+    """
     procs = {}
     for line in text.splitlines():
-        parts = line.split(None, 6)
-        if len(parts) < 7 or not parts[0].isdigit():
+        parts = line.split(None, 7)
+        if len(parts) < 8 or not parts[0].isdigit():
             continue
-        procs[int(parts[0])] = (_parse_start(' '.join(parts[1:6]), utc=False), parts[6])
+        tty = '' if parts[1] in ('??', '?', '-') else parts[1]
+        procs[int(parts[0])] = (_parse_start(' '.join(parts[2:7]), utc=False), parts[7], tty)
     return procs
 
 def read_session_files(d=None):
@@ -1291,7 +1295,8 @@ def select_live(procs, sessions, now=None):
 
     Returns [(pid, cmdline, session_dict_or_None)]. The session file is the
     authority; a claude process without a valid file is kept only while it is
-    young enough to still be writing one.
+    young enough to still be writing one, and only if it owns a terminal (a
+    claude run by a tool or script has none).
     """
     import time
     now = now if now is not None else time.time()
@@ -1306,8 +1311,8 @@ def select_live(procs, sessions, now=None):
         if sess.get('kind') != 'interactive':
             continue                      # headless worker, or anything else
         rows.append((pid, proc[1], sess))
-    for pid, (start, cmdline) in sorted(procs.items()):
-        if pid in claimed:
+    for pid, (start, cmdline, tty) in sorted(procs.items()):
+        if pid in claimed or not tty:
             continue
         basename = os.path.basename(cmdline.split(None, 1)[0]) if cmdline.strip() else ''
         if not claude_proc_match(basename, cmdline) or _is_headless(cmdline):

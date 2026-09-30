@@ -333,7 +333,7 @@ def main(argv):
         # Ghost rows: a live row must be an interactive Claude session. The
         # fixture is a fake process table plus a fake ~/.claude/sessions, run
         # through the real get_live_instances. Only 1006 (valid session file)
-        # and 1007 (young claude that has not written its file yet) may appear.
+        # and 1007 (young claude on a terminal, file not written yet) may appear.
         import tempfile, shutil, time as _t
         root = tempfile.mkdtemp(prefix="live-")
         try:
@@ -341,16 +341,18 @@ def main(argv):
             fmt_ps = lambda t: _t.strftime('%a %b %d %H:%M:%S %Y', _t.localtime(t))
             fmt_file = lambda t: _t.strftime('%a %b %d %H:%M:%S %Y', _t.gmtime(t))
             old, young, day_ago = now - 3600, now - 5, now - 86400
+            # 1009: a young claude with no terminal (run by a tool or script).
             ps_rows = [
-                (1001, old, "/Applications/Codex.app/Contents/Resources/codex app-server"),
-                (1002, young, "claude -p --model sonnet --output-format json You enforce a style ledger"),
-                (1003, young, "claude --print summarize this"),
-                (1005, old, "/usr/bin/vim notes.txt"),
-                (1006, old, "claude --model opus -n real"),
-                (1007, young, "claude --model opus"),
-                (1008, old, "claude --model opus"),
+                (1001, "??", old, "/Applications/Codex.app/Contents/Resources/codex app-server"),
+                (1002, "ttys001", young, "claude -p --model sonnet --output-format json You enforce a style ledger"),
+                (1003, "ttys001", young, "claude --print summarize this"),
+                (1005, "ttys002", old, "/usr/bin/vim notes.txt"),
+                (1006, "ttys003", old, "claude --model opus -n real"),
+                (1007, "ttys004", young, "claude --model opus"),
+                (1008, "ttys005", old, "claude --model opus"),
+                (1009, "??", young, "claude mcp list"),
             ]
-            ps_text = "\n".join(f"{p:>6} {fmt_ps(t)}     {cmd}" for p, t, cmd in ps_rows)
+            ps_text = "\n".join(f"{p:>6} {tty:<8} {fmt_ps(t)}     {cmd}" for p, tty, t, cmd in ps_rows)
             sdir = os.path.join(root, "sessions")
             os.makedirs(sdir)
             def sess(pid, started, kind, sid):
