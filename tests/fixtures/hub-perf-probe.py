@@ -282,6 +282,22 @@ expect("?result=<id> returns the full input",
 cached_call = hub._PARSE_CACHE[pW][1]["records"][-1]["tools"][0]
 expect("slimming never mutates the cached parse", cached_call.get("input", {}).get("content") == big,
        f"cached keys={sorted(cached_call)}")
+with open(pR, "a") as f:
+    f.write(json.dumps({"type": "user", "uuid": _next_uuid(), "timestamp": "2026-07-17T00:00:04Z",
+                        "message": {"role": "user", "content": [
+                            {"type": "tool_result", "tool_use_id": "Rt0",
+                             "content": long_out + "deep ZEBRAFISH_MARKER line"}]}}) + "\n")
+st, _, body = http_get(f"/s/{sidR}/search?q=zebrafish_marker")
+d = json.loads(body)
+expect("search finds text that exists only past the output preview",
+       st == 200 and d.get("total") == 1 and d["hits"][0]["field"] == "result"
+       and d["hits"][0]["tool_id"] == "Rt0" and "ZEBRAFISH_MARKER" in d["hits"][0]["snippet"],
+       f"status={st} body={body[:200]!r}")
+st, _, body = http_get(f"/search?sid={sidR}&q=%22n%22%3A%200")
+expect("search covers tool inputs (and the /search?sid= form)",
+       st == 200 and any(h["field"] == "input" for h in json.loads(body)["hits"]), f"status={st} body={body[:200]!r}")
+st, _, _ = http_get(f"/s/{sidR}/search?q=z")
+expect("a one-character query is refused", st == 400, f"status={st}")
 st, _, _ = http_get(f"/s/{sidR}/data?result=nope")
 expect("?result= for an unknown id is a 404", st == 404, f"status={st}")
 

@@ -356,6 +356,7 @@ pre.res.err { color: var(--err); }
 .shit.cur { box-shadow: inset 2px 0 0 var(--you); }
 .shit .tag { flex: none; width: 30px; font: 700 10px var(--mono); color: var(--dim); }
 .shit .tag.r-user { color: var(--you); } .shit .tag.r-assistant { color: var(--claude); } .shit .tag.r-tools { color: var(--tool); }
+.shit .swhere { flex: none; font: 600 10.5px var(--mono); color: var(--tool); }
 .shit .snip { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; color: var(--dim); }
 .shit .snip mark { background: var(--mark); color: var(--text); border-radius: 2px; }
 .shit .sts { flex: none; font: 10.5px var(--mono); color: var(--faint); }
@@ -1206,7 +1207,9 @@ function closeOutline() { $('#outline').classList.remove('open'); $('#scrim').cl
 $('#olBtn').onclick = () => $('#outline').classList.contains('open') ? closeOutline() : openOutline();
 $('#scrim').onclick = closeOutline;
 
-/* ================= search */
+/* ================= search
+   The hub searches everything it parsed (prose, thinking, tool inputs, tool
+   outputs) via /search. Off the hub, the page falls back to what it holds. */
 function searchable(r) {
     if (r.role === 'user' || r.role === 'assistant') return r.text || '';
     if (r.role === 'tools') return r.tools.map(t => t.name + ' ' + (t.preview || '') +
@@ -1214,30 +1217,53 @@ function searchable(r) {
     if (r.role === 'thinking') return r.preview || '';
     return r.text || '';
 }
+function localHits(term) {
+    const q = term.toLowerCase();
+    return state.records.map(r => {
+        const txt = searchable(r), i = txt.toLowerCase().indexOf(q);
+        if (i < 0) return null;
+        const a = Math.max(0, i - 40);
+        return { id: r.id, seq: r.seq, role: r.role, field: 'text', tool_id: null, ts: r.ts,
+            snippet: (a ? '…' : '') + txt.slice(a, i + term.length + 90), at: i - a + (a ? 1 : 0) };
+    }).filter(Boolean);
+}
+let searchSeq = 0, searchTimer = null;
 function runSearch(term) {
     state.term = term;
-    if (!term) { state.hits = []; renderHits(); return; }
-    const q = term.toLowerCase();
-    state.hits = state.records.map(r => {
-        const txt = searchable(r); const i = txt.toLowerCase().indexOf(q);
-        return i < 0 ? null : { r, txt, i };
-    }).filter(Boolean);
-    state.hitIdx = 0;
-    renderHits();
+    clearTimeout(searchTimer);
+    if (!term) { state.hits = []; state.total = 0; renderHits(); return; }
+    if (term.length < 2) { state.hits = localHits(term); state.total = state.hits.length; state.hitIdx = 0; renderHits(); return; }
+    const my = ++searchSeq;
+    searchTimer = setTimeout(async () => {
+        let hits, total;
+        try {
+            const res = await fetch(API + 'search?q=' + encodeURIComponent(term), { cache: 'no-store' });
+            if (!res.ok) throw new Error(res.status);
+            const d = await res.json();
+            hits = d.hits; total = d.total;
+        } catch (e) { hits = localHits(term); total = hits.length; }
+        if (my !== searchSeq) return;               // a newer query already answered
+        state.hits = hits; state.total = total; state.hitIdx = 0;
+        renderHits();
+    }, 180);
 }
+const HIT_TAG = { user: 'YOU', assistant: 'CL', tools: 'TL', thinking: 'TH', event: 'EV' };
+const FIELD_LB = { input: 'input', result: 'output', tool: '', thinking: '', text: '' };
 function renderHits() {
     const list = $('#slist');
-    $('#sCount').textContent = `${state.hits.length} matches`;
-    if (!state.term) { list.innerHTML = `<div class="sempty">type to search the whole session</div>`; return; }
-    if (!state.hits.length) { list.innerHTML = `<div class="sempty">no matches</div>`; return; }
-    list.innerHTML = state.hits.slice(0, 80).map((h, n) => {
-        const start = Math.max(0, h.i - 24);
-        const snip = (start > 0 ? '…' : '') + esc(h.txt.slice(start, h.i)) +
-            `<mark>${esc(h.txt.slice(h.i, h.i + state.term.length))}</mark>` + esc(h.txt.slice(h.i + state.term.length, h.i + 84));
-        const tag = h.r.role === 'user' ? 'YOU' : h.r.role === 'assistant' ? 'CL' : h.r.role === 'tools' ? 'TL' : 'EV';
-        return `<div class="shit${n === state.hitIdx ? ' cur' : ''}" data-n="${n}">` +
-            `<span class="tag r-${h.r.role}">${tag}</span><span class="snip">${snip}</span>` +
-            `<span class="sts">${esc(h.r.ts || '')}</span></div>`;
+    const n = state.hits.length, total = state.total || n;
+    $('#sCount').textContent = total > n ? `${n} of ${total} matches` : `${n} matches`;
+    if (!state.term) { list.innerHTML = `<div class="sempty">type to search the whole session, tool output included</div>`; return; }
+    if (!n) { list.innerHTML = `<div class="sempty">no matches</div>`; return; }
+    const L = state.term.length;
+    list.innerHTML = state.hits.map((h, k) => {
+        const s = h.snippet || '', i = h.at || 0;
+        const snip = esc(s.slice(0, i)) + `<mark>${esc(s.slice(i, i + L))}</mark>` + esc(s.slice(i + L));
+        const where = [h.tool_name, FIELD_LB[h.field]].filter(Boolean).join(' ');
+        return `<div class="shit${k === state.hitIdx ? ' cur' : ''}" data-n="${k}">` +
+            `<span class="tag r-${h.role}">${HIT_TAG[h.role] || 'EV'}</span>` +
+            (where ? `<span class="swhere">${esc(where)}</span>` : '') +
+            `<span class="snip">${snip}</span><span class="sts">${esc(h.ts || '')}</span></div>`;
     }).join('');
     const cur = list.querySelector('.cur');
     if (cur) {
@@ -1248,9 +1274,53 @@ function renderHits() {
 }
 function openFind() { $('#smodal').classList.add('open'); renderHits(); $('#q').focus(); }
 function closeFind() { $('#smodal').classList.remove('open'); }
-function hitJump(n) {
-    const h = state.hits[n]; if (!h) return; closeFind(); jumpToSeq(h.r.seq);
-    highlightIn(document.querySelector(`[data-seq="${h.r.seq}"]`), state.term);
+/* Open the ledger run and the row holding a tool call or thinking block, so a
+   hit inside it can be shown. Returns the row element. */
+function revealInRun(recId, key) {
+    const r = state.records.find(x => x.id === recId);
+    if (!r) return null;
+    const ch = ensureFilled(r.seq);
+    if (ch < 0) return null;
+    const c = state.chapters[ch];
+    const inRun = x => x.role === 'tools' || x.role === 'thinking' || (x.role === 'event' && !/mode/i.test(x.text || ''));
+    let first = null;
+    for (const x of c.items) {
+        if (!inRun(x)) { first = null; continue; }
+        if (!first) first = x;
+        if (x.id === recId) break;
+    }
+    if (first) state.expanded.add('lg:' + first.id);
+    state.expanded.add(key);
+    fillChapter(ch);
+    return document.querySelector(`#chapters [data-key="${CSS.escape(key)}"]`);
+}
+async function hitJump(n) {
+    const h = state.hits[n]; if (!h) return;
+    closeFind();
+    const term = state.term;
+    let row = null;
+    if (h.role === 'tools' && h.tool_id) {
+        const r = state.records.find(x => x.id === h.id);
+        const i = r ? r.tools.findIndex(t => t.id === h.tool_id) : -1;
+        if (i >= 0) {
+            // the match may sit past the preview: load the full body first
+            if ((h.field === 'result' || h.field === 'input') && !FULL.has(h.tool_id)) await fetchFull(h.tool_id);
+            row = revealInRun(h.id, h.id + ':' + i);
+        }
+    } else if (h.role === 'thinking') {
+        if (!FULL.has(h.id)) await fetchFull(h.id);
+        row = revealInRun(h.id, 'th:' + h.id);
+    }
+    if (!row) { jumpToSeq(h.seq); highlightIn(document.querySelector(`#chapters [data-seq="${h.seq}"]`), term); return; }
+    const body = row.nextElementSibling;
+    window.scrollTo({ top: row.getBoundingClientRect().top + scrollY - 90, behavior: 'auto' });
+    highlightIn(body || row, term);
+    const m = (body || row).querySelector('mark.qhl');
+    if (m) {
+        m.scrollIntoView({ block: 'center' });
+        const sc = m.closest('.tb-scroll, .thbody');
+        if (sc) sc.scrollTop += m.getBoundingClientRect().top - sc.getBoundingClientRect().top - 40;
+    }
 }
 $('#findBtn').onclick = openFind;
 $('#smodal').addEventListener('click', e => { if (e.target === $('#smodal')) closeFind(); });
@@ -1524,7 +1594,7 @@ function resultHTML(t) {
         (more ? `<button class="res-more" data-full="${esc(t.id)}">show full output</button>` : '');
 }
 /* Full bodies fetched from /data?result=<id>, kept across re-renders. */
-const FULL = new Map(), INPUTS = new Map(), _fullFetching = new Set();
+const FULL = new Map(), INPUTS = new Map(), _fullFetching = new Map();
 /* A call with its full input: inline when /data sent it, else once fetched. */
 function withInput(t) {
     if (t.input !== undefined || !INPUTS.has(t.id)) return t;
@@ -1540,9 +1610,9 @@ function callBody(t) {
     return toolBody(withInput(t)) + resultHTML(t);
 }
 function fetchFull(id) {
-    if (!id || FULL.has(id) || _fullFetching.has(id)) return;
-    _fullFetching.add(id);
-    fetch(API + 'data?result=' + encodeURIComponent(id), { cache: 'no-cache' })
+    if (!id || FULL.has(id)) return Promise.resolve();
+    if (_fullFetching.has(id)) return _fullFetching.get(id);
+    const p = fetch(API + 'data?result=' + encodeURIComponent(id), { cache: 'no-cache' })
         .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
         .then(d => {
             FULL.set(id, d.result != null ? d.result : (d.thinking != null ? d.thinking : ''));
@@ -1551,6 +1621,8 @@ function fetchFull(id) {
         })
         .catch(() => {})
         .finally(() => _fullFetching.delete(id));
+    _fullFetching.set(id, p);
+    return p;
 }
 /* one run of consecutive tools/events, rendered per the active direction's tool-row knob */
 function runHTML(run, key) {

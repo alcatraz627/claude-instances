@@ -59,7 +59,7 @@ APP_HTML = os.path.join(HERE, "transcript-app.html")
 INDEX_HTML = os.path.join(HERE, "hub-index.html")
 
 # A session id is a UUID; allow the loose [\w-] so older/odd ids still route.
-SID_RE = re.compile(r"^/s/([\w-]+)(?:/(data))?/?$")
+SID_RE = re.compile(r"^/s/([\w-]+)(?:/(data|search))?/?$")
 
 
 def _env(name, default):
@@ -257,6 +257,7 @@ def _parse_cache_evict():
         if len(_PARSE_CACHE) <= _PARSE_CACHE_MAX and total <= _PARSE_CACHE_BYTES_MAX:
             break
         gone, _ = _PARSE_CACHE.popitem(last=False)
+        _search_docs.pop(gone, None)
         # A lock still HELD belongs to a parse in flight; dropping it would
         # let a second reader mint a fresh lock and parse the same file
         # concurrently. Held locks stay; the entry's next eviction cleans up.
@@ -311,6 +312,7 @@ def _parse_cached(target):
         if result is None:
             result = transcript.parse_transcript(target, with_parser=True)
             parser = result.pop("parser")
+            _search_docs.pop(target, None)      # a rewrite may reuse ids for new text
         edges = _edges(target, parser.offset)
         with _parse_meta:
             _PARSE_CACHE[target] = (key, result, st.st_size, parser, st.st_ino, edges)
@@ -348,6 +350,68 @@ def slim_records(records):
             r["tools"] = [slim_call(t) for t in r["tools"]]
         out.append(r)
     return out
+
+
+SEARCH_MAX_HITS = 200
+SNIP_BEFORE, SNIP_AFTER = 60, 120
+# Searchable text per record, lowercased once: record id -> (version, docs).
+# A record's text only changes when its group gains calls or results.
+_search_docs = {}           # target -> {record id: (version, [(field, tool, text, lower)])}
+
+
+def _record_docs(rec, blobs, calls):
+    """Every searchable text in one record: prose, thinking, and for each tool
+    call its name and preview, its full input and its full output."""
+    role = rec.get("role")
+    docs = []
+    if role in ("user", "assistant", "event"):
+        if rec.get("text"):
+            docs.append(("text", None, rec["text"]))
+    elif role == "thinking":
+        docs.append(("thinking", None, blobs.get(rec["id"], rec.get("preview", ""))))
+    elif role == "tools":
+        for t in rec["tools"]:
+            tid = t.get("id")
+            docs.append(("tool", tid, f"{t.get('name', '')} {t.get('preview', '')}"))
+            inp = (calls.get(tid) or t).get("input")
+            if inp:
+                docs.append(("input", tid, inp if isinstance(inp, str)
+                             else json.dumps(inp, ensure_ascii=False, indent=1)))
+            if tid in blobs:
+                docs.append(("result", tid, blobs[tid]))
+    return [(f, tid, text, text.lower()) for f, tid, text in docs if text]
+
+
+def search_parsed(target, parsed, q):
+    """Case-insensitive substring search over a parsed transcript. One hit per
+    field that matches, in file order."""
+    cache = _search_docs.setdefault(target, {})
+    blobs, calls = parsed.get("blobs") or {}, parsed.get("calls") or {}
+    needle = q.lower()
+    hits, total = [], 0
+    for rec in parsed["records"]:
+        ver = (len(rec.get("tools") or ()), sum("result" in t for t in rec.get("tools") or ()))
+        hit = cache.get(rec["id"])
+        if not hit or hit[0] != ver:
+            hit = (ver, _record_docs(rec, blobs, calls))
+            cache[rec["id"]] = hit
+        for field, tid, text, lower in hit[1]:
+            i = lower.find(needle)
+            if i < 0:
+                continue
+            total += 1
+            if len(hits) >= SEARCH_MAX_HITS:
+                continue
+            a, b = max(0, i - SNIP_BEFORE), min(len(text), i + len(q) + SNIP_AFTER)
+            snip = text[a:b].replace("\n", " ")
+            tool = next((t for t in rec.get("tools") or () if t.get("id") == tid), None)
+            hits.append({
+                "id": rec["id"], "seq": rec["seq"], "role": rec.get("role"),
+                "field": field, "tool_id": tid, "tool_name": tool.get("name") if tool else None,
+                "snippet": ("…" if a else "") + snip + ("…" if b < len(text) else ""),
+                "at": i - a + (1 if a else 0), "ts": rec.get("ts", ""),
+            })
+    return {"q": q, "total": total, "hits": hits, "truncated": total > len(hits)}
 
 
 # Claude Code's own record of each running session: ~/.claude/sessions/<pid>.json
@@ -558,11 +622,15 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
         if path == "/favicon.ico":
             return self._send(204, b"", "image/x-icon")
 
+        if path == "/search":
+            return self._serve_search((qs.get("sid") or [""])[0], qs)
         m = SID_RE.match(path)
         if m:
-            sid, is_data = m.group(1), m.group(2)
-            if is_data:
+            sid, sub = m.group(1), m.group(2)
+            if sub == "data":
                 return self._serve_data(sid, qs)
+            if sub == "search":
+                return self._serve_search(sid, qs)
             return self._serve_app(sid)
 
         self._send(404, "Not found", "text/plain; charset=utf-8")
@@ -669,6 +737,25 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
             result["meta"]["since"] = s
         result["records"] = slim_records(result["records"])
         self._json(200, result, cache="no-cache", etag=etag)
+
+    def _serve_search(self, sid, qs):
+        """GET /search?sid=<id>&q=<text> (or /s/<id>/search?q=): matches in one
+        session's prose, thinking, tool inputs and tool outputs, with record
+        ids and seqs for deep links."""
+        if transcript is None:
+            return self._json(500, {"error": "transcript module unavailable"})
+        q = (qs.get("q") or [""])[0].strip()
+        if len(q) < 2:
+            return self._json(400, {"error": "q needs at least 2 characters"})
+        jsonl = resolve_session_jsonl(sid)
+        if not jsonl:
+            return self._json(404, {"error": f"no transcript for {sid}"})
+        try:
+            parsed = _parse_cached(jsonl)
+        except Exception as e:
+            sys.stderr.write(f"hub: parse failed for {sid}: {type(e).__name__}: {e}\n")
+            return self._json(500, {"error": "transcript could not be parsed"})
+        self._json(200, search_parsed(jsonl, parsed, q))
 
     def _serve_blob(self, parsed, want, etag):
         """One full body that /data only previews: a tool call's output, or
