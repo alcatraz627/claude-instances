@@ -109,13 +109,15 @@ button { font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparen
     border-radius: var(--r); padding: 7px 10px; color: var(--dim); align-items: baseline;
     transition: background var(--t-fast) var(--ease); }
 .ol-item:hover { background: var(--sel); color: var(--text); }
-.ol-item.cur { background: var(--you-soft); color: var(--text); box-shadow: inset 2px 0 0 var(--you); }
+.ol-item.cur { background: var(--you-soft); color: var(--text); box-shadow: inset 2px 0 0 var(--you);
+    border-radius: 0 var(--r) var(--r) 0; }
 .ol-num { flex: none; font: 700 10.5px var(--mono); color: var(--faint); width: 2ch; padding-top: 3px; }
 .ol-item.cur .ol-num { color: var(--you); }
 .ol-t { min-width: 0; }
-.ol-title { font: 600 12.5px var(--sans); line-height: 1.4; display: -webkit-box;
-    -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.ol-meta { font: 10.5px var(--mono); color: var(--faint); margin-top: 1px; overflow-wrap: anywhere; }
+.ol-title { display: block; font: 600 12.5px var(--sans); line-height: 1.4; overflow-wrap: anywhere; }
+.ol-meta { display: flex; flex-wrap: wrap; gap: 0 6px; font: 10.5px var(--mono); color: var(--faint); margin-top: 2px; }
+.ol-meta > span { white-space: nowrap; }
+.ol-meta > span + span::before { content: '·'; margin-right: 6px; }
 .ol-meta .e { color: var(--err); font-weight: 700; }
 @media (max-width: 1099px) {
     .outline { position: fixed; left: 0; top: var(--tb-h); bottom: 0; z-index: 70; background: var(--bg);
@@ -292,15 +294,28 @@ pre.res.err { color: var(--err); }
     background: none; border: none; padding: 2px 0; text-align: left; }
 .inj-row:hover { color: var(--dim); }
 .inj-row .fold { width: 12px; flex: none; }
-.inj-body { margin: 6px 0 0 20px; padding: 8px 14px; border-left: 2px dashed var(--edge2); color: var(--dim); }
+/* an expanded block (skill body, hook text, peer message): its own surface, capped and scrollable */
+.inj-body { margin: 8px 0 4px; padding: 12px 16px; max-height: 420px; overflow: auto; overscroll-behavior: contain;
+    background: var(--well); border: 1px solid var(--edge); border-radius: var(--r); color: var(--dim); }
+/* links: every URL and path opens in a new tab; the copy mark shows on hover */
+.lk { color: var(--you); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--you) 35%, transparent);
+    text-underline-offset: 2px; cursor: pointer; overflow-wrap: anywhere; }
+.lk:hover { text-decoration-color: var(--you); }
+.lk .pdir { color: inherit; opacity: .7; }
+.lk-cp { display: inline-block; margin-left: 3px; padding: 0 3px; border-radius: 4px; font-size: .85em; color: var(--faint);
+    cursor: pointer; opacity: 0; transition: opacity var(--t-fast) var(--ease); }
+.lk:hover + .lk-cp, .lk-cp:hover, .lk-cp.ok { opacity: 1; }
+.lk-cp:hover { color: var(--you); background: var(--you-soft); }
+.lk-cp.ok { color: var(--add); }
 /* harness turns (hook, peer, task, system) folded into the chapter they interrupted */
 .hturn { margin: 6px 0 0; }
 .hchip { display: inline-flex; background: var(--bg2); border-radius: 5px; padding: 2px 9px; max-width: 100%; align-items: baseline; }
 .hchip .hg { flex: none; }
 .hchip .ht { min-width: 0; overflow-wrap: anywhere; }
 .hchip .fold { width: auto; }
-.ch-cmds { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.ch-cmds .cmdchip { margin: 0; overflow-wrap: anywhere; }
+.ch-cmds { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.cmdline-t { font: 12.5px/1.5 var(--mono); color: var(--dim); overflow-wrap: anywhere; }
+.cmdtag { font-weight: 700; color: var(--you); background: var(--you-soft); border-radius: 4px; padding: 1px 6px; margin-right: 8px; }
 .divider.clear { color: var(--dim); }
 .ol-div { font: 10.5px var(--mono); color: var(--faint); letter-spacing: .06em; padding: 8px 10px 2px; }
 .inj-body .content { font-size: 13.5px; }
@@ -650,6 +665,61 @@ function copyText(txt, btn) {
         try { document.execCommand('copy'); } catch (e) {} ta.remove(); done(); };
     if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(txt).then(done, fb); else fb();
 }
+/* Every URL and file path the page shows opens in a new tab and has a copy
+   button: prose, prompts, tool input and output, harness chips, diffs. Files
+   open through the hub's /f route (this Mac only); relative paths resolve
+   against the session's cwd. */
+const LINK_RE = /https?:\/\/[^\s<>"'`]+|(?:~|\/(?:Users|private|tmp|var|opt|etc|Applications|Volumes|usr|Library|System))(?:\/[^\s<>"'`:,;()\[\]{}|*]+)+|(?:\.{1,2}\/|[\w@.-]+\/)[\w@.\/-]*\.[A-Za-z]\w{0,6}/g;
+const IS_LOCAL = /^(127\.|localhost$|\[::1\]$)/.test(location.hostname);
+function linkTarget(text) {
+    if (/^https?:/.test(text)) return text;
+    let p = text;
+    if (!p.startsWith('/') && !p.startsWith('~')) {
+        const cwd = (state.meta && state.meta.cwd) || '';
+        if (!cwd) return '';
+        p = cwd.replace(/\/$/, '') + '/' + p.replace(/^\.\//, '');
+        return '/f?p=' + encodeURIComponent(p) + '&rel=' + encodeURIComponent(text);
+    }
+    return '/f?p=' + encodeURIComponent(p);
+}
+function linkify(root) {
+    const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode: n => n.parentElement && n.parentElement.closest('a, .lk, .lk-cp, script, style')
+            ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT });
+    const nodes = [];
+    const has = new RegExp(LINK_RE.source);
+    while (walk.nextNode()) if (has.test(walk.currentNode.nodeValue)) nodes.push(walk.currentNode);
+    root.querySelectorAll('a[href]').forEach(a => { a.target = '_blank'; a.rel = 'noopener'; });
+    for (const node of nodes) {
+        const s = node.nodeValue, frag = document.createDocumentFragment();
+        let last = 0;
+        s.replace(LINK_RE, (m, at) => {
+            const text = m.replace(/[.,;:!?)\]]+$/, ''), href = linkTarget(text);
+            if (!href) return m;
+            frag.append(s.slice(last, at));
+            const a = document.createElement('span');
+            a.className = 'lk'; a.dataset.href = href; a.dataset.raw = text; a.textContent = text;
+            a.title = IS_LOCAL || /^https?:/.test(text) ? 'Open in a new tab' : 'Copy (files open on the Mac)';
+            const cp = document.createElement('span');
+            cp.className = 'lk-cp'; cp.dataset.raw = text; cp.title = 'Copy'; cp.textContent = '⧉';
+            frag.append(a, cp);
+            last = at + text.length;
+            return m;
+        });
+        frag.append(s.slice(last));
+        node.replaceWith(frag);
+    }
+}
+// Capture phase, so a link inside a tool row opens instead of toggling the row.
+document.addEventListener('click', e => {
+    const cp = e.target.closest('.lk-cp'), lk = e.target.closest('.lk');
+    if (!cp && !lk) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (cp) { copyText(cp.dataset.raw); cp.classList.add('ok'); setTimeout(() => cp.classList.remove('ok'), 1200); return; }
+    const href = lk.dataset.href;
+    if (href.startsWith('/f?') && !IS_LOCAL) { copyText(lk.dataset.raw); return; }
+    window.open(href, '_blank', 'noopener');
+}, true);
 function sanitizeHTML(html) {
     const t = document.createElement('template'); t.innerHTML = html;
     t.content.querySelectorAll('script,style,iframe,object,embed,form,link,meta').forEach(n => n.remove());
@@ -789,8 +859,8 @@ function chStats(c) {
     }
 }
 const HNAME = { hook: ['hook', 'hooks'], peer: ['peer', 'peers'], task: ['task', 'tasks'], system: ['system', 'system'] };
-function harnessCounts(c) {
-    return Object.entries(c.harness || {}).map(([k, n]) => `${n} ${HNAME[k][n > 1 ? 1 : 0]}`).join(' · ');
+function harnessParts(c) {
+    return Object.entries(c.harness || {}).map(([k, n]) => `${n} ${HNAME[k][n > 1 ? 1 : 0]}`);
 }
 function annotate(records) {
     let prev = null;
@@ -847,7 +917,7 @@ function renderMasthead() {
         `<span class="out"><b>↑${kfmt(t.output)}</b></span>` +
         `<span><b>${kfmt(t.cache_read)}</b> cache</span></div>` +
         `<div class="spine${state.chapters.length > 60 ? ' dense' : ''}" id="spine">` +
-        state.chapters.map((c, i) => `<span data-ch="${i}" title="${esc(c.title)}${c.tools ? ` — ${c.tools} tools` : ''}${c.mins ? ` · ${c.mins}m` : ''}" class="${c.errs ? 'err' : ''}" style="flex:${Math.sqrt(1 + c.tools * 2 + c.toks / 1500 + c.mins * 3).toFixed(2)}"></span>`).join('') +
+        state.chapters.map((c, i) => `<span data-ch="${i}" title="${esc(c.title)}${c.tools ? ` · ${c.tools} tools` : ''}${c.mins ? ` · ${c.mins}m` : ''}" class="${c.errs ? 'err' : ''}" style="flex:${Math.sqrt(1 + c.tools * 2 + c.toks / 1500 + c.mins * 3).toFixed(2)}"></span>`).join('') +
         `</div>` +
         `<div class="spine-cap"><span>${esc(state.chapters[0] && state.chapters[0].ts ? state.chapters[0].ts.slice(0,5) : '')}${d0 ? ' · ' + d0 : ''}</span><span id="spineCap">chapter 1 of ${state.chapters.length}</span></div>`;
     $('#tbTitle').textContent = TITLE;
@@ -872,8 +942,8 @@ function renderOutline() {
         `<button class="ol-item${i === state.curCh ? ' cur' : ''}" data-ch="${i}">` +
         `<span class="ol-num">${String(i + (state.chapters[0].user ? 1 : 0)).padStart(2, '0')}</span>` +
         `<span class="ol-t"><span class="ol-title">${esc(c.title)}</span>` +
-        `<span class="ol-meta">${[c.tools ? `${c.tools} tools` : '', c.toks ? `↑${kfmt(c.toks)}` : '', harnessCounts(c),
-            c.errs ? `<span class="e">${c.errs} err</span>` : ''].filter(Boolean).join(' · ')}</span></span></button>`).join('');
+        `<span class="ol-meta">${[c.tools ? `${c.tools} tools` : '', c.toks ? `↑${kfmt(c.toks)}` : '', ...harnessParts(c),
+            c.errs ? `<b class="e">${c.errs} ${c.errs > 1 ? 'errors' : 'error'}</b>` : ''].filter(Boolean).map(x => `<span>${x}</span>`).join('')}</span></span></button>`).join('');
 }
 
 /* ================= chapter rendering */
@@ -883,7 +953,9 @@ function prevHTML(t) {
     if (p) {
         const cut = p.lastIndexOf('/');
         const dir = cut > 0 ? p.slice(0, cut + 1) : '', base = p.slice(cut + 1);
-        return `<span class="pdir">${esc(dir.length > 38 ? '…' + dir.slice(-37) : dir)}</span><span class="pbase">${esc(base)}</span>`;
+        return `<span class="lk" data-href="${esc(linkTarget(p))}" data-raw="${esc(p)}" title="${esc(p)}">` +
+            `<span class="pdir">${esc(dir)}</span><span class="pbase">${esc(base)}</span></span>` +
+            `<span class="lk-cp" data-raw="${esc(p)}" title="Copy">⧉</span>`;
     }
     if (t.name === 'Bash' && t.input && t.input.command) return esc(t.input.command);
     return esc(t.preview || '');
@@ -935,7 +1007,7 @@ function nestedHTML(t) {
         fetchSubagent(sub.agentId);
         return `<div class="nested" data-agent="${esc(sub.agentId)}"><div class="note">↳ ${esc(sub.agentType || 'agent')} · ${esc(sub.description || '')} · loading transcript…</div></div>`;
     }
-    if (!data) return `<div class="cap">agent ${esc(sub.agentId || '?')} — transcript not captured</div>`;
+    if (!data) return `<div class="cap">agent ${esc(sub.agentId || '?')} : transcript not captured</div>`;
     return `<div class="nested"><div class="note">↳ ${esc(sub.agentType || 'agent')} · ${esc(sub.description || data.meta.ai_title)} · ${data.records.length}/${data.meta.total_records} blocks</div>` +
         data.records.map(r => {
             if (r.role === 'user') return `<div class="uq"><div class="content" data-md data-raw="${esc(r.text)}"></div></div>`;
@@ -973,13 +1045,18 @@ function ledgerHTML(run, key) {
    unfilled chapter is its header plus a spacer of about its height; the body
    and its markdown are built when it nears the viewport. */
 function cmdsHTML(c) {
-    return c.cmds && c.cmds.length
-        ? `<div class="ch-cmds">${c.cmds.map(x => `<span class="cmdchip">${esc(x.label)}</span>`).join('')}</div>` : '';
+    return c.cmds && c.cmds.length ? `<div class="ch-cmds">${c.cmds.map(cmdLineHTML).join('')}</div>` : '';
+}
+/* A slash command: the command is the tag, its arguments are plain text. */
+function cmdLineHTML(r) {
+    return `<div class="cmdline-t"><span class="cmdtag">${esc(r.command || r.label)}</span>` +
+        (r.args ? `<span class="cmdargs">${esc(r.args)}</span>` : '') + `</div>`;
 }
 /* A hook, peer, task or system turn (or a command that ran after the chapter's
    message): one line that opens to the full text. */
 function harnessChipHTML(r) {
     const k = turnOf(r), key = 'inj:' + r.id, open = state.expanded.has(key);
+    if (k === 'command') return `<div class="hturn command" data-seq="${r.seq}">${cmdLineHTML(r)}</div>`;
     const what = k === 'command' || k === 'hook' ? r.label : `${k} · ${r.label || ''}`;
     return `<div class="injected hturn ${k}" data-seq="${r.seq}"><button class="inj-row hchip" data-key="${esc(key)}" aria-expanded="${open}">` +
         (HGLYPH[k] ? `<span class="hg">${HGLYPH[k]}</span>` : '') + `<span class="ht">${esc(what)}</span>` +
@@ -1083,7 +1160,7 @@ function renderChapters() {
     for (let i = Math.max(0, n - EAGER_NEWEST); i < n; i++) state.filled.add(i);
     el.innerHTML = state.chapters.map((c, i) => chapterHTML(c, i, state.filled.has(i))).join('') + endcapHTML();
     el.querySelectorAll('.content[data-md]').forEach(mdRender);
-    addPermalinks();
+    addPermalinks(); linkify(el);
     observeShells(el);
     renderOutline();
     updateSpine();
@@ -1103,7 +1180,7 @@ function fillChapter(i) {
     const fresh = t.content.firstElementChild;
     old.replaceWith(fresh);
     fresh.querySelectorAll('.content[data-md]').forEach(mdRender);
-    addPermalinks(fresh);
+    addPermalinks(fresh); linkify(fresh);
     const tb = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--tb-h')) || 44;
     if (r0.bottom <= tb) {
         const delta = fresh.getBoundingClientRect().height - r0.height;
@@ -1123,7 +1200,7 @@ function appendChapters(prevN) {
         const w = t.content.firstElementChild;
         el.insertBefore(w, cap);
         w.querySelectorAll('.content[data-md]').forEach(mdRender);
-        addPermalinks(w);
+        addPermalinks(w); linkify(w);
     }
     if (cap) cap.outerHTML = endcapHTML();
 }
@@ -1616,7 +1693,7 @@ function setMode(mode) {
         `<button onclick="boot()">Retry</button></div>`;
     if (mode === 'empty') sw.innerHTML =
         `<div class="emptycard"><div class="orn">···</div><h2>Nothing written yet</h2>` +
-        `<p>The session just started — chapter one appears with your first prompt.</p></div>`;
+        `<p>The session just started. Chapter one appears with your first message.</p></div>`;
 }
 window.setMode = setMode;
 $('#themeBtn').onclick = () => vt(() => chooseTheme(document.documentElement.classList.contains('light') ? 'dark' : 'light'));
@@ -1624,10 +1701,10 @@ $('#tbTitle').onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
 
 /* ================= handoff view controls (theme · palette · direction · text size · timeline) */
 const DIRECTIONS = {
-    chapters:  { measure: 640, sidebar: true,  toolrow: 'well', timeline: false, hint: 'V3 — editorial reader. Prompts are chapters; work folds into one ledger line per run.' },
-    command:   { measure: 720, sidebar: false, toolrow: 'card', timeline: true,  hint: 'V5 — command center. Wider column, tool runs as cards, timeline on, no sidebar.' },
-    tty:       { measure: 900, sidebar: false, toolrow: 'bare', timeline: false, hint: 'V2 — terminal. Wide measure, mono display, tool rows bare on a rail (hybrid: prose stays sans).' },
-    inspector: { measure: 680, sidebar: true,  toolrow: 'card', timeline: false, hint: 'V1 — inspector. Sidebar nav, denser lines, tool runs as cards.' },
+    chapters:  { measure: 640, sidebar: true,  toolrow: 'well', timeline: false, hint: 'Reading view. Your messages are chapters; tool work folds into one line per run.' },
+    command:   { measure: 720, sidebar: false, toolrow: 'card', timeline: true,  hint: 'Wider column, tool runs as cards, a timeline, no sidebar.' },
+    tty:       { measure: 900, sidebar: false, toolrow: 'bare', timeline: false, hint: 'Terminal look. Wide column, monospace, tool rows on a rail.' },
+    inspector: { measure: 680, sidebar: true,  toolrow: 'card', timeline: false, hint: 'Sidebar, denser lines, tool runs as cards.' },
 };
 const save = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
 const load = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } };
@@ -1767,7 +1844,7 @@ function buildTimeline() {
     const pt = pr.map(x => `<line x1="${(x * W).toFixed(1)}" x2="${(x * W).toFixed(1)}" y1="${base + 1}" y2="${base + 5}"></line>`).join('');
     const et = er.map(x => `<line x1="${(x * W).toFixed(1)}" x2="${(x * W).toFixed(1)}" y1="6" y2="12"></line>`).join('');
     const strip = document.createElement('div'); strip.className = 'cctl'; strip.id = 'cctl';
-    strip.innerHTML = `<span class="cctl-lb">session timeline — click to jump</span>` +
+    strip.innerHTML = `<span class="cctl-lb">session timeline · click to jump</span>` +
         `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><g fill="var(--faint)" opacity=".45">${bars}</g>` +
         `<g stroke="var(--you)" stroke-width="2">${pt}</g><g stroke="var(--err)" stroke-width="2">${et}</g></svg>`;
     strip.addEventListener('click', ev => {

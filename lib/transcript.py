@@ -310,6 +310,8 @@ class TranscriptParser:
         sidechain = bool(obj.get('isSidechain', False))
         if obj.get('gitBranch'):
             meta['git_branch'] = obj['gitBranch']
+        if not meta.get('cwd') and isinstance(obj.get('cwd'), str):
+            meta['cwd'] = obj['cwd']   # the page resolves relative paths against it
 
         if msg_type in ('ai-title', 'custom-title'):
             t = obj.get('aiTitle') or obj.get('customTitle') or ''

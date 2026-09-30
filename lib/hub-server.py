@@ -41,6 +41,8 @@ import http.server
 import socketserver
 import urllib.parse
 import zlib
+import mimetypes
+from html import escape as html_escape
 
 # transcript.py lives next to this file — import it so /data can parse a session
 # directly instead of shelling out per request.
@@ -637,6 +639,8 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
 
         if path.startswith("/vendor/"):
             return self._serve_vendor(path[len("/vendor/"):])
+        if path == "/f":
+            return self._serve_local_file((qs.get("p") or [""])[0], (qs.get("rel") or [""])[0])
         if path == "/search":
             return self._serve_search((qs.get("sid") or [""])[0], qs)
         m = SID_RE.match(path)
@@ -651,6 +655,75 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
         self._send(404, "Not found", "text/plain; charset=utf-8")
 
     do_HEAD = do_GET
+
+    def _relative_candidates(self, rel):
+        """Files on this Mac whose path ends with a relative path from a transcript."""
+        tail = rel.lstrip("./").rstrip("/")
+        if not tail:
+            return []
+        home = os.path.expanduser("~")
+        cmd = ["fd", "-H", "--no-ignore", "-t", "f", "--full-path", "-g", "**/" + tail,
+               "-E", "node_modules", "-E", ".git", "-E", "projects", "-E", "Library",
+               os.path.join(home, "Code"), os.path.join(home, ".claude")]
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=4).stdout
+        except (OSError, subprocess.SubprocessError):
+            return []
+        return out.splitlines()[:20]
+
+    def _serve_local_file(self, raw, rel=""):
+        """Open a file or folder named in a transcript, for a reader on this Mac.
+
+        Only loopback clients: the hub also listens on the tailnet, and reading
+        any file on this machine from another device waits on its trust model.
+        Every response is sandboxed (CSP), so an HTML file renders but cannot
+        script the hub's origin.
+        """
+        if self.client_address[0] not in ("127.0.0.1", "::1"):
+            return self._send(403, "Files open only on this Mac.", "text/plain; charset=utf-8")
+        p = os.path.realpath(os.path.expanduser(raw)) if raw else ""
+        if (not p or not os.path.exists(p)) and rel:
+            found = self._relative_candidates(rel)
+            if len(found) == 1:
+                self.send_response(302)
+                self.send_header("Location", "/f?p=" + urllib.parse.quote(found[0]))
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if found:
+                rows = "".join(f'<li><a href="/f?p={urllib.parse.quote(f)}">{html_escape(f)}</a></li>' for f in found)
+                return self._html(200, f'<!doctype html><meta charset="utf-8"><body style="font:13px ui-monospace,Menlo,monospace;margin:24px">'
+                                       f'<p>{html_escape(rel)} is not in the session folder. Files that end with it:</p><ul>{rows}</ul>')
+        if not p or not os.path.exists(p):
+            return self._send(404, f"No such file: {raw}", "text/plain; charset=utf-8")
+        if os.path.isdir(p):
+            try:
+                names = sorted(os.listdir(p), key=str.lower)
+            except OSError as e:
+                return self._send(403, str(e), "text/plain; charset=utf-8")
+            rows = "".join(
+                f'<li><a href="/f?p={urllib.parse.quote(os.path.join(p, n))}">{html_escape(n)}'
+                f'{"/" if os.path.isdir(os.path.join(p, n)) else ""}</a></li>' for n in names)
+            body = (f'<!doctype html><meta charset="utf-8"><title>{html_escape(p)}</title>'
+                    f'<body style="font:13px ui-monospace,Menlo,monospace;margin:24px">'
+                    f'<p><a href="/f?p={urllib.parse.quote(os.path.dirname(p))}">..</a> {html_escape(p)}</p><ul>{rows}</ul>')
+            ctype = "text/html; charset=utf-8"
+        else:
+            try:
+                body = _read_file(p)
+            except OSError as e:
+                return self._send(403, str(e), "text/plain; charset=utf-8")
+            ctype = mimetypes.guess_type(p)[0] or "text/plain"
+            if ctype.startswith("text/") or ctype in ("application/json", "application/javascript"):
+                ctype = ("text/html" if ctype == "text/html" else "text/plain") + "; charset=utf-8"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body.encode("utf-8") if isinstance(body, str) else body)))
+        self.send_header("Content-Security-Policy", "sandbox")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body.encode("utf-8") if isinstance(body, str) else body)
 
     def _serve_vendor(self, name):
         """The page's markdown and highlighting libraries, served from lib/vendor

@@ -236,6 +236,8 @@ t_check "lib/hub-server.py compiles"   python3 -m py_compile lib/hub-server.py
 t_check "lib/hub.sh parses"            bash -n lib/hub.sh
 t_grep "binds tailnet IP (CGNAT 100.64/10)" lib/hub-server.py 'def tailnet_ip'
 t_grep "session route /s/<id>"         lib/hub-server.py 'SID_RE'
+t_grep "files open only for this Mac"    lib/hub-server.py 'client_address\[0\] not in \("127.0.0.1", "::1"\)'
+t_grep "opened files are sandboxed"      lib/hub-server.py '"Content-Security-Policy", "sandbox"'
 t_grep "/data reuses transcript.py"    lib/hub-server.py 'parse_transcript'
 t_grep "SPA derives hub API base"      lib/transcript-app.html 'const API ='
 t_grep "index polls /api/sessions"     lib/hub-index.html '/api/sessions'
@@ -617,6 +619,9 @@ if command -v node >/dev/null 2>&1; then
     t_eq "chapters are your messages; harness turns fold in, commands wait for your next message" \
          "fix the tab bug cmds=/catchup at x.md h=task:1,hook:1,peer:1 div=clear | second ask | Review cmds=/review,/model" \
          "$(python3 "$REPO_ROOT/tests/fixtures/turns-probe.py" chapters)"
+    t_eq "every URL and path in a transcript becomes a link; trailing punctuation and D1a/D2b do not" \
+         "https://github.com/x/y/pull/9 => https://github.com/x/y/pull/9 | /Users/me/Code/app/lib/scan.sh => /f?p=%2FUsers%2Fme%2FCode%2Fapp%2Flib%2Fscan.sh | ~/.claude/rules/git.md => /f?p=~%2F.claude%2Frules%2Fgit.md | lib/hub-index.html => /f?p=%2FUsers%2Fme%2FCode%2Fapp%2Flib%2Fhub-index.html&rel=lib%2Fhub-index.html" \
+         "$(node "$REPO_ROOT/tests/fixtures/links-probe.js")"
     t_eq "card tails leave out hooks and mode changes, and count them" \
          "❯ second ask | ⏺ Done. | +2" \
          "$(python3 "$REPO_ROOT/tests/fixtures/turns-probe.py" tail)"
@@ -658,7 +663,7 @@ t_eq "broker silence is unknown, never 0"     "None:unreachable:0:fresh" \
 t_eq "kill switch restores the legacy shape"  "0:ABSENT" \
      "$(python3 "$SCAN_PROBE" ipc_state_kill)"
 t_grep "hub passes the ipc join to cards"     lib/hub-server.py '"ipc": inst.get'
-t_grep "badge goes ? when any read is stale"  lib/hub-index.html "total unknowable"
+t_grep "badge goes ? when any read is stale"  lib/hub-index.html "total is unknown"
 
 t_section "meld bridge (Phase 2)"
 
