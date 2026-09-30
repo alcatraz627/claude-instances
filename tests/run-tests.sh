@@ -615,6 +615,9 @@ if command -v node >/dev/null 2>&1; then
     t_eq "chapters are your messages; harness turns fold in, commands wait for your next message" \
          "fix the tab bug cmds=/catchup at x.md h=task:1,hook:1,peer:1 div=clear | second ask | Review cmds=/review,/model" \
          "$(python3 "$REPO_ROOT/tests/fixtures/turns-probe.py" chapters)"
+    t_eq "card tails leave out hooks and mode changes, and count them" \
+         "❯ second ask | ⏺ Done. | +2" \
+         "$(python3 "$REPO_ROOT/tests/fixtures/turns-probe.py" tail)"
 else
     t_fail "chapters probe needs node (SKIP-loud: not installed)"
 fi

@@ -36,6 +36,11 @@ def a(text, n):
         "content": [{"type": "text", "text": text}], "usage": {}}})
 
 
+if sys.argv[1:] == ["tail"]:
+    # an idle card whose newest lines are a hook and a mode change
+    LINES += [a("On it.", 1), u("second ask", origin={"kind": "human"}), a("Done.", 2),
+              u("Stop hook feedback: goal not met", isMeta=True),
+              json.dumps({"type": "permission-mode", "permissionMode": "bypassPermissions"})]
 if sys.argv[1:] == ["chapters"]:
     # after the owner's ask: Claude answers, a command runs with a reply and
     # no typed message after it, then a command with nothing after it at all
@@ -50,11 +55,11 @@ try:
     with open(p, "w") as fh:
         fh.write("\n".join(LINES) + "\n")
     recs = transcript.parse_transcript(p)["records"]
-    if sys.argv[1:] == ["chapters"]:
+    if sys.argv[1:] in (["chapters"], ["tail"]):
         rp = os.path.join(root, "records.json")
         with open(rp, "w") as fh:
             json.dump(recs, fh)
-        run = subprocess.run(["node", os.path.join(HERE, "chapters-probe.js"), rp],
+        run = subprocess.run(["node", os.path.join(HERE, sys.argv[1] + "-probe.js"), rp],
                              capture_output=True, text=True)
         print((run.stdout or run.stderr).strip())
         sys.exit(0)

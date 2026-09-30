@@ -112,7 +112,7 @@ h1 { font: 650 21px/1.2 var(--sans); letter-spacing: -.014em; margin: 0; }
 .pane.cur { outline: 2px solid var(--you); outline-offset: 2px; }
 .pane.turn { border-color: color-mix(in srgb, var(--you) 35%, transparent);
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--you) 22%, transparent); }
-.p-head { display: flex; align-items: baseline; gap: 9px; padding: 9px 13px;
+.p-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 9px; padding: 9px 13px;
     border-bottom: 1px solid var(--edge); background: var(--well); }
 .p-st { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; align-self: center; position: relative; }
 .pane.turn .p-st { background: var(--you); }
@@ -120,6 +120,10 @@ h1 { font: 650 21px/1.2 var(--sans); letter-spacing: -.014em; margin: 0; }
 .pane.working .p-st::after { content: ''; position: absolute; inset: -4px; border-radius: 50%;
     border: 1.5px solid var(--claude); opacity: 0; animation: pulse 2s var(--ease) infinite; }
 .p-title { font: 650 14.5px var(--sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* harness lines left out of the tail, counted (hooks, peers, tasks, mode changes) */
+.p-sys { flex: none; font: 10.5px var(--mono); color: var(--faint); border: 1px solid var(--edge);
+    border-radius: 999px; padding: 0 7px; }
+.p-sys[hidden] { display: none; }
 .p-model { flex: none; font: 700 10px var(--mono); letter-spacing: .06em; text-transform: uppercase;
     color: var(--claude); border: 1px solid color-mix(in srgb, var(--claude) 30%, transparent);
     border-radius: 4px; padding: 1px 6px; }
@@ -546,9 +550,16 @@ $('#sortSel').value = sortBy;
 $('#sortSel').onchange = () => { sortBy = $('#sortSel').value; try { localStorage.setItem(SS.sort, sortBy); } catch (e) {} renderBoard(curQ); };
 
 /* peek-tail lines */
+/* Harness turns (hook, peer, task, system) and events such as mode changes are
+   kept as `sys` lines: left out of the tail, counted in the card's "+N system".
+   Skill bodies and command output are nobody's news and are dropped. */
+const OWNER_TURNS = new Set(['typed', 'shell', 'command']);
 function lineFor(r) {
     if (!r) return null;
-    if (r.role === 'user') return { g: '❯', c: 'u', tx: String(r.text || '').replace(/<[^>]+>/g, ' ').trim().slice(0, 120) };
+    if (r.role === 'user' && r.turn && !OWNER_TURNS.has(r.turn))
+        return ['hook', 'peer', 'task', 'system'].includes(r.turn) ? { sys: true } : null;
+    if (r.role === 'event') return { sys: true };
+    if (r.role === 'user') return { g: '❯', c: 'u', tx: (r.label || String(r.text || '').replace(/<[^>]+>/g, ' ')).trim().slice(0, 120) };
     if (r.role === 'assistant') return { g: '⏺', c: 'a', tx: String(r.text || '').replace(/[#*`>]/g, '').trim().slice(0, 120) };
     if (r.role === 'thinking') return { g: '∴', c: 'e', tx: 'thinking' };
     if (r.role === 'tools') { const t = r.tools[0];
@@ -573,7 +584,7 @@ function ingestTail(sid, recs) {
 /* SWR cache: tails persist in localStorage so a reopen (or a hover repeat)
    paints instantly from stale data, then one cheap ?since revalidate catches
    up. The cache is a placeholder, never a TTL bet — every prime revalidates. */
-const TAILCACHE = 'hub-tail-v2:';   // v2: tail lines carry seq for deep links
+const TAILCACHE = 'hub-tail-v3:';   // v3: harness lines are sys, not text
 function loadTailCache(sid) {
     try { const v = JSON.parse(localStorage.getItem(TAILCACHE + sid)); return v && Array.isArray(v.src) ? v : null; }
     catch (e) { return null; }
@@ -616,6 +627,8 @@ function refreshTailDOM(sid) {
         const lines = tailLinesFor(s);
         el.innerHTML = lines.map((l, i) => lineHTML(l, s.state === 'working' && i === lines.length - 1 ? ' cursorline fresh' : '')).join('');
     }
+    const pill = document.querySelector(`[data-sys="${sid}"]`);
+    if (pill) { const n = tailSysCount(s); pill.textContent = `+${n} system`; pill.hidden = !n; }
     if (hpkSid === sid) {
         const row = document.querySelector(`[data-peek][data-sid="${sid}"]`);
         if (row) showPeek(row);
@@ -624,9 +637,19 @@ function refreshTailDOM(sid) {
 function tailLinesFor(s) {
     const t = tails[s.session_id];
     if (!t) return [];
-    if (s.state === 'idle') return t.src.slice(Math.max(0, t.src.length - 2));
-    if (s.state === 'ended') return t.src.slice(Math.max(0, t.src.length - 3));
-    return t.src.slice(Math.max(0, t.src.length - 5));
+    const vis = t.src.filter(l => !l.sys);
+    const n = s.state === 'idle' ? 2 : s.state === 'ended' ? 3 : 5;
+    return vis.slice(Math.max(0, vis.length - n));
+}
+/* How many harness lines landed since the oldest line the tail shows. */
+function tailSysCount(s) {
+    const t = tails[s.session_id], shown = tailLinesFor(s);
+    if (!t || !shown.length) return 0;
+    return t.src.filter(l => l.sys && l.seq > shown[0].seq).length;
+}
+function sysPillHTML(s) {
+    const n = tailSysCount(s);
+    return `<span class="p-sys" data-sys="${esc(s.session_id)}"${n ? '' : ' hidden'}>+${n} system</span>`;
 }
 const lineHTML = (l, extra) =>
     `<div class="p-line${extra || ''}"><span class="g ${l.c}">${l.g}</span><span class="tx">${l.html ? l.tx : esc(l.tx)}</span></div>`;
@@ -646,7 +669,7 @@ function paneHTML(s, hit) {
     return `<a class="pane ${kind}${openable(s) ? '' : ' noopen'}"${openable(s) ? ` href="/s/${encodeURIComponent(s.session_id)}${hit && hit.seq ? `#r${hit.seq}&q=${encodeURIComponent(hit.w)}` : ''}"` : ''}${noOpenAttrs(s)} data-sid="${esc(s.session_id)}" data-screen-label="session ${esc(s.cwd_short)}">` +
         `<div class="p-head"><span class="p-st"></span><span class="p-title">${esc(s.cwd_short)}</span>` +
         `<span class="p-model">${esc(s.model)}</span>` +
-        `<span class="p-state">${esc(statusText(s))}</span>` +
+        `<span class="p-state">${esc(statusText(s))}</span>` + sysPillHTML(s) +
         `<span class="p-el">${esc(s.elapsed)}</span></div>` +
         `<div class="p-tail" data-tail="${esc(s.session_id)}">${tail}</div>` +
         (hit ? hitHTML(hit) : '') +
@@ -733,7 +756,7 @@ function ipcChipHTML(s) {
 function endedPaneHTML(s, hit) {
     return `<a class="pane ended${openable(s) ? '' : ' noopen'}"${openable(s) ? ` href="/s/${encodeURIComponent(s.session_id)}${hit && hit.seq ? `#r${hit.seq}&q=${encodeURIComponent(hit.w)}` : ''}"` : ''}${noOpenAttrs(s)} data-sid="${esc(s.session_id)}" data-peek="1">` +
         `<div class="p-head"><span class="p-st"></span><span class="p-title">${esc(s.cwd_short)}</span>` +
-        `<span class="p-model">${esc(s.model)}</span><span class="p-state">ended</span>` +
+        `<span class="p-model">${esc(s.model)}</span><span class="p-state">ended</span>` + sysPillHTML(s) +
         `<span class="p-el">${esc(s.ago)}</span></div>` +
         `<div class="p-tail" data-tail="${esc(s.session_id)}">` + tailLinesFor(s).map(l => lineHTML(l)).join('') + `</div>` +
         (hit ? hitHTML(hit) : '') +
