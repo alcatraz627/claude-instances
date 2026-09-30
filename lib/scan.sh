@@ -1483,59 +1483,46 @@ def get_session_model(session_id):
 
 # ─── Session history ─────────────────────────────────────────────
 
-def get_session_history(max_sessions=20):
-    """Enumerate recent sessions across every registered provider.
+# Sessions with fewer assistant turns than this are stubs (opened and closed,
+# or a one-shot helper) and are left out of the ended list.
+MIN_HISTORY_TURNS = 4
 
-    Each provider supplies transcript_iter() (where its session files live)
-    and parse_session() (model/turns/tokens out of one file). What's shared
-    across providers lives here: recency sort, project-name display, and
-    cost estimation.
+def get_session_history(max_sessions=20):
+    """The most recent ended-or-live sessions worth listing, newest first.
+
+    Stubs under MIN_HISTORY_TURNS are skipped, so up to 3x max_sessions files
+    are read to fill the list.
     """
     sessions = []
-
-    # Each provider's own files, most-recent first.
-    per_provider = []
+    files = []
     for provider in PROVIDERS:
-        files = []
         for filepath in provider['transcript_iter']():
             try:
-                mtime = os.path.getmtime(filepath)
+                files.append((os.path.getmtime(filepath), filepath, provider))
             except OSError:
                 continue
-            files.append((mtime, filepath, provider))
-        files.sort(key=lambda t: t[0], reverse=True)
-        if files:
-            per_provider.append(files)
+    files.sort(key=lambda t: t[0], reverse=True)
 
-    guaranteed = [files[0] for files in per_provider]
-    rest = sorted(
-        (f for files in per_provider for f in files[1:]),
-        key=lambda t: t[0], reverse=True
-    )
-    remaining = max(0, max_sessions - len(guaranteed))
-    all_files = sorted(guaranteed + rest[:remaining], key=lambda t: t[0], reverse=True)
-
-    for mtime, filepath, provider in all_files:
+    for mtime, filepath, provider in files[:max_sessions * 3]:
+        if len(sessions) >= max_sessions:
+            break
         parsed = provider['parse_session'](filepath)
         if not parsed:
+            continue
+        turn_count = parsed.get('turns', 0)
+        if turn_count < MIN_HISTORY_TURNS:
             continue
 
         session_id = parsed.get('id') or Path(filepath).stem
         model = parsed.get('model', 'unknown')
-        turn_count = parsed.get('turns', 0)
         total_input = parsed.get('tokens_in', 0)
         total_output = parsed.get('tokens_out', 0)
 
         # Project display decodes the project dir name.
-        project_display = parsed.get('project_display')
-        if project_display is None:
-            project_dir_name = Path(filepath).parent.name
-            project_display = project_dir_name.replace('-', '/')
-            if project_display.startswith('/'):
-                project_display = project_display[1:]
-            segs = [s for s in project_display.split('/') if s]
-            if len(segs) > 2:
-                project_display = '/'.join(segs[-2:])
+        project_display = Path(filepath).parent.name.replace('-', '/').lstrip('/')
+        segs = [s for s in project_display.split('/') if s]
+        if len(segs) > 2:
+            project_display = '/'.join(segs[-2:])
 
         model_short = short_model(model)
         # `or 0`: a token count may be None (unknown), never a crash.
