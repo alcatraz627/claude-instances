@@ -4,6 +4,8 @@ import io, os, sys, json, contextlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCAN = os.path.join(HERE, "..", "..", "lib", "scan.sh")
+# scan.sh's bash wrapper normally sets this so the embedded code finds turns.py.
+os.environ["CI_LIB"] = os.path.abspath(os.path.join(HERE, "..", "..", "lib"))
 
 
 def load():
@@ -464,6 +466,13 @@ def main(argv):
                   u("<local-command-stdout>ok</local-command-stdout>")],
             "C": [u("<task-notification>x</task-notification>"),
                   u("<system-reminder>only a reminder</system-reminder>")],
+            # peer messages and interrupts carry no origin field, only their text
+            "D": [u("ship it", origin={"kind": "human"}),
+                  u('Another Claude session sent a message: <teammate-message teammate_id="rev" '
+                    'summary="review done">all green</teammate-message>'),
+                  u("[Request interrupted by user]"),
+                  u('A session-scoped Stop hook is now active with condition: "x"', isMeta=True),
+                  u("forge-console hourly heartbeat", turnOrigin="scheduled", isMeta=True)],
         }
         try:
             ns2 = load()

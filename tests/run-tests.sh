@@ -605,8 +605,8 @@ t_eq "only interactive sessions are live"   "1006:interactive:1006:n1006,1007:pe
      "$(python3 "$SCAN_PROBE" liveness)"
 t_eq "ended list hides stubs under 4 turns" "4,10" \
      "$(python3 "$SCAN_PROBE" history_stubs)"
-t_eq "last prompt skips notifications, skill bodies, command wrappers" \
-     "A=fix the login bug|B=/catchup at notes.md|C=-" \
+t_eq "last prompt skips notifications, skill bodies, command wrappers, peers, interrupts" \
+     "A=fix the login bug|B=/catchup at notes.md|C=-|D=ship it" \
      "$(python3 "$SCAN_PROBE" prompt_filter)"
 t_grep "live rows carry the session file's name/status" lib/hub-server.py '"status_since": inst.get'
 t_grep "cards label with the session name"  lib/hub-index.html 'cleanTitle\(s.name\)'

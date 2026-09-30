@@ -17,12 +17,20 @@ STATUSLINE_DIR="/tmp"
 QUICK_MODE=0
 [[ "${1:-}" == "--quick" ]] && QUICK_MODE=1
 
+# The embedded script imports lib/turns.py, shared with transcript.py; a heredoc
+# has no __file__, so the lib dir travels in CI_LIB.
+CI_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export CI_LIB
+
 # argv[2] and argv[3] are unused placeholders kept so callers that exec the
 # embedded script (tests/fixtures/scan-probe.py) keep their positions.
 python3 - "$PROJECTS_DIR" "" "" "$STATUSLINE_DIR" "$QUICK_MODE" <<'PYEOF'
 import sys, json, os, subprocess, re, math
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+sys.path.insert(0, os.environ.get('CI_LIB', ''))
+import turns
 
 projects_dir = sys.argv[1]
 statusline_dir = sys.argv[4]
@@ -235,49 +243,14 @@ def _tool_target(name, inp):
             return v[:60]
     return ''
 
-# User-type lines that are not something the owner typed.
-_PROMPT_JUNK_PREFIXES = (
-    '<task-notification>', 'Base directory for this skill', '<local-command-',
-    '<bash-stdout>', '<bash-stderr>', 'Stop hook feedback:', 'Caveat:',
-)
-
 def human_prompt(obj):
     """The text the owner typed in this user line, or '' if it is not one.
 
-    Skips meta lines (skill bodies, hook feedback), task notifications and
-    command output. A slash command reads as "/name args", a shell escape as
-    "! cmd".
+    A slash command reads as "/name args", a shell escape as "! cmd"; hooks,
+    peers, task notifications, skill bodies and /clear are not the owner's.
     """
-    if obj.get('type') != 'user' or obj.get('isSidechain') or obj.get('isMeta'):
-        return ''
-    origin = obj.get('origin')
-    if isinstance(origin, dict) and origin.get('kind') not in (None, 'human'):
-        return ''
-    msg = obj.get('message', {})
-    text = ''
-    if isinstance(msg, dict):
-        content = msg.get('content', [])
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get('type') == 'text':
-                    text += block.get('text', '')
-                elif isinstance(block, str):
-                    text += block
-    elif isinstance(msg, str):
-        text = msg
-    text = re.sub(r'<system-reminder>.*?</system-reminder>', '', text, flags=re.DOTALL).strip()
-    cmd = re.search(r'<command-name>(.*?)</command-name>', text, flags=re.DOTALL)
-    if cmd:
-        args = re.search(r'<command-args>(.*?)</command-args>', text, flags=re.DOTALL)
-        text = (cmd.group(1).strip() + ' ' + (args.group(1).strip() if args else '')).strip()
-    bash = re.match(r'<bash-input>(.*?)</bash-input>', text, flags=re.DOTALL)
-    if bash:
-        text = '! ' + bash.group(1).strip()
-    if text.startswith(_PROMPT_JUNK_PREFIXES):
-        return ''
-    return text
+    t = turns.classify(obj)
+    return t['text'] if t and t['kind'] in turns.OWNER else ''
 
 def _ago_seconds(ts):
     try:
