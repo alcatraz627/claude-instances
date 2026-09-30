@@ -99,6 +99,11 @@ select.tbtn { appearance: none; padding-right: 22px;
 .tctl select:focus { outline: none; }
 .tctl .chev { width: 12px; height: 12px; color: var(--faint); margin-left: -2px; pointer-events: none; }
 .vp-grp:has(#vpDir), .vp-grp:has(#vpTheme) { display: none; }
+/* opening a card: its title becomes the transcript's title (owner D1 note) */
+@view-transition { navigation: auto; }
+::view-transition-group(*) { animation-duration: 340ms; animation-timing-function: cubic-bezier(.2, 0, 0, 1); }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: 220ms; animation-timing-function: cubic-bezier(.2, 0, 0, 1); }
+@media (prefers-reduced-motion: reduce) { ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none; } }
 
 main { max-width: 1120px; margin: 0 auto; padding: calc(var(--tb-h) + 22px) 18px 70px; }
 .mh-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 22px; }
@@ -776,6 +781,33 @@ function tailSysCount(s) {
     if (!t || !shown.length) return 0;
     return t.src.filter(l => l.sys && l.seq > shown[0].seq).length;
 }
+/* Opening a card: leave its name, model and folder for the transcript's loading
+   state, and name its title so the view transition carries it across. */
+document.addEventListener('click', e => {
+    const a = e.target.closest('#board a.pane[href], #board a.trow[href]');
+    if (!a || e.defaultPrevented || e.metaKey || e.ctrlKey) return;
+    const s = FEED.live.concat(FEED.recent).find(x => x.session_id === a.dataset.sid);
+    if (!s) return;
+    try { sessionStorage.setItem('hub-open', JSON.stringify({ sid: s.session_id, title: s.cwd_short, model: s.model,
+        cwd: (s.cwd || '').replace(/^\/Users\/[^/]+/, '~') })); } catch (err) {}
+    document.querySelectorAll('[style*="view-transition-name"]').forEach(el => { el.style.viewTransitionName = ''; });
+    const t = a.querySelector('.p-title, .c-dir'); if (t) t.style.viewTransitionName = 'sess-title';
+});
+/* Hovering a card refreshes the browser's copy of its transcript, at most once
+   every 5 s per session, so opening it paints at once (the transcript page
+   revalidates on arrival). Needs the Cache API, so this Mac only. */
+const HOVER_FETCHED = {};
+document.addEventListener('pointerover', e => {
+    const a = e.target.closest('#board a[data-sid][href]');
+    if (!a || !window.caches) return;
+    const sid = a.dataset.sid, now = Date.now();
+    if (now - (HOVER_FETCHED[sid] || 0) < 5000) return;
+    HOVER_FETCHED[sid] = now;
+    const url = new URL(`/s/${encodeURIComponent(sid)}/data`, location.href).href;
+    fetch(url, { cache: 'no-cache' }).then(r => r.ok ? r.text() : null).then(text => {
+        if (text) caches.open('hub-data').then(c => c.put(url, new Response(text, { headers: { 'Content-Type': 'application/json' } })));
+    }).catch(() => {});
+});
 /* Name, model, branch and path on a card copy on click instead of opening it. */
 document.addEventListener('click', e => {
     const el = e.target.closest('[data-copy]');

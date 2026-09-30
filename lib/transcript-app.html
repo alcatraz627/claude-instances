@@ -453,6 +453,27 @@ pre.res.err { color: var(--err); }
 .sk { border-radius: var(--r); background: linear-gradient(90deg, var(--well) 25%, var(--sel) 40%, var(--well) 60%);
     background-size: 200% 100%; animation: shimmer 1.4s linear infinite; }
 @keyframes shimmer { to { background-position: -200% 0; } }
+/* loading: the real title, then chapters in the shape they will take */
+.skwrap { padding-top: 44px; }
+.skwrap .mh-kicker { margin-bottom: 6px; }
+.skc { display: flex; gap: 14px; padding-top: 26px; margin-top: 22px; border-top: 1px solid var(--edge); }
+.skn { flex: none; width: 2.5ch; height: 11px; margin-top: 4px; border-radius: 3px; background: var(--you-soft); }
+.skb { flex: 1; min-width: 0; }
+.skr { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding-left: 4px; }
+.skd { flex: none; width: 14px; height: 14px; border-radius: 50%; background: var(--sel); }
+@media (prefers-reduced-motion: reduce) { .sk { animation: none; } }
+/* a fetch is on its way: a very small ring right after the title */
+.fetchdot { flex: none; width: 9px; height: 9px; margin-left: 7px; border-radius: 50%;
+    border: 1.5px solid var(--edge2); border-top-color: var(--you); animation: spin .8s linear infinite; }
+.fetchdot[hidden] { display: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+/* moving between the board and a transcript (owner D1 note): the card's title
+   becomes this page's title, with a strong ease */
+@view-transition { navigation: auto; }
+.mh-title, .sk-title { view-transition-name: sess-title; }
+::view-transition-group(*) { animation-duration: 340ms; animation-timing-function: cubic-bezier(.2, 0, 0, 1); }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: 220ms; animation-timing-function: cubic-bezier(.2, 0, 0, 1); }
+@media (prefers-reduced-motion: reduce) { ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none; } }
 .anchor-miss { display: flex; align-items: center; gap: 10px; margin: 12px 0; padding: 10px 14px; border: 1px solid var(--edge); border-left: 3px solid var(--edge2); border-radius: var(--r); color: var(--dim); font-size: var(--t-sm); }
 .anchor-miss b { font-weight: 650; }
 .anchor-miss button { margin-left: auto; height: 26px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--edge); background: transparent; color: var(--dim); cursor: pointer; }
@@ -652,7 +673,7 @@ body.has-tl .outline { top: calc(var(--tb-h) + 46px); }
 
 <div class="topbar" id="topbar">
   <a class="tb-back" href="/"><svg class="icon" style="width:13px;height:13px"><use href="#i-back"/></svg><span class="tb-back-lb">sessions</span></a>
-  <span class="tb-title" id="tbTitle" title="Back to top"></span>
+  <span class="tb-title" id="tbTitle" title="Back to top"></span><span class="fetchdot" id="fetchDot" hidden title="Fetching the latest"></span>
   <span class="tb-ch" id="tbCh"></span>
   <span class="tb-sp"></span>
   <span class="tb-live working" id="tbLive"><span class="pulse"></span><span id="tbLiveLb">working</span></span>
@@ -1834,6 +1855,26 @@ function stopLive() { state.live = false; clearInterval(liveTimer); liveTimer = 
 document.addEventListener('visibilitychange', () => { if (!document.hidden && state.live) pollLive(); });
 
 /* ================= states (demo) */
+/* The loading state names what is loading: the card the reader clicked left
+   its name, model and folder behind, so only the chapters are placeholders,
+   drawn in the shape they will take (number, title, meta, a rail of work). */
+function loadingHTML() {
+    let hint = null;
+    try { hint = JSON.parse(sessionStorage.getItem('hub-open') || 'null'); } catch (e) {}
+    if (hint && !location.pathname.includes(hint.sid)) hint = null;
+    const chapter = w => `<div class="skc"><span class="skn"></span><div class="skb">` +
+        `<div class="sk" style="height:17px;width:${w}%"></div><div class="sk" style="height:10px;width:38%;margin-top:9px"></div>` +
+        `<div class="skr"><span class="skd"></span><div class="sk" style="height:10px;width:52%"></div></div>` +
+        `<div class="skr"><span class="skd"></span><div class="sk" style="height:10px;width:44%"></div></div>` +
+        `<div class="sk" style="height:12px;width:92%;margin-top:14px"></div><div class="sk" style="height:12px;width:80%;margin-top:7px"></div></div></div>`;
+    return `<div class="skwrap">` +
+        (hint ? `<div class="mh-kicker">loading · ${esc(hint.sid.slice(0, 8))}</div>` +
+                `<h1 class="mh-title sk-title">${esc(hint.title)}</h1>` +
+                `<div class="mh-byline"><span class="bi model">${ic('diamond')}${esc(hint.model || '')}</span>` +
+                (hint.cwd ? `<span class="bi">${esc(hint.cwd)}</span>` : '') + `</div>`
+              : `<div class="sk" style="height:11px;width:150px"></div><div class="sk" style="height:24px;width:60%;margin-top:12px"></div>`) +
+        chapter(72) + chapter(58) + chapter(66) + `</div>`;
+}
 function setMode(mode) {
     state.mode = mode;
     $('#chapters').innerHTML = '';
@@ -1841,18 +1882,7 @@ function setMode(mode) {
     $('#chbar').style.display = mode === 'normal' ? '' : 'none';
     const sw = $('#statewrap'); sw.innerHTML = '';
     if (mode === 'normal') { renderMasthead(); renderChapters(); renderMasthead(); return; }
-    if (mode === 'loading') sw.innerHTML =
-        `<div style="padding-top:44px">` +
-        `<div class="sk" style="height:11px;width:150px"></div>` +
-        `<div class="sk" style="height:30px;width:78%;margin-top:14px"></div>` +
-        `<div class="sk" style="height:30px;width:52%;margin-top:8px"></div>` +
-        `<div class="sk" style="height:12px;width:65%;margin-top:14px"></div>` +
-        `<div class="sk" style="height:6px;margin-top:20px;border-radius:3px"></div>` +
-        `<div class="sk" style="height:20px;width:85%;margin-top:44px"></div>` +
-        `<div class="sk" style="height:14px;width:96%;margin-top:16px"></div>` +
-        `<div class="sk" style="height:14px;width:88%;margin-top:8px"></div>` +
-        `<div class="sk" style="height:14px;width:92%;margin-top:8px"></div>` +
-        `<div class="sk" style="height:40px;margin-top:16px"></div></div>`;
+    if (mode === 'loading') sw.innerHTML = loadingHTML();
     if (mode === 'error') sw.innerHTML =
         `<div class="errbanner">${ic('alert')}<div class="t"><b>Couldn't load the session</b>` +
         `<span>GET ${esc(API)}data → unreachable · retrying keeps what's on screen</span></div>` +
@@ -2074,27 +2104,51 @@ applyDir(load('hx-dir', 'chapters'));
 applyPalette(load('cc-skin', 'native'));
 applyTextSize(parseFloat(load('hx-fs', '15.5')));
 setLiveState('working');
+/* Stale-while-revalidate: the last copy of this session's /data lives in the
+   browser's Cache (the hub also refreshes it when a card is hovered), so a
+   revisit paints at once and a tiny spinner after the title shows the fresh
+   fetch. The Cache API needs a secure context (this Mac); elsewhere it is a
+   plain fetch. */
+const DATA_URL = new URL(API + 'data', location.href).href;
+async function cachedData() {
+    try { const c = await caches.open('hub-data'); const r = await c.match(DATA_URL); return r ? await r.json() : null; }
+    catch (e) { return null; }
+}
+function storeData(text) {
+    try { caches.open('hub-data').then(c => c.put(DATA_URL, new Response(text, { headers: { 'Content-Type': 'application/json' } }))); } catch (e) {}
+}
+function fetching(on) { const d = $('#fetchDot'); if (d) d.hidden = !on; }
+function showData(data) {
+    window.SESSION.meta = data.meta;
+    window.SESSION.records = data.records;
+    state.meta = data.meta;
+    state.records = data.records;
+    TITLE = (data.meta.ai_title || '').trim() || 'Claude Code session';
+    document.title = TITLE;
+    $('#tbTitle').textContent = TITLE;
+    lastId = lastClosedId(data.records);
+    if (data.meta.live === false) state.isLive = false;
+    setMode(data.records.length ? 'normal' : 'empty');
+}
 async function boot() {
-    setMode('loading');
+    const stale = await cachedData();
+    if (stale && stale.records) showData(stale); else setMode('loading');
+    fetching(true);
     try {
         const res = await fetch(API + 'data', { cache: 'no-cache' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
-        window.SESSION.meta = data.meta;
-        window.SESSION.records = data.records;
-        state.meta = data.meta;
-        state.records = data.records;
-        TITLE = (data.meta.ai_title || '').trim() || 'Claude Code session';
-        document.title = TITLE;
-        $('#tbTitle').textContent = TITLE;
-        lastId = lastClosedId(data.records);
-        if (data.meta.live === false) state.isLive = false;
-        setMode(data.records.length ? 'normal' : 'empty');
+        const text = await res.text();
+        const data = JSON.parse(text);
+        storeData(text);
+        const same = stale && stale.records && stale.records.length === data.records.length &&
+            lastClosedId(stale.records) === lastClosedId(data.records);
+        if (!same) showData(data);
         startLive();
         pollOk();
         applyStatus(data.meta, false);
         applyHash();   // deep link (#r<seq>[&q=…]) from the hub or a copied block link
-    } catch (e) { setMode('error'); }
+    } catch (e) { if (!stale) setMode('error'); }
+    fetching(false);
 }
 window.boot = boot;
 boot();
