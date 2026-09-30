@@ -73,6 +73,19 @@ else
     t_fail "drain probe did not compile"
 fi
 rm -f "$DRAIN_BIN"
+
+# Terminate signalled a pid from a scan up to a minute old; a reused pid named a
+# stranger. The probe runs a real sleep: a stale or missing start time must not
+# be signalled, the right one must end it.
+TERM_BIN=$(mktemp)
+if /usr/bin/swiftc -O native/Terminate.swift tests/fixtures/terminate-probe/main.swift -o "$TERM_BIN" 2>/dev/null; then
+    t_eq "terminate refuses a reused pid, ends the right one" \
+         "wrong=0 unknown=0 alive=true right=1 ended=true" \
+         "$(perl -e 'alarm 15; exec @ARGV' "$TERM_BIN" 2>/dev/null)"
+else
+    t_fail "terminate probe did not compile"
+fi
+rm -f "$TERM_BIN"
 SWIFT_OUT=$(mktemp)
 # The bar is split across logical files; compile them as one module. The list is
 # read from build.sh rather than copied, because a copy drifts silently.

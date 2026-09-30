@@ -1421,6 +1421,9 @@ def get_live_instances():
         for pid, cmdline, sess in selected:
             instance = _build_claude_instance(pid, cmdline, claude_provider, sess)
             if instance:
+                # When this process started (epoch s), so Terminate can refuse a
+                # pid the OS has since handed to a different process.
+                instance['proc_start'] = procs.get(pid, (None,))[0]
                 instances.append(instance)
     except (subprocess.TimeoutExpired, OSError):
         pass

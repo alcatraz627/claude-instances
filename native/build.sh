@@ -18,6 +18,7 @@ SOURCES=(
     "$SCRIPT_DIR/Palette.swift"
     "$SCRIPT_DIR/DesignKit.swift"
     "$SCRIPT_DIR/ProcessRun.swift"
+    "$SCRIPT_DIR/Terminate.swift"
     "$SCRIPT_DIR/Actions.swift"
     "$SCRIPT_DIR/LiveRowView.swift"
     "$SCRIPT_DIR/Bar.swift"

@@ -734,15 +734,12 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func terminateInstance(_ sender: NSMenuItem) {
         guard let pid = sender.representedObject as? Int else { return }
-        dlog("terminate: pid=\(pid)")
-        kill(Int32(pid), SIGTERM)
-
-        // After 3 seconds, force-kill if still alive
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-            if kill(Int32(pid), 0) == 0 {
-                dlog("force-killing pid=\(pid)")
-                kill(Int32(pid), SIGKILL)
-            }
+        let start = cachedData?.live.first { $0.pid == pid }?.procStart
+        let signalled = terminateSessions([(Int32(pid), start)])
+        if signalled.isEmpty {
+            dwarn("terminate: pid=\(pid) is no longer the session the scan saw; not signalled")
+        } else {
+            dlog("terminate: pid=\(pid)")
         }
     }
 
@@ -853,19 +850,9 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let data = cachedData else { return }
         // Interactive Claude sessions only: a bulk kill must never reach a
         // Codex daemon or headless worker, even if the scan lets one through.
-        let pids = data.live.filter { $0.isClaudeInteractive }.map { $0.pid }
-        dlog("terminate all: pids=\(pids)")
-        for pid in pids {
-            kill(Int32(pid), SIGTERM)
-        }
-        // Force-kill survivors after 3s
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-            for pid in pids {
-                if kill(Int32(pid), 0) == 0 {
-                    kill(Int32(pid), SIGKILL)
-                }
-            }
-        }
+        let targets = data.live.filter { $0.isClaudeInteractive }.map { (Int32($0.pid), $0.procStart) }
+        let signalled = terminateSessions(targets)
+        dlog("terminate all: signalled \(signalled) of \(targets.map(\.0))")
     }
 
     @objc private func refreshAction() {

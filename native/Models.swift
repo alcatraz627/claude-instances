@@ -68,6 +68,9 @@ struct LiveInstance: Codable {
     var status: String? = nil
     var statusSince: String? = nil
     var lastActivity: String? = nil
+    /// When the process started (seconds since 1970), so Terminate can refuse
+    /// a pid the OS has since given to another process.
+    var procStart: Double? = nil
 
     /// Whether this row is a real, interactive Claude Code session: the only
     /// kind of process a bulk action may signal.
@@ -97,6 +100,7 @@ struct LiveInstance: Codable {
         case pid, model, cwd, elapsed, turns, statusline, provider, kind, name, status
         case statusSince = "status_since"
         case lastActivity = "last_activity"
+        case procStart = "proc_start"
         case modelFull = "model_full"
         case cwdShort = "cwd_short"
         case inputTokens = "input_tokens"
@@ -164,7 +168,8 @@ extension LiveInstance {
             name: name,
             status: status,
             statusSince: statusSince,
-            lastActivity: lastActivity
+            lastActivity: lastActivity,
+            procStart: procStart ?? prev.procStart
         )
     }
 }
