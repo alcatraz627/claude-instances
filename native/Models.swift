@@ -87,9 +87,19 @@ struct LiveInstance: Codable {
     let lastPrompt: String?
     let permissionMode: String?
     let lastTool: LastTool?
+    /// Which CLI owns this process ("claude"); nil on older scan output.
+    var provider: String? = nil
+    /// Claude Code's own session kind ("interactive"); nil on older scan output.
+    var kind: String? = nil
+
+    /// Whether this row is a real, interactive Claude Code session: the only
+    /// kind of process a bulk action may signal.
+    var isClaudeInteractive: Bool {
+        (provider ?? "claude") == "claude" && (kind ?? "interactive") == "interactive"
+    }
 
     enum CodingKeys: String, CodingKey {
-        case pid, model, cwd, elapsed, turns, statusline
+        case pid, model, cwd, elapsed, turns, statusline, provider, kind
         case modelFull = "model_full"
         case cwdShort = "cwd_short"
         case inputTokens = "input_tokens"
@@ -151,7 +161,9 @@ extension LiveInstance {
             gitModified: mergedModified,
             lastPrompt: mergedPrompt,
             permissionMode: mergedPerm,
-            lastTool: mergedLastTool
+            lastTool: mergedLastTool,
+            provider: provider,
+            kind: kind
         )
     }
 }

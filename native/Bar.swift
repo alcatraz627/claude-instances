@@ -1078,13 +1078,14 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         addAction(menu, "Switchboard", #selector(openSwitchboard), icon: "slider.vertical.3")
         addRefreshMenu(menu)
 
-        if data.live.count > 0 {
+        let killable = data.live.filter { $0.isClaudeInteractive }.count
+        if killable > 0 {
             menu.addItem(.separator())
-            let termAll = NSMenuItem(title: "Terminate All (\(data.live.count))",
+            let termAll = NSMenuItem(title: "Terminate All (\(killable))",
                                      action: #selector(terminateAll), keyEquivalent: "")
             termAll.target = self
             termAll.attributedTitle = NSAttributedString(
-                string: "  Terminate All (\(data.live.count))",
+                string: "  Terminate All (\(killable))",
                 attributes: [
                     .foregroundColor: NSColor.systemRed,
                     .font: NSFont.systemFont(ofSize: 13),
@@ -1326,11 +1327,14 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func terminateAll() {
         dlog("terminate all")
         guard let data = cachedData else { return }
-        for inst in data.live {
-            kill(Int32(inst.pid), SIGTERM)
+        // Interactive Claude sessions only: a bulk kill must never reach a
+        // Codex daemon or headless worker, even if the scan lets one through.
+        let pids = data.live.filter { $0.isClaudeInteractive }.map { $0.pid }
+        dlog("terminate all: pids=\(pids)")
+        for pid in pids {
+            kill(Int32(pid), SIGTERM)
         }
         // Force-kill survivors after 3s
-        let pids = data.live.map { $0.pid }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
             for pid in pids {
                 if kill(Int32(pid), 0) == 0 {
