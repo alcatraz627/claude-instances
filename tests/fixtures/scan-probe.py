@@ -612,11 +612,10 @@ def main(argv):
         finally:
             shutil.rmtree(root, ignore_errors=True)
     elif op == "disagree_pass":
-        # Section 8.4: pid-truth vs liveness claim. Raw lines always (offline-
-        # while-live, live-while-gone, live-but-unregistered); agreement stays
-        # silent (the mutation half); the card flag needs 2 consecutive scans;
-        # and the card's own session_state is never touched — the digest's
-        # opinion of liveness must not leak into the physical column.
+        # pid-truth vs ipc's liveness claim. Nothing is written to a ledger (the
+        # old raw log grew to 69 MB with no reader); agreement stays silent; the
+        # card flag needs DISAGREE_DEBOUNCE consecutive scans; and the card's own
+        # session_state is never touched by the digest's opinion.
         import tempfile, shutil
         root = tempfile.mkdtemp(prefix="ipcdis-")
         try:
@@ -627,7 +626,6 @@ def main(argv):
             ns2 = load()
             log = os.path.join(root, "raw.jsonl")
             state = os.path.join(root, "state.json")
-            ns2["_IPC_DISAGREE_LOG"] = log
             ns2["_IPC_DISAGREE_STATE"] = state
 
             def mk_live():
@@ -645,16 +643,19 @@ def main(argv):
                 gone: {"liveness_claim": "live"},
                 "_unresolved": {"aliases": []},
             }, 2)
-            live1 = mk_live()
-            ns2["run_ipc_disagreement_pass"](live1)
-            n_raw = sum(1 for _ in open(log)) if os.path.exists(log) else 0
-            flag1 = "FLAG1" if any("disagree" in (r.get("ipc") or {}) for r in live1) else "NOFLAG"
+            early = []
+            for _ in range(5):
+                lv = mk_live()
+                ns2["run_ipc_disagreement_pass"](lv)
+                early.append(any("disagree" in (r.get("ipc") or {}) for r in lv))
+            flag1 = "FLAGGED_EARLY" if any(early) else "NOFLAG5"
             live2 = mk_live()
             ns2["run_ipc_disagreement_pass"](live2)
+            n_raw = "NOLOG" if not os.path.exists(log) and "_IPC_DISAGREE_LOG" not in ns2 else "LOG"
             fa = next(r for r in live2 if r["session_id"] == sa)
             fb = next(r for r in live2 if r["session_id"] == sb)
             flag2 = ("FLAG" + str(fa["ipc"].get("disagree", {}).get("scans"))
-                     if "disagree" in fa["ipc"] else "NOFLAG2")
+                     if "disagree" in fa["ipc"] else "NOFLAG6")
             clean = "SSTATE_OK" if (fa["session_state"] == "working"
                                     and "disagree" not in fb["ipc"]) else "LEAKED"
             # A poisoned state file must not buy a first-scan flag: JSON true

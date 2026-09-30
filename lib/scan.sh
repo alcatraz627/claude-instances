@@ -958,24 +958,25 @@ def get_ipc_info(session_id, quick, cwd=''):
 
 # ── ipc disagreement pass (plan section 8.4) ─────────────────────────────────
 
-# Both paths take env overrides so a scratch hub or validator run can stub the
-# broker without its disagreement records landing in the live ledger.
-_IPC_DISAGREE_LOG = os.environ.get('HUB_IPC_DISAGREE_LOG') or os.path.expanduser(
-    '~/.claude/widgets/.ipc-disagreements.jsonl')
+# Env override so a scratch hub or validator run keeps its streaks apart.
 _IPC_DISAGREE_STATE = os.environ.get('HUB_IPC_DISAGREE_STATE') or os.path.expanduser(
     '~/.claude/widgets/.ipc-disagreement-state.json')
+# Consecutive full scans a disagreement must hold before its card is flagged.
+# Six is about 30 s at the hub's cadence: long enough that a session in a long
+# turn or a registration race never flashes a warning.
+DISAGREE_DEBOUNCE = 6
 
 def run_ipc_disagreement_pass(live):
-    """Where the two systems' views of liveness differ, say so — never decide.
-    The scan's process table is the physical authority; the digest carries
-    ipc's heartbeat-based view. Every disagreement lands as one RAW jsonl
-    line (the deferred-oracle gate of plan section 13 reads that stream); a
-    card is only flagged once the same disagreement holds for 2 consecutive
-    scans, so registration races don't flash warnings at the owner.
+    """Where the two systems' views of liveness differ, say so, never decide.
 
-    Runs only when at least one cwd produced a usable digest this scan — a
-    dark or unreachable bridge is no evidence of agreement, so it must not
-    reset anyone's streak."""
+    The scan's process table is the physical authority; the digest carries
+    ipc's heartbeat-based view. A card is flagged once the same disagreement
+    holds for DISAGREE_DEBOUNCE consecutive scans. Nothing is logged: a raw
+    ledger for a planned oracle grew to 69 MB with no reader, and was removed.
+
+    Runs only when at least one cwd produced a usable digest this scan, since a
+    dark or unreachable bridge is no evidence of agreement and must not reset
+    anyone's streak."""
     usable = {c: v for c, v in _ipc_digest_cache.items()
               if v[0] in ('fresh', 'stale')}
     if not usable:
@@ -1001,16 +1002,6 @@ def run_ipc_disagreement_pass(live):
         entry = usable.get(inst.get('cwd', ''))
         if entry and entry[0] == 'fresh' and sid not in entry[1]:
             events.append((sid, 'live', None, 'unregistered-session'))
-    if events:
-        now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-        try:
-            with open(_IPC_DISAGREE_LOG, 'a') as fh:
-                for sid, truth, claim, kind in events:
-                    fh.write(json.dumps({
-                        'ts': now_iso, 'sid': sid, 'pid_truth': truth,
-                        'ipc_claim': claim, 'kind': kind, 'raw': True}) + '\n')
-        except OSError:
-            pass
     try:
         with open(_IPC_DISAGREE_STATE) as fh:
             prev = json.load(fh)
@@ -1031,7 +1022,7 @@ def run_ipc_disagreement_pass(live):
             streak = 0
         streak += 1
         cur[sid] = {'claim': claim, 'kind': kind, 'streak': streak}
-        if streak >= 2:
+        if streak >= DISAGREE_DEBOUNCE:
             for inst in live:
                 if inst.get('session_id') == sid and inst.get('ipc'):
                     inst['ipc']['disagree'] = {'claim': claim, 'kind': kind,
