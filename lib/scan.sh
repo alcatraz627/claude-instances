@@ -220,131 +220,155 @@ def git_modified_count(cwd):
     _git_cache.setdefault(cwd, {})['modified'] = n
     return n
 
-# ─── Last user prompt extraction ───────────────────────────────
+# ─── Transcript reading ────────────────────────────────────────
 #
-# Walks the JSONL backwards looking for the most recent `type: user`
-# message with non-empty text content. Returns the first 80 chars so the
-# bar can render it inline as a "what is this session asking about" hint.
-# Skips Task-tool sidechain user messages (those are agent prompts, not
-# the human's typed prompt).
+# One pass over a live session's transcript yields everything a row shows:
+# token totals, turns, tool calls, permission mode, last tool, last human
+# prompt, and the tail entries the state guess reads. See read_transcript.
 
-# ─── Permission mode + last tool from JSONL ──────────────────
-#
-# Two pieces of information surfaced from the transcript:
-#   - permission_mode: latest "type":"permission-mode" event's value
-#     (auto / plan / default / etc.). Useful for safety scanning.
-#   - last_tool: the most recent tool_use block plus its primary target
-#     (file_path / command preview) plus seconds since it ran. Drives
-#     the "last: Edit src/foo.tsx · 4s ago" hint line on idle rows.
-#
-# Both walk the same JSONL once; bundled into a single function for
-# efficiency (one open(), one parse pass).
+def _tool_target(name, inp):
+    """The one argument that says what a tool call is about, max 60 chars."""
+    if name == 'Bash':
+        return (inp.get('command') or '').replace('\n', ' ')[:60]
+    if name in ('Read', 'Write', 'Edit'):
+        return inp.get('file_path') or ''
+    if name in ('Grep', 'Glob'):
+        return inp.get('pattern') or ''
+    if name == 'WebFetch':
+        return inp.get('url') or ''
+    if name in ('Task', 'Agent'):
+        return (inp.get('description') or inp.get('prompt') or '')[:60]
+    if name == 'TodoWrite':
+        return f"{len(inp.get('todos', []))} item(s)"
+    for v in inp.values():
+        if isinstance(v, str) and v:
+            return v[:60]
+    return ''
 
-def parse_jsonl_state(filepath):
-    """Returns (permission_mode, last_tool_dict) extracted from the
-    transcript JSONL. last_tool_dict shape:
-        {'name': str, 'target': str, 'ago_seconds': int}
-    Either field may be None if the JSONL doesn't yield it.
+# User-type lines that are not something the owner typed.
+_PROMPT_JUNK_PREFIXES = (
+    '<task-notification>', 'Base directory for this skill', '<local-command-',
+    '<bash-stdout>', '<bash-stderr>', 'Stop hook feedback:', 'Caveat:',
+)
+
+def human_prompt(obj):
+    """The text the owner typed in this user line, or '' if it is not one.
+
+    Skips meta lines (skill bodies, hook feedback), task notifications and
+    command output. A slash command reads as "/name args", a shell escape as
+    "! cmd".
     """
-    if not filepath or not os.path.isfile(filepath):
-        return (None, None)
-    perm = None
-    last_tool = None
-    last_tool_ts = None
-    try:
-        with open(filepath, 'r', errors='replace') as f:
-            data = f.read()
-        for line in data.splitlines():
-            try:
-                obj = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            t = obj.get('type', '')
-            if t == 'permission-mode':
-                pm = obj.get('permissionMode', '')
-                if pm: perm = pm
-                continue
-            if t == 'assistant' and not obj.get('isSidechain'):
-                msg = obj.get('message', {})
-                if not isinstance(msg, dict): continue
-                for block in msg.get('content', []):
-                    if not isinstance(block, dict): continue
-                    if block.get('type') != 'tool_use': continue
-                    name = block.get('name', '?')
-                    inp  = block.get('input', {}) if isinstance(block.get('input'), dict) else {}
-                    # Primary target per tool — same logic as detail.sh
-                    if name == 'Bash':
-                        target = (inp.get('command') or '').replace('\n', ' ')[:60]
-                    elif name in ('Read', 'Write', 'Edit'):
-                        target = inp.get('file_path') or ''
-                    elif name == 'Grep':
-                        target = inp.get('pattern') or ''
-                    elif name == 'Glob':
-                        target = inp.get('pattern') or ''
-                    elif name == 'WebFetch':
-                        target = inp.get('url') or ''
-                    elif name in ('Task', 'Agent'):
-                        target = (inp.get('description') or inp.get('prompt') or '')[:60]
-                    elif name == 'TodoWrite':
-                        target = f"{len(inp.get('todos', []))} item(s)"
-                    else:
-                        # Fallback: first non-empty string field
-                        target = ''
-                        for v in inp.values():
-                            if isinstance(v, str) and v: target = v[:60]; break
-                    ts = obj.get('timestamp', '')
-                    last_tool = {'name': name, 'target': target[:80]}
-                    last_tool_ts = ts
-        # Compute ago_seconds from the last-tool timestamp.
-        if last_tool and last_tool_ts:
-            try:
-                # ISO8601 → epoch
-                from datetime import datetime, timezone
-                dt = datetime.fromisoformat(last_tool_ts.replace('Z', '+00:00'))
-                ago = int((datetime.now(timezone.utc) - dt).total_seconds())
-                last_tool['ago_seconds'] = max(0, ago)
-            except Exception:
-                last_tool['ago_seconds'] = 0
-        return (perm, last_tool)
-    except OSError:
-        return (None, None)
+    if obj.get('type') != 'user' or obj.get('isSidechain') or obj.get('isMeta'):
+        return ''
+    origin = obj.get('origin')
+    if isinstance(origin, dict) and origin.get('kind') not in (None, 'human'):
+        return ''
+    msg = obj.get('message', {})
+    text = ''
+    if isinstance(msg, dict):
+        content = msg.get('content', [])
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get('type') == 'text':
+                    text += block.get('text', '')
+                elif isinstance(block, str):
+                    text += block
+    elif isinstance(msg, str):
+        text = msg
+    text = re.sub(r'<system-reminder>.*?</system-reminder>', '', text, flags=re.DOTALL).strip()
+    cmd = re.search(r'<command-name>(.*?)</command-name>', text, flags=re.DOTALL)
+    if cmd:
+        args = re.search(r'<command-args>(.*?)</command-args>', text, flags=re.DOTALL)
+        text = (cmd.group(1).strip() + ' ' + (args.group(1).strip() if args else '')).strip()
+    bash = re.match(r'<bash-input>(.*?)</bash-input>', text, flags=re.DOTALL)
+    if bash:
+        text = '! ' + bash.group(1).strip()
+    if text.startswith(_PROMPT_JUNK_PREFIXES):
+        return ''
+    return text
 
-def last_user_prompt(filepath):
-    if not filepath or not os.path.isfile(filepath):
-        return ''
+def _ago_seconds(ts):
     try:
-        # Reading the whole file: typical session JSONL is <2MB, parse is ~10ms.
-        # Tail-only scanning miss-fires when the recent window is all
-        # tool_result messages and the human's last actual prompt is deeper.
+        dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+        return max(0, int((datetime.now(timezone.utc) - dt).total_seconds()))
+    except (ValueError, TypeError, AttributeError):
+        return 0
+
+def read_transcript(filepath):
+    """Everything a live row needs from one read of its transcript.
+
+    Substring checks decide which lines are worth json.loads: a transcript is
+    mostly huge tool_result lines, and parsing those was the scan's cost, not
+    the file size.
+    """
+    import collections
+    out = {'model': 'unknown', 'input_tokens': 0, 'output_tokens': 0,
+           'cache_read': 0, 'cache_create': 0, 'turns': 0, 'tool_calls': 0,
+           'permission_mode': '', 'last_tool': None, 'last_prompt': '',
+           'tail': []}
+    tail = collections.deque(maxlen=3)
+    last_tool_ts = ''
+    try:
         with open(filepath, 'r', errors='replace') as f:
-            data = f.read()
-        last_text = ''
-        for line in data.splitlines():
-            try:
-                obj = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if obj.get('type') != 'user' or obj.get('isSidechain'):
-                continue
-            msg = obj.get('message', {})
-            text = ''
-            if isinstance(msg, dict):
-                for block in msg.get('content', []):
-                    if isinstance(block, dict) and block.get('type') == 'text':
-                        text += block.get('text', '')
-                    elif isinstance(block, str):
-                        text += block
-            elif isinstance(msg, str):
-                text = msg
-            # Strip <system-reminder> wrappers — those aren't human prompts.
-            text = re.sub(r'<system-reminder>.*?</system-reminder>', '', text, flags=re.DOTALL).strip()
-            if text:
-                last_text = text  # keep updating; we want the LAST one
-        if not last_text: return ''
-        last = ' '.join(last_text.split())
-        return last[:80] + ('…' if len(last) > 80 else '')
+            for line in f:
+                if line.strip():
+                    tail.append(line)
+                is_asst = '"assistant"' in line
+                is_perm = '"permission-mode"' in line
+                is_user = '"user"' in line and '"tool_result"' not in line
+                if not (is_asst or is_perm or is_user):
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                t = obj.get('type', '')
+                if t == 'permission-mode':
+                    out['permission_mode'] = obj.get('permissionMode', '') or out['permission_mode']
+                elif t == 'user':
+                    p = human_prompt(obj)
+                    if p:
+                        out['last_prompt'] = p
+                elif t == 'assistant':
+                    out['turns'] += 1
+                    msg = obj.get('message', {})
+                    if not isinstance(msg, dict):
+                        continue
+                    if msg.get('model'):
+                        out['model'] = msg['model']
+                    usage = msg.get('usage') or {}
+                    out['input_tokens'] += token_count(usage.get('input_tokens'))
+                    out['output_tokens'] += token_count(usage.get('output_tokens'))
+                    out['cache_read'] += token_count(usage.get('cache_read_input_tokens'))
+                    out['cache_create'] += token_count(usage.get('cache_creation_input_tokens'))
+                    content = msg.get('content', [])
+                    if not isinstance(content, list):
+                        continue
+                    for block in content:
+                        if not isinstance(block, dict) or block.get('type') != 'tool_use':
+                            continue
+                        out['tool_calls'] += 1
+                        if obj.get('isSidechain'):
+                            continue
+                        name = block.get('name', '?')
+                        inp = block.get('input') if isinstance(block.get('input'), dict) else {}
+                        out['last_tool'] = {'name': name, 'target': _tool_target(name, inp)[:80]}
+                        last_tool_ts = obj.get('timestamp', '')
     except OSError:
-        return ''
+        return out
+    if out['last_tool'] is not None:
+        out['last_tool']['ago_seconds'] = _ago_seconds(last_tool_ts)
+    if out['last_prompt']:
+        last = ' '.join(out['last_prompt'].split())
+        out['last_prompt'] = last[:80] + ('…' if len(last) > 80 else '')
+    for line in reversed(tail):
+        try:
+            out['tail'].append(json.loads(line))
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return out
 
 # ─── Subagent counter ──────────────────────────────────────────
 
@@ -363,97 +387,50 @@ def count_subagents(pid):
 
 # ─── Session state inference ───────────────────────────────────
 
-def infer_session_state(filepath, pid):
-    """Read last few JSONL entries to infer current session state.
+def infer_session_state(entries):
+    """Guess what a session is doing from its newest transcript entries.
 
-    Returns: {'state': str, 'detail': str}
-    States: thinking, responding, tool_use, tool_result, idle
+    `entries` is newest first (read_transcript's 'tail'). Returns
+    {'state': str, 'detail': str}; states: thinking, responding, tool_use, idle.
+    Claude Code's own status in the session file is the better signal; this
+    only supplies the detail.
     """
     result = {'state': 'idle', 'detail': ''}
-    if not filepath or not os.path.exists(filepath):
+    if not entries:
         return result
-
-    try:
-        size = os.path.getsize(filepath)
-        if size == 0:
-            return result
-
-        # Read last 8KB for recent entries
-        with open(filepath, 'rb') as f:
-            f.seek(max(0, size - 8192))
-            if size > 8192:
-                f.readline()  # skip partial line
-            tail = f.read().decode('utf-8', errors='replace')
-
-        # Parse last 3 valid JSON lines
-        lines = [l.strip() for l in tail.strip().split('\n') if l.strip()]
-        entries = []
-        for line in reversed(lines):
-            try:
-                obj = json.loads(line)
-                entries.append(obj)
-                if len(entries) >= 3:
-                    break
-            except json.JSONDecodeError:
-                continue
-
-        if not entries:
-            return result
-
-        last = entries[0]
-        msg_type = last.get('type', '')
-
-        if msg_type == 'user':
-            result['state'] = 'thinking'
-            result['detail'] = 'processing prompt...'
-        elif msg_type == 'assistant':
-            msg = last.get('message', {})
-            content = msg.get('content', [])
-            # Check if last content block is tool_use
-            if isinstance(content, list) and content:
-                last_block = content[-1] if content else {}
-                if isinstance(last_block, dict):
-                    if last_block.get('type') == 'tool_use':
-                        tool_name = last_block.get('name', '?')
-                        tool_input = last_block.get('input', {})
-                        detail = tool_name
-                        # Extract useful detail per tool type
-                        if tool_name in ('Read', 'Edit', 'Write', 'Glob', 'Grep'):
-                            fp = tool_input.get('file_path', '') or tool_input.get('path', '') or tool_input.get('pattern', '')
-                            if fp:
-                                fp = fp.replace(home, '~')
-                                if len(fp) > 35:
-                                    fp = '...' + fp[-32:]
-                                detail = f"{tool_name}: {fp}"
-                        elif tool_name == 'Bash':
-                            cmd = tool_input.get('command', '')[:40]
-                            if cmd:
-                                detail = f"Bash: {cmd}"
-                        elif tool_name == 'Agent':
-                            desc = tool_input.get('description', '')[:30]
-                            detail = f"Agent: {desc}" if desc else 'Agent'
-                        result['state'] = 'tool_use'
-                        result['detail'] = detail
-                    elif last_block.get('type') == 'text':
-                        result['state'] = 'responding'
-                        text = last_block.get('text', '')
-                        if len(text) > 40:
-                            result['detail'] = text[:37] + '...'
-                        else:
-                            result['detail'] = text[:40]
-                    else:
-                        result['state'] = 'responding'
-                else:
-                    result['state'] = 'responding'
-            else:
-                result['state'] = 'responding'
-        elif msg_type == 'tool_result':
-            result['state'] = 'tool_result'
-            result['detail'] = 'processing result...'
-
-    except OSError:
-        pass
-
+    last = entries[0]
+    msg_type = last.get('type', '')
+    if msg_type == 'user':
+        result['state'] = 'thinking'
+        result['detail'] = 'processing prompt...'
+    elif msg_type == 'assistant':
+        msg = last.get('message', {})
+        content = msg.get('content', []) if isinstance(msg, dict) else []
+        last_block = content[-1] if isinstance(content, list) and content else {}
+        result['state'] = 'responding'
+        if isinstance(last_block, dict) and last_block.get('type') == 'tool_use':
+            tool_name = last_block.get('name', '?')
+            tool_input = last_block.get('input', {}) if isinstance(last_block.get('input'), dict) else {}
+            detail = tool_name
+            if tool_name in ('Read', 'Edit', 'Write', 'Glob', 'Grep'):
+                fp = tool_input.get('file_path', '') or tool_input.get('path', '') or tool_input.get('pattern', '')
+                if fp:
+                    fp = fp.replace(home, '~')
+                    if len(fp) > 35:
+                        fp = '...' + fp[-32:]
+                    detail = f"{tool_name}: {fp}"
+            elif tool_name == 'Bash':
+                cmd = tool_input.get('command', '')[:40]
+                if cmd:
+                    detail = f"Bash: {cmd}"
+            elif tool_name == 'Agent':
+                desc = tool_input.get('description', '')[:30]
+                detail = f"Agent: {desc}" if desc else 'Agent'
+            result['state'] = 'tool_use'
+            result['detail'] = detail
+        elif isinstance(last_block, dict) and last_block.get('type') == 'text':
+            text = last_block.get('text', '')
+            result['detail'] = text[:37] + '...' if len(text) > 40 else text[:40]
     return result
 
 # ─── Session JSONL token aggregator ─────────────────────────────
@@ -616,67 +593,23 @@ def _resolve_session_path(pid, cwd, prefer_sid='', file_sid=''):
     return _find_transcript(cwd, prefer_sid)
 
 def get_session_tokens(pid, cwd, prefer_sid='', file_sid=''):
-    """Find the active session JSONL for a PID and aggregate token usage."""
+    """Find this PID's transcript and read it once (see read_transcript).
+
+    Every line is streamed, not a tail window: a tail made turn counts a
+    fiction (a 58MB session once read 44 of its 4488 turns).
+    """
     result = {'model': 'unknown', 'input_tokens': 0, 'output_tokens': 0,
               'cache_read': 0, 'cache_create': 0, 'cost_usd': 0.0,
               'session_id': file_sid, 'turns': 0, 'tool_calls': 0,
-              'jsonl_path': ''}
+              'jsonl_path': '', 'permission_mode': '', 'last_tool': None,
+              'last_prompt': '', 'tail': []}
 
     filepath = _resolve_session_path(pid, cwd, prefer_sid, file_sid)
     if not filepath:
         return result
     result['session_id'] = Path(filepath).stem
     result['jsonl_path'] = filepath
-
-    # Every assistant message in the session, streamed.
-    #
-    # This used to read only the last 500KB, which made these counts a fiction:
-    # a transcript is mostly enormous tool_result lines, so on a 58MB session the
-    # window held 44 of 4488 turns and shipped that as the total. Reading it all
-    # costs ~14ms more per scan (measured across the live sessions, whose
-    # transcripts run 1.6-8MB) because the substring check below skips the huge
-    # lines without paying json.loads on them — that parse, not the file size,
-    # was the expense.
-    try:
-        turn_count = 0
-        tool_call_count = 0
-        with open(filepath, 'r', errors='replace') as f:
-            for line in f:
-                if '"assistant"' not in line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                # The substring check above also passes a user message that
-                # merely says "assistant", so the type still decides.
-                if obj.get('type') != 'assistant':
-                    continue
-
-                turn_count += 1
-                msg = obj.get('message', {})
-                model = msg.get('model', '')
-                if model:
-                    result['model'] = model
-                usage = msg.get('usage', {})
-                if usage:
-                    result['input_tokens'] += token_count(usage.get('input_tokens'))
-                    result['output_tokens'] += token_count(usage.get('output_tokens'))
-                    result['cache_read'] += token_count(usage.get('cache_read_input_tokens'))
-                    result['cache_create'] += token_count(usage.get('cache_creation_input_tokens'))
-                content = msg.get('content', [])
-                if isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get('type') == 'tool_use':
-                            tool_call_count += 1
-
-        result['turns'] = turn_count
-        result['tool_calls'] = tool_call_count
-
-    except OSError:
-        pass
-
+    result.update(read_transcript(filepath))
     return result
 
 # ─── Provider interface ──────────────────────────────────────────
@@ -1210,20 +1143,18 @@ def _build_claude_instance(pid, cmdline, provider, sess=None):
     # Count subagents
     subagent_count = count_subagents(pid)
 
-    # Git enrichment + last user prompt + permission mode + last tool
-    # — full-scan only (skipped on --quick to keep the 5s tick fast).
+    # Prompt, permission mode and last tool came out of the one transcript
+    # read above. Git is full-scan only (skipped on --quick for the 5s tick).
+    last_prompt    = session_data['last_prompt']
+    perm_mode      = session_data['permission_mode']
+    last_tool_info = session_data['last_tool']
     if not quick_mode:
-        jsonl_path     = session_data.get('jsonl_path', '')
         branch         = git_branch(cwd)
         modified_files = git_modified_count(cwd)
-        last_prompt    = last_user_prompt(jsonl_path)
-        perm_mode, last_tool_info = parse_jsonl_state(jsonl_path)
     else:
-        branch, modified_files, last_prompt = '', 0, ''
-        perm_mode, last_tool_info = '', None
+        branch, modified_files = '', 0
 
-    # Infer session state
-    session_state = infer_session_state(session_data['jsonl_path'], pid)
+    session_state = infer_session_state(session_data['tail'])
 
     # Shorten model name for display
     model_display = model_flag

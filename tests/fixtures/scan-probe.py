@@ -552,6 +552,39 @@ def main(argv):
                            sorted(ns2["get_session_history"](), key=lambda h: h["turns"])))
         finally:
             shutil.rmtree(root, ignore_errors=True)
+    elif op == "prompt_filter":
+        # The last prompt is what the owner typed: never a task notification,
+        # a skill body, hook feedback or a <command-*> wrapper.
+        import tempfile, shutil
+        root = tempfile.mkdtemp(prefix="prompt-")
+        def u(text, **kw):
+            return json.dumps({"type": "user", "message": {"role": "user", "content": text}, **kw})
+        cases = {
+            "A": [u("fix the login bug"),
+                  u("<task-notification> <task-id>a1</task-id> done</task-notification>",
+                    origin={"kind": "task-notification"}),
+                  u("<task-notification> <task-id>a2</task-id></task-notification>"),
+                  u("Base directory for this skill: /x/y", isMeta=True),
+                  u("Base directory for this skill: /x/z"),
+                  u("Stop hook feedback: answer the request", isMeta=True)],
+            "B": [u("first"),
+                  u("<command-message>catchup</command-message>\n<command-name>/catchup</command-name>\n"
+                    "<command-args>at notes.md</command-args>"),
+                  u("<local-command-stdout>ok</local-command-stdout>")],
+            "C": [u("<task-notification>x</task-notification>"),
+                  u("<system-reminder>only a reminder</system-reminder>")],
+        }
+        try:
+            ns2 = load()
+            out = []
+            for k, lines in cases.items():
+                p = os.path.join(root, k + ".jsonl")
+                with open(p, "w") as fh:
+                    fh.write("\n".join(lines) + "\n")
+                out.append(f"{k}={ns2['read_transcript'](p)['last_prompt'] or '-'}")
+            print("|".join(out))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
     elif op == "liveness":
         # Ghost rows: a live row must be an interactive Claude session. The
         # fixture is a fake process table plus a fake ~/.claude/sessions, run
