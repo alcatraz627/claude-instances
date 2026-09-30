@@ -731,7 +731,9 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let start = cachedData?.live.first { $0.pid == pid }?.procStart
         let signalled = terminateSessions([(Int32(pid), start)])
         if signalled.isEmpty {
-            dwarn("terminate: pid=\(pid) is no longer the session the scan saw; not signalled")
+            dwarn(start == nil
+                  ? "terminate: pid=\(pid) has no recorded start time yet; not signalled (retry after the next scan)"
+                  : "terminate: pid=\(pid) is no longer the session the scan saw; not signalled")
         } else {
             dlog("terminate: pid=\(pid)")
         }

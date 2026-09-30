@@ -282,6 +282,29 @@ def main(argv):
         m1 = split(one)
         print(f"{sorted(m.items())}|{[r['statusline']['mcp_down'] for r in rows]}|{kept}"
               f"|ctx={rows[0]['statusline']['ctx_remaining']}|single={m1}:{one[0]['statusline']['mcp_down']}")
+    elif op == "model_choice":
+        # The model a session shows is its last real one: a '<synthetic>' stub
+        # (API errors) is not a model, and after a /model switch live and ended
+        # must agree. Prints live|history for: real then synthetic; haiku then fable.
+        import tempfile, shutil
+        root = tempfile.mkdtemp(prefix="model-")
+        try:
+            def write(name, models):
+                p = os.path.join(root, name)
+                with open(p, "w") as fh:
+                    for i, m in enumerate(models):
+                        fh.write(json.dumps({"type": "assistant", "message": {
+                            "id": f"{name}-{i}", "model": m,
+                            "usage": {"input_tokens": 1, "output_tokens": 1}}}) + "\n")
+                return p
+            ns2 = load()
+            out = []
+            for p in (write("a.jsonl", ["claude-opus-5-5", "<synthetic>"]),
+                      write("b.jsonl", ["claude-haiku-4-5", "claude-fable-5-1"])):
+                out.append(f"{ns2['read_transcript'](p)['model']}|{ns2['claude_parse_session'](p)['model']}")
+            print(" ".join(out))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
     elif op == "read_pid_file":
         print(load()["read_pid_file"](int(argv[1]), argv[2]).strip())
     elif op == "tokens":

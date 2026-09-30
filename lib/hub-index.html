@@ -1036,7 +1036,8 @@ let mode = 'loading';
 let booted = false, lastHash = '';
 function feedHash() {
     return JSON.stringify(FEED.live.map(s => [s.session_id, s.state, s.doing, s.ctx_remaining, s.cost_usd, s.turns, s.output_tokens, s.git_branch, s.git_modified, s.mcp_down, s.elapsed, s.status, s.status_since, s.last_activity, s.cwd_short]))
-        + '|' + JSON.stringify(FEED.recent.map(s => [s.session_id, s.ago]));
+        + '|' + JSON.stringify(FEED.recent.map(s => [s.session_id, s.ago]))
+        + '|' + JSON.stringify(FEED.machine || {});   // the machine banner re-renders too
 }
 let refreshRepoll = 0;
 function setRefreshCue(on) {

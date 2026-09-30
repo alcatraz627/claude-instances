@@ -286,6 +286,11 @@ def _ago_seconds(ts):
     except (ValueError, TypeError, AttributeError):
         return 0
 
+def _real_model(m):
+    """A model id worth showing: Claude Code also writes '<synthetic>' for
+    error stubs, which is not the model the session runs on."""
+    return m if isinstance(m, str) and m.startswith('claude-') else ''
+
 def _message_key(msg, line_no):
     """Which assistant message a transcript line belongs to.
 
@@ -383,7 +388,7 @@ def read_transcript(filepath):
                     msg = obj.get('message', {})
                     if not isinstance(msg, dict):
                         continue
-                    if msg.get('model'):
+                    if _real_model(msg.get('model')):
                         out['model'] = msg['model']
                     usage_by_msg[_message_key(msg, n)] = msg.get('usage') or {}
                     content = msg.get('content', [])
@@ -718,6 +723,7 @@ def claude_parse_session(filepath):
     the day's total read as a couple of thousand.
     """
     model = 'unknown'
+    last_model = ''
     usage_by_msg = {}
     title = ''
     cwd = ''
@@ -750,6 +756,10 @@ def claude_parse_session(filepath):
                 if not isinstance(msg, dict):
                     msg = {}
                 usage_by_msg[_message_key(msg, i)] = msg.get('usage') or {}
+                # The last real model, as the live row shows it: after a
+                # /model switch an ended session keeps the model it ended on.
+                if _real_model(msg.get('model')):
+                    last_model = msg['model']
         turn_count = len(usage_by_msg)
         totals = _sum_usage(usage_by_msg.values())
         total_input = totals['input_tokens']
@@ -785,7 +795,7 @@ def claude_parse_session(filepath):
 
     return {
         'id': Path(filepath).stem,
-        'model': model,
+        'model': last_model or model,
         'turns': turn_count,
         'tokens_in': total_input,
         'tokens_out': total_output,

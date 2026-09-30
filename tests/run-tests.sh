@@ -550,6 +550,11 @@ t_eq "a multi-line message counts once"      "live=2:20:150:1000:2|hist=2:20:150
      "$(python3 "$SCAN_PROBE" dedup_usage)"
 # Sub-agents were counted as child processes, which are background shells.
 t_eq "sub-agents are recent agent transcripts" "0:1:0" "$(python3 "$SCAN_PROBE" subagents)"
+# A '<synthetic>' error stub is not a model, and live and ended must agree after /model.
+t_eq "the model shown is the last real one" \
+     "claude-opus-5-5|claude-opus-5-5 claude-fable-5-1|claude-fable-5-1" \
+     "$(python3 "$SCAN_PROBE" model_choice)"
+t_grep "the machine banner is in the change hash" lib/hub-index.html 'JSON.stringify\(FEED.machine'
 # The same MCP-down list sat on every row as N red warnings for one condition.
 t_eq "a fact every row shares is said once" \
      "[('mcp_down', 'a,b'), ('scratchpad_count', '44')]|['', '', '']|['1', '1', '2']|ctx=50|single={}:a,b" \
