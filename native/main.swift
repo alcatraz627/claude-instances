@@ -11,7 +11,6 @@ import SwiftUI
 let home         = FileManager.default.homeDirectoryForCurrentUser.path
 let widgetDir    = home + "/.claude/widgets/claude-instances"
 let scanScript   = widgetDir + "/lib/scan.sh"
-let detailScript = widgetDir + "/lib/detail.sh"
 let hubScript    = widgetDir + "/lib/hub.sh"
 let hubServer    = widgetDir + "/lib/hub-server.py"
 let hubPort       = 5400

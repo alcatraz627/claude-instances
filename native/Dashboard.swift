@@ -6,73 +6,10 @@ import AppKit
 import Foundation
 import SwiftUI
 
-struct TranscriptServer: Identifiable, Equatable {
-    let pid: Int            // Claude PID
-    let port: Int           // localhost port
-    let serverPid: Int      // python process PID
-    let logPath: String
-
-    var id: Int { pid }
-}
-
 final class DashboardData: ObservableObject {
     @Published var data: ScanResult?
     @Published var allSessions: [FullSession]?
     @Published var isLoadingAllSessions = false
-    @Published var transcriptServers: [TranscriptServer] = []
-
-    /// Re-scan /tmp for transcript-server PID files and verify each.
-    /// Called every dashboard tick + on demand after the user clicks Kill.
-    func refreshTranscriptServers() {
-        let tmp = "/tmp"
-        let fm = FileManager.default
-        guard let contents = try? fm.contentsOfDirectory(atPath: tmp) else {
-            DispatchQueue.main.async { self.transcriptServers = [] }
-            return
-        }
-        let pattern = try? NSRegularExpression(pattern: #"^claude-widget-(\d+)\.server$"#)
-        var found: [TranscriptServer] = []
-        for name in contents {
-            guard let re = pattern,
-                  let m = re.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)),
-                  let pidRange = Range(m.range(at: 1), in: name),
-                  let claudePid = Int(name[pidRange])
-            else { continue }
-            let pidFile = "\(tmp)/\(name)"
-            guard let raw = try? String(contentsOfFile: pidFile, encoding: .utf8),
-                  let srvPid = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
-                  kill(Int32(srvPid), 0) == 0
-            else {
-                // Stale file — remove.
-                try? fm.removeItem(atPath: pidFile)
-                continue
-            }
-            let port = 5400 + (claudePid % 500)
-            found.append(TranscriptServer(
-                pid: claudePid, port: port, serverPid: srvPid,
-                logPath: "/tmp/claude-widget-\(claudePid).server.log"
-            ))
-        }
-        DispatchQueue.main.async {
-            if self.transcriptServers != found {
-                self.transcriptServers = found
-            }
-        }
-    }
-
-    /// Send SIGTERM to the named transcript server's python process. The
-    /// python's signal handler removes the PID file on exit, but we also
-    /// proactively remove it here for fast UI feedback.
-    func killTranscriptServer(_ srv: TranscriptServer) {
-        kill(Int32(srv.serverPid), SIGTERM)
-        let pidFile = "/tmp/claude-widget-\(srv.pid).server"
-        try? FileManager.default.removeItem(atPath: pidFile)
-        refreshTranscriptServers()
-    }
-
-    func killAllTranscriptServers() {
-        for srv in transcriptServers { killTranscriptServer(srv) }
-    }
 
     /// Cheap signature comparison so we don't trigger a SwiftUI tree
     /// re-render every 5s when no field actually changed. ScanResult itself
@@ -156,7 +93,6 @@ final class DashboardController {
     func showOrFront(data: ScanResult?, barDelegate: BarDelegate) {
         self.barDelegate = barDelegate
         dataSource.update(data)
-        dataSource.refreshTranscriptServers()
 
         if let p = panel, p.isVisible {
             p.makeKeyAndOrderFront(nil)
@@ -176,7 +112,6 @@ final class DashboardController {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             guard let self = self, let bd = self.barDelegate else { return }
             self.dataSource.update(bd.cachedData)
-            self.dataSource.refreshTranscriptServers()
         }
     }
 
@@ -369,34 +304,6 @@ struct DashboardRootView: View {
                 }
 
                 Spacer()
-
-                // Transcript-server status — visible iff any are running.
-                // Click the × button to kill them all. Sits directly above
-                // the live-count row so the two "ambient runtime signals"
-                // cluster together.
-                if !dataSource.transcriptServers.isEmpty {
-                    let n = dataSource.transcriptServers.count
-                    HStack(spacing: 6) {
-                        Image(systemName: "doc.text.magnifyingglass")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(.teal)
-                        Text("\(n) transcript\(n == 1 ? "" : "s")")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Button {
-                            dataSource.killAllTranscriptServers()
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Kill all transcript HTTP servers")
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 4)
-                }
 
                 // Live count badge at bottom
                 if let d = dataSource.data, d.liveCount > 0 {
@@ -2456,7 +2363,7 @@ struct AboutTabView: View {
                         AboutRow(label: "Sessions JSONL", value: "~/.claude/projects/")
                         AboutRow(label: "Liveness", value: "~/.claude/sessions/<pid>.json")
                         AboutRow(label: "Refresh cadence", value: "user-selectable (default 5s) · full scan every 6 ticks")
-                        AboutRow(label: "Transcript HTTP server", value: "lib/detail-server.py — per-pid, idle-exit at 10min")
+                        AboutRow(label: "Session hub", value: "lib/hub-server.py on :5400 (lib/hub.sh)")
                     }
                 }
 
@@ -2502,13 +2409,12 @@ struct AboutTabView: View {
                 // Transcript viewer
                 OverviewSection(title: "Live Transcript Viewer", icon: "doc.text.magnifyingglass", iconColor: .teal) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Clicking \"View Transcript\" on an instance opens a live HTML view of its conversation. detail.sh spawns a per-pid localhost http.server (port 5400 + pid % 500) and Chrome opens via http:// so the JS can fetch() itself for live updates (file:// → file:// fetch is CORS-blocked).")
+                        Text("\"View Transcript\" opens the session on the hub (lib/hub-server.py, port 5400), which also serves the phone index. Switchboard loads the same page.")
                             .font(.system(size: 12))
                             .foregroundColor(.secondary)
                             .padding(.bottom, 4)
-                        AboutRow(label: "Server", value: "lib/detail-server.py — http.server + /regen endpoint")
-                        AboutRow(label: "Poll cadence", value: "30s — JS calls /regen, fetches HTML, swaps #msgs in place")
-                        AboutRow(label: "Shutdown", value: "Claude PID death (60s) · 10-min idle · 2h hard deadline · SIGTERM")
+                        AboutRow(label: "Server", value: "lib/hub.sh start|stop|restart · GET /healthz")
+                        AboutRow(label: "Page", value: "GET /s/<session-id> · data at /s/<id>/data")
                         AboutRow(label: "Rendering", value: "marked.js + highlight.js (CDN), Edit diffs side-by-side")
                     }
                 }
@@ -2530,7 +2436,7 @@ struct AboutTabView: View {
                         .foregroundColor(.accentColor)
 
                         AboutRow(label: "Bar log", value: "~/Library/Logs/ClaudeInstances/bar.log (rotated at 1MB)")
-                        AboutRow(label: "Server logs", value: "/tmp/claude-widget-<pid>.server.log")
+                        AboutRow(label: "Hub log", value: "/tmp/claude-hub-5400.log")
                         AboutRow(label: "LaunchAgent", value: "dev.claude-instances.menubar")
                         AboutRow(label: "Dashboard kit docs", value: "docs/dashboard-kit.md")
                     }
@@ -2546,7 +2452,7 @@ struct AboutTabView: View {
                         TroubleshootRow(problem: "Menu shows 'Scanning...'",
                                        fix: "Test scan.sh directly: `bash lib/scan.sh | head`")
                         TroubleshootRow(problem: "Transcript URL opens but server is dead",
-                                       fix: "Server exits after 10min idle. Click View Transcript again to respawn — detail.sh is idempotent.")
+                                       fix: "The hub is down. Run `bash lib/hub.sh restart`.")
                         TroubleshootRow(problem: "Branch / last-prompt missing in row",
                                        fix: "Quick scans skip git ops; wait for next full scan (~30s) or click Refresh Now")
                         TroubleshootRow(problem: "Palette change didn't apply",

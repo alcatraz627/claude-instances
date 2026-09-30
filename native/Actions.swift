@@ -96,7 +96,7 @@ func ensureHubRunning() -> String {
     return host.isEmpty ? "127.0.0.1" : host
 }
 
-/// Open a URL preferring Chrome (matching the old detail.sh behaviour), falling
+/// Open a URL preferring Chrome, falling
 /// back to the default browser when Chrome isn't installed.
 func openURLPreferChrome(_ url: String) {
     let chrome = Process()

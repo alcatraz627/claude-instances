@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # tests/run-tests.sh — basic smoke tests for claude-instances.
 #
-# Covers the three things most likely to silently regress:
+# Covers the things most likely to silently regress, among them:
 #   - swift bar compiles
 #   - scan.sh emits valid JSON with the expected shape (full + --quick)
-#   - detail.sh --regen against a fixture JSONL produces a non-empty HTML
-#     with the expected runtime markers
 #
 # Not a comprehensive suite; intentionally bash + python3 stdlib only so it
 # runs anywhere the bar itself runs. No external test framework.
@@ -57,7 +55,6 @@ t_grep() {
 
 t_section "syntax checks"
 t_check "lib/scan.sh parses"        bash -n lib/scan.sh
-t_check "lib/detail.sh parses"      bash -n lib/detail.sh
 t_check "native/build.sh parses"    bash -n native/build.sh
 t_check "tests/run-tests.sh parses" bash -n tests/run-tests.sh
 
@@ -108,6 +105,7 @@ t_check "hub index draws no usage meters"    bash -c '! rg -q "FEED.limits|class
 t_check "scan emits no limits"               bash -c '! rg -q "get_limits" lib/scan.sh'
 t_check "no events, aggregates or claudew"   bash -c '! rg -q "recent_events|compute_aggregates|claudew|summary_cache" lib/scan.sh lib/hub-server.py'
 t_check "no events or perm glyph in the bar" bash -c '! rg -q "recentEvents|PermissionRequest|EventsTabView" native/ --glob "*.swift"'
+t_check "legacy transcript server is gone"   bash -c '! test -e lib/detail.sh && ! test -e lib/detail-server.py && ! rg -q "TranscriptServer" native/'
 
 # ── History collapse P6 ──────────────────────────────────────────────────────
 t_section "history collapse (P6)"
@@ -201,59 +199,6 @@ else
 fi
 rm -f "$QUICK_OUT"
 
-# ── T5/T6 — detail.sh --regen produces HTML with markers ─────────────────────
-
-t_section "detail.sh"
-FIXTURE_JSONL="$REPO_ROOT/tests/fixtures/sample-session.jsonl"
-FIXTURE_SID="00000000-0000-0000-0000-000000000001"
-FIXTURE_PID="999999"
-DETAIL_OUT="/tmp/claude-widget-${FIXTURE_PID}.html"
-
-# Stage the fixture under the projects dir layout so detail.sh can find it
-# via session-id lookup. Keeps the test isolated from any real session.
-PROJ_DIR="$HOME/.claude/projects/-tmp-fixture"
-mkdir -p "$PROJ_DIR"
-cp "$FIXTURE_JSONL" "$PROJ_DIR/${FIXTURE_SID}.jsonl"
-
-# --regen mode skips browser open and daemon spawn.
-bash lib/detail.sh --regen "$FIXTURE_PID" "$FIXTURE_SID" >/dev/null 2>&1
-
-if [[ -f "$DETAIL_OUT" ]] && [[ -s "$DETAIL_OUT" ]]; then
-    t_pass "detail.sh wrote $DETAIL_OUT"
-else
-    t_fail "detail.sh did not produce output"
-fi
-
-# detail.sh now serves the data-first SPA (transcript-app.html) by default; the
-# legacy baked-HTML generator stays behind CLAUDE_WIDGET_LEGACY=1 as a fallback.
-# (The menu bar itself no longer uses this path — it opens the hub — so these
-# guard the standalone detail.sh contract while the legacy generator lives on.)
-[[ -f "$DETAIL_OUT" ]] && {
-    t_grep "doctype present"           "$DETAIL_OUT" '<!DOCTYPE html>'
-    t_grep "marked CDN link"           "$DETAIL_OUT" 'marked.*\.min\.js'
-    t_grep "highlight.js CDN link"     "$DETAIL_OUT" 'highlight\.min\.js'
-    t_grep "serves the data-first SPA" "$DETAIL_OUT" 'window\.SESSION'
-    t_grep "SPA derives the hub /data base" "$DETAIL_OUT" 'const API ='
-    t_grep "SPA renders Edit as a diff" "$DETAIL_OUT" 'dl del'
-}
-
-# Legacy fallback still renders the baked HTML when explicitly opted in.
-CLAUDE_WIDGET_LEGACY=1 bash lib/detail.sh --regen "$FIXTURE_PID" "$FIXTURE_SID" >/dev/null 2>&1
-[[ -f "$DETAIL_OUT" ]] && {
-    t_grep "legacy: baked live poller"  "$DETAIL_OUT" 'function livePoll'
-    t_grep "legacy: /regen referenced"  "$DETAIL_OUT" "fetch\\('/regen'"
-    t_grep "legacy: msg-idx badges"     "$DETAIL_OUT" 'msg-idx'
-}
-
-# ── T7 — detail-server.py syntax ─────────────────────────────────────────────
-
-t_section "detail-server.py"
-t_check "lib/detail-server.py compiles"  python3 -m py_compile lib/detail-server.py
-t_grep "/regen endpoint defined"  lib/detail-server.py '/regen'
-t_grep "exits on Claude PID death" lib/detail-server.py 'claude_alive'
-t_grep "idle timeout (no leak when browser closes)" lib/detail-server.py 'IDLE_SECS'
-t_grep "signal handlers (clean shutdown)" lib/detail-server.py 'SIGTERM'
-t_grep "atomic write in regen"    lib/detail.sh 'os.replace\(tmp_path, output_path\)'
 # LiveRowView (live menu rows): structural markers
 t_grep "LiveRowView class defined" native/ 'class LiveRowView'
 t_grep "intrinsicContentSize override (sizing fix)" native/ 'override var intrinsicContentSize'
@@ -370,13 +315,6 @@ t_grep "transcript read once per scan"      lib/scan.sh 'def read_transcript'
 t_grep "formatAgo helper"                      native/ 'func formatAgo'
 t_grep "last-tool line rendered when fresh"    native/ 'suppressBecauseStale'
 # Transcript server lifecycle controls in the dashboard
-t_grep "TranscriptServer struct"               native/ 'struct TranscriptServer'
-t_grep "refreshTranscriptServers method"       native/ 'func refreshTranscriptServers'
-t_grep "killAllTranscriptServers"              native/ 'func killAllTranscriptServers'
-t_grep "sidebar shows transcript count"        native/ 'transcriptServers.isEmpty'
-# detail.sh stale-server-pid cleanup + bind verification
-t_grep "detail.sh cleans stale .server file"  lib/detail.sh 'Old server is dead'
-t_grep "detail.sh waits for bind + errors"    lib/detail.sh 'did not bind to port'
 # Refresh + warnings + row visibility — Settings UI plus reader sites
 t_grep "RefreshAndWarningsSection view"        native/ 'struct RefreshAndWarningsSection'
 t_grep "RowElement enum"                       native/ 'enum RowElement'
@@ -457,7 +395,6 @@ t_grep "a failed scan keeps the last good"  lib/hub-server.py 'keeping the last 
 t_grep "broken transcript.py warns at boot" lib/hub-server.py 'WARNING: transcript.py failed to import'
 t_grep "parser errors do not reach clients" lib/hub-server.py 'transcript could not be parsed'
 t_grep "duplicate session ids are surfaced" lib/hub-server.py 'transcripts share id'
-t_grep "detail.sh picks freshest on a tie"  lib/detail.sh 'sort -rn'
 t_grep "hub.sh checks OUR pid holds it"     lib/hub.sh 'grep -qx "\$pid"'
 
 t_grep "hub passes provider through (live)"   lib/hub-server.py '"provider": inst.get'
@@ -670,11 +607,6 @@ t_grep "stale chips carry their age"              lib/hub-index.html "as of"
 t_grep "disagreement flag names both authorities" lib/hub-index.html "ipc thinks"
 t_check "render path never reads the liveness claim" \
         bash -c '! rg -q "liveness_claim" lib/hub-index.html'
-
-# Cleanup fixture
-rm -f "$PROJ_DIR/${FIXTURE_SID}.jsonl"
-rmdir "$PROJ_DIR" 2>/dev/null || true
-rm -f "$DETAIL_OUT" "/tmp/claude-widget-${FIXTURE_PID}.daemon"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 
