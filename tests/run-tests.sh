@@ -509,6 +509,8 @@ t_eq "history counts turns like live does"   "12:120:60" \
 # and usage; the dropdown summed them and read about 4x the real tokens.
 t_eq "a multi-line message counts once"      "live=2:20:150:1000:2|hist=2:20:150" \
      "$(python3 "$SCAN_PROBE" dedup_usage)"
+# Sub-agents were counted as child processes, which are background shells.
+t_eq "sub-agents are recent agent transcripts" "0:1:0" "$(python3 "$SCAN_PROBE" subagents)"
 
 # ── Day boundaries ───────────────────────────────────────────────────────────
 #

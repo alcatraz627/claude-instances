@@ -186,6 +186,29 @@ def main(argv):
                   f"|hist={h['turns']}:{h['tokens_in']}:{h['tokens_out']}")
         finally:
             shutil.rmtree(root, ignore_errors=True)
+    elif op == "subagents":
+        # A sub-agent is its own transcript under <sid>/subagents/, not a child
+        # process; child processes are background shells. Running means written
+        # recently. Prints: no dir, one fresh + one stale, missing transcript path.
+        import tempfile, shutil, time
+        root = tempfile.mkdtemp(prefix="subag-")
+        try:
+            ns2 = load()
+            count = ns2["count_active_subagents"]
+            main = os.path.join(root, "sid.jsonl")
+            open(main, "w").close()
+            none = count(main)
+            d = os.path.join(root, "sid", "subagents")
+            os.makedirs(d)
+            open(os.path.join(d, "agent-fresh.jsonl"), "w").close()
+            stale = os.path.join(d, "agent-stale.jsonl")
+            open(stale, "w").close()
+            old = time.time() - 600
+            os.utime(stale, (old, old))
+            open(os.path.join(d, "agent-fresh.meta.json"), "w").close()
+            print(f"{none}:{count(main)}:{count('')}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
     elif op == "read_pid_file":
         print(load()["read_pid_file"](int(argv[1]), argv[2]).strip())
     elif op == "tokens":

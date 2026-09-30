@@ -374,18 +374,32 @@ def read_transcript(filepath):
 
 # ─── Subagent counter ──────────────────────────────────────────
 
-def count_subagents(pid):
-    """Count running child claude processes (subagents) for a PID."""
+# A sub-agent counts as running while its transcript was written this recently.
+SUBAGENT_ACTIVE_S = 120
+
+def count_active_subagents(jsonl_path):
+    """How many of a session's sub-agents are working right now.
+
+    Sub-agents run inside the session and write their own transcripts under
+    <sid>/subagents/agent-*.jsonl (the same place transcript.py counts them).
+    Child processes are not sub-agents: they are background shells, which the
+    old child-process count reported instead.
+    """
+    import time
+    if not jsonl_path:
+        return 0
+    d = os.path.join(jsonl_path[:-len('.jsonl')] if jsonl_path.endswith('.jsonl') else jsonl_path,
+                     'subagents')
+    now = time.time()
+    n = 0
     try:
-        result = subprocess.run(
-            ['pgrep', '-P', str(pid), '-f', 'claude'],
-            capture_output=True, text=True, timeout=2
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return len(result.stdout.strip().split('\n'))
-    except (subprocess.TimeoutExpired, OSError):
-        pass
-    return 0
+        for e in os.scandir(d):
+            if e.name.startswith('agent-') and e.name.endswith('.jsonl') and e.is_file():
+                if now - e.stat().st_mtime <= SUBAGENT_ACTIVE_S:
+                    n += 1
+    except OSError:
+        return 0
+    return n
 
 # ─── Session state inference ───────────────────────────────────
 
@@ -1119,8 +1133,7 @@ def _build_claude_instance(pid, cmdline, provider, sess=None):
     # Read tab title
     tab_title = read_tab_title(session_data['session_id'])
 
-    # Count subagents
-    subagent_count = count_subagents(pid)
+    subagent_count = count_active_subagents(session_data['jsonl_path'])
 
     # Prompt, permission mode and last tool came out of the one transcript
     # read above. Git is full-scan only (skipped on --quick for the 5s tick).
