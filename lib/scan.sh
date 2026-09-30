@@ -295,15 +295,36 @@ def _sum_usage(usages):
     t['cache_create_1h'] = min(t['cache_create_1h'], t['cache_create'])
     return t
 
+def _usage_by_model(usage_by_msg, model_by_msg):
+    """Token totals per model that wrote them; '' collects messages with no real model."""
+    groups = {}
+    for key, u in usage_by_msg.items():
+        groups.setdefault(model_by_msg.get(key, ''), []).append(u)
+    return {m: _sum_usage(us) for m, us in groups.items()}
+
+def _priced(model_id, t):
+    return estimate_cost(model_id, t['input_tokens'], t['output_tokens'], t['cache_read'],
+                         t['cache_create'] - t['cache_create_1h'], t['cache_create_1h'])
+
 def session_cost(model_id, t, jsonl_path=''):
     """What a session cost at list price, its sub-agents included, or None.
 
-    Sub-agents write their own transcripts under <sid>/subagents/, so a session
-    that delegated spent more than its own transcript shows. If any part is on
-    a model with no known price, the whole is unknown rather than too low.
+    Each message is priced at the model that wrote it (a /model switch changes
+    the rate mid-session); messages with no real model take model_id. Sub-agents
+    write their own transcripts under <sid>/subagents/, so a session that
+    delegated spent more than its own transcript shows. If any part is on a
+    model with no known price, the whole is unknown rather than too low.
     """
-    cost = estimate_cost(model_id, t['input_tokens'], t['output_tokens'], t['cache_read'],
-                         t['cache_create'] - t['cache_create_1h'], t['cache_create_1h'])
+    groups = t.get('by_model') or {}
+    if groups:
+        cost = 0.0
+        for m, g in groups.items():
+            part = _priced(m or model_id, g)
+            if part is None:
+                return None
+            cost += part
+    else:
+        cost = _priced(model_id, t)
     if cost is None or not jsonl_path.endswith('.jsonl'):
         return cost
     try:
@@ -336,6 +357,7 @@ def read_transcript(filepath):
     tail = collections.deque(maxlen=3)
     last_tool_ts = ''
     usage_by_msg = {}
+    model_by_msg = {}
     try:
         with open(filepath, 'r', errors='replace') as f:
             for n, line in enumerate(f):
@@ -363,7 +385,9 @@ def read_transcript(filepath):
                         continue
                     if _real_model(msg.get('model')):
                         out['model'] = msg['model']
-                    usage_by_msg[_message_key(msg, n)] = msg.get('usage') or {}
+                    key = _message_key(msg, n)
+                    usage_by_msg[key] = msg.get('usage') or {}
+                    model_by_msg[key] = _real_model(msg.get('model'))
                     content = msg.get('content', [])
                     if not isinstance(content, list):
                         continue
@@ -380,6 +404,7 @@ def read_transcript(filepath):
     except OSError:
         return out
     out.update(_sum_usage(usage_by_msg.values()))
+    out['by_model'] = _usage_by_model(usage_by_msg, model_by_msg)
     out['turns'] = len(usage_by_msg)
     if out['last_tool'] is not None:
         out['last_tool']['ago_seconds'] = _ago_seconds(last_tool_ts)
@@ -698,6 +723,7 @@ def claude_parse_session(filepath):
     model = 'unknown'
     last_model = ''
     usage_by_msg = {}
+    model_by_msg = {}
     title = ''
     cwd = ''
     try:
@@ -728,13 +754,16 @@ def claude_parse_session(filepath):
                 msg = obj.get('message')
                 if not isinstance(msg, dict):
                     msg = {}
-                usage_by_msg[_message_key(msg, i)] = msg.get('usage') or {}
+                key = _message_key(msg, i)
+                usage_by_msg[key] = msg.get('usage') or {}
+                model_by_msg[key] = _real_model(msg.get('model'))
                 # The last real model, as the live row shows it: after a
                 # /model switch an ended session keeps the model it ended on.
                 if _real_model(msg.get('model')):
                     last_model = msg['model']
         turn_count = len(usage_by_msg)
         totals = _sum_usage(usage_by_msg.values())
+        totals['by_model'] = _usage_by_model(usage_by_msg, model_by_msg)
         total_input = totals['input_tokens']
         total_output = totals['output_tokens']
 

@@ -445,6 +445,26 @@ def main(argv):
                            sorted(ns2["get_session_history"](), key=lambda h: h["turns"])))
         finally:
             shutil.rmtree(root, ignore_errors=True)
+    elif op == "per_model_cost":
+        # After a /model switch each message is priced at the model that wrote it:
+        # 1M output on opus 5.5 ($20) plus 1M on fable 5.1 ($50), live and history.
+        import tempfile, shutil
+        root = tempfile.mkdtemp(prefix="permodel-")
+        def asst(mid, model):
+            return json.dumps({"type": "assistant", "message": {
+                "id": mid, "model": model, "role": "assistant", "content": [],
+                "usage": {"input_tokens": 0, "output_tokens": 1000000}}})
+        try:
+            p = os.path.join(root, "s.jsonl")
+            with open(p, "w") as fh:
+                fh.write("\n".join([asst("m1", "claude-opus-5-5"), asst("m2", "claude-fable-5-1")]) + "\n")
+            ns2 = load()
+            live = ns2["session_cost"]("claude-fable-5-1", ns2["read_transcript"](p), p)
+            parsed = ns2["claude_parse_session"](p)
+            hist = ns2["session_cost"](parsed["model"], parsed["usage"], p)
+            print(f"{fmt(live)}:{fmt(hist)}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
     elif op == "prompt_filter":
         # The last prompt is what the owner typed: never a task notification,
         # a skill body, hook feedback or a <command-*> wrapper.
