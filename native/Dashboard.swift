@@ -910,7 +910,7 @@ struct InstanceCard: View {
 
     var body: some View {
         let m = modelDisplay(inst.model)
-        let stateStr = inst.sessionState?.state ?? "idle"
+        let stateStr = inst.effectiveState
         let isActive = stateStr != "idle"
 
         VStack(alignment: .leading, spacing: 12) {

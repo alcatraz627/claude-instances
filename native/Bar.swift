@@ -430,7 +430,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let inst = byPid[pid] else { continue }
             let leaf = liveRowLeaf(inst)
             let fullPath = liveRowFullPath(inst)
-            let stateStr = inst.sessionState?.state ?? "idle"
+            let stateStr = inst.effectiveState
             let stateDetail = inst.sessionState?.detail ?? ""
             let stateIcon = liveRowStateIcons[stateStr] ?? ""
             pair.1.update(with: inst,
@@ -465,6 +465,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         "idle":        "",
     ]
     private func liveRowLeaf(_ inst: LiveInstance) -> String {
+        if let n = inst.name, !n.isEmpty { return n }
         if let tt = inst.tabTitle, !tt.isEmpty { return tt }
         if let cwd = inst.cwd, !cwd.isEmpty {
             return (cwd as NSString).lastPathComponent
@@ -812,7 +813,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // standard menu item — the view-based approach is the workaround.
             let leaf = liveRowLeaf(inst)
             let fullPath = liveRowFullPath(inst)
-            let stateStr = inst.sessionState?.state ?? "idle"
+            let stateStr = inst.effectiveState
             let stateDetail = inst.sessionState?.detail ?? ""
             let stateIcon = liveRowStateIcons[stateStr] ?? ""
 

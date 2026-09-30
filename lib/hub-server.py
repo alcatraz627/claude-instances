@@ -320,6 +320,12 @@ def sessions_payload():
             "subagent_count": inst.get("subagent_count", 0),
             "last_prompt": inst.get("last_prompt", ""),
             "tab_title": inst.get("tab_title", ""),
+            # Claude Code's own view of the session, from its session file.
+            "name": inst.get("name", ""),
+            "status": inst.get("status", ""),
+            "status_since": inst.get("status_since", ""),
+            "last_activity": inst.get("last_activity", ""),
+            "kind": inst.get("kind", ""),
             "state": (inst.get("session_state") or {}).get("state", ""),
             "state_detail": (inst.get("session_state") or {}).get("detail", ""),
             "ipc": inst.get("ipc"),

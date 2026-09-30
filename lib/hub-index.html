@@ -479,17 +479,38 @@ function relTime(iso) {
 function cleanTitle(t) { t = (t || '').trim(); return (t && t !== '?') ? t : ''; }
 function baseName(p) { p = (p || '').replace(/\/+$/, ''); const i = p.lastIndexOf('/'); return i >= 0 ? p.slice(i + 1) : p; }
 const DOING = { thinking: 'thinking', responding: 'writing', tool_use: 'running tools', tool_result: 'processing' };
+function durShort(iso) {
+    if (!iso) return '';
+    const s = (Date.now() - new Date(iso).getTime()) / 1000;
+    if (isNaN(s) || s < 0) return '';
+    return s < 60 ? Math.floor(s) + 's' : s < 3600 ? Math.floor(s / 60) + 'm'
+         : s < 86400 ? Math.floor(s / 3600) + 'h' : Math.floor(s / 86400) + 'd';
+}
+/* The state label: Claude Code's own status when the session file gave one
+   ("busy 4m"), else the transcript-tail guess. */
+function statusText(s) {
+    if (s.state === 'ended') return 'ended';
+    const base = s.status === 'busy' ? 'busy' : s.status === 'shell' ? 'shell'
+               : s.state === 'idle' ? 'your turn' : 'working';
+    const since = s.status ? durShort(s.status_since) : '';
+    return since ? `${base} ${since}` : base;
+}
 function adaptFeed(d) {
     FEED.host = (d.host || '').replace(/\.local$/, '');
     FEED.live = (d.live || []).map(s => Object.assign({}, s, {
-        state: s.state === 'idle' ? 'idle' : 'working',
-        doing: s.state_detail || DOING[s.state] || (s.state ? s.state : 'starting…'),
+        // The session file's status wins over the tail guess: busy is working,
+        // idle and shell are the owner's turn.
+        state: s.status ? (s.status === 'busy' ? 'working' : 'idle')
+                        : (s.state === 'idle' ? 'idle' : 'working'),
+        doing: s.state_detail || DOING[s.state] || (s.state && s.state !== 'idle' ? s.state : 'busy'),
+        last_act: relTime(s.last_activity),
+        folder: s.cwd_short || baseName(s.cwd),
         ctx_remaining: (v => isNaN(v) ? null : v)(parseInt(s.ctx_remaining, 10)),
         cost_usd: s.cost_usd == null ? null : +s.cost_usd, turns: +s.turns || 0,
         output_tokens: kfmt(s.output_tokens),
         git_modified: +s.git_modified || 0,
         elapsed: fmtElapsed(s.elapsed), _ageMin: etimeMin(s.elapsed),
-        cwd_short: cleanTitle(s.tab_title) || s.cwd_short || baseName(s.cwd) || '(session)',
+        cwd_short: cleanTitle(s.name) || cleanTitle(s.tab_title) || s.cwd_short || baseName(s.cwd) || '(session)',
         model: prettyModel(s.model),
     }));
     const liveIds = new Set(FEED.live.map(s => s.session_id));
@@ -623,12 +644,14 @@ function paneHTML(s, hit) {
     return `<a class="pane ${kind}${openable(s) ? '' : ' noopen'}"${openable(s) ? ` href="/s/${encodeURIComponent(s.session_id)}${hit && hit.seq ? `#r${hit.seq}&q=${encodeURIComponent(hit.w)}` : ''}"` : ''}${noOpenAttrs(s)} data-sid="${esc(s.session_id)}" data-screen-label="session ${esc(s.cwd_short)}">` +
         `<div class="p-head"><span class="p-st"></span><span class="p-title">${esc(s.cwd_short)}</span>` +
         `<span class="p-model">${esc(s.model)}</span>` +
-        `<span class="p-state">${yourTurn ? 'your turn' : 'working'}</span>` +
+        `<span class="p-state">${esc(statusText(s))}</span>` +
         `<span class="p-el">${esc(s.elapsed)}</span></div>` +
         `<div class="p-tail" data-tail="${esc(s.session_id)}">${tail}</div>` +
         (hit ? hitHTML(hit) : '') +
         (s.mcp_down ? `<div class="p-alert">${ic('alert')}MCP down: ${esc(s.mcp_down)}</div>` : '') +
         `<div class="p-foot">` +
+        (s.folder && s.folder !== s.cwd_short ? `<span title="${esc(s.cwd || '')}">${esc(s.folder)}</span>` : '') +
+        (s.last_act ? `<span title="last activity">active ${esc(s.last_act)}</span>` : '') +
         (s.ctx_remaining != null ? `<span class="ctx ${ctxCls(s.ctx_remaining)}"><span class="bar"><i style="width:${s.ctx_remaining}%"></i></span>ctx ${s.ctx_remaining}%</span>` : '') +
         `<span>↑${esc(s.output_tokens)}</span><span>${cfmt(s.cost_usd)}</span>` +
         `<span>${s.turns}t</span>` +
@@ -718,7 +741,7 @@ function rowHTML(s, hit) {
         `<span class="st"></span>` +
         `<span class="c-dir">${esc(s.cwd_short)}</span>` +
         `<span class="c-model">${esc(s.model)}</span>` +
-        `<span class="c-state"><b>${ended ? 'ended' : yourTurn ? 'your turn' : 'working'}</b>` +
+        `<span class="c-state"><b>${esc(statusText(s))}</b>` +
         `<span class="doing"> · ${esc(ended ? 'finished ' + (s.ago || '') : yourTurn ? (s.last_prompt || '').slice(0, 56) + '…' : (s.doing || ''))}</span></span>` +
         (ended || s.ctx_remaining == null ? `<span class="c-ctx">—</span>` :
             `<span class="c-ctx ${ctxCls(s.ctx_remaining)}"><span class="gauge"><i style="width:${s.ctx_remaining}%"></i></span>${s.ctx_remaining}%</span>`) +
@@ -741,7 +764,7 @@ function showPeek(el) {
     if (!tails[sid] && openable(s)) primeTail(sid);   // ended rows load their tail on first hover
     const lines = tailLinesFor(s);
     const loading = tails[sid] && tails[sid].loading && !lines.length;
-    hpk.innerHTML = `<div class="hd"><b>${esc(s.cwd_short)}</b><span>${s.state === 'idle' ? 'your turn' : s.state}</span></div>` +
+    hpk.innerHTML = `<div class="hd"><b>${esc(s.cwd_short)}</b><span>${esc(statusText(s))}</span></div>` +
         `<div class="p-tail">${lines.map((l, i) => lineHTML(l, s.state === 'working' && i === lines.length - 1 ? ' cursorline' : '')).join('') || `<div class="p-line p-wait"><span class="tx">${loading ? 'loading recent activity…' : 'no recent activity'}</span></div>`}</div>`;
     if (same) return;   // content refresh only — repositioning mid-hover is the jump the owner flagged
     const r = el.getBoundingClientRect();
@@ -1007,7 +1030,7 @@ document.addEventListener('keydown', e => {
 let mode = 'loading';
 let booted = false, lastHash = '';
 function feedHash() {
-    return JSON.stringify(FEED.live.map(s => [s.session_id, s.state, s.doing, s.ctx_remaining, s.cost_usd, s.turns, s.output_tokens, s.git_branch, s.git_modified, s.mcp_down, s.elapsed]))
+    return JSON.stringify(FEED.live.map(s => [s.session_id, s.state, s.doing, s.ctx_remaining, s.cost_usd, s.turns, s.output_tokens, s.git_branch, s.git_modified, s.mcp_down, s.elapsed, s.status, s.status_since, s.last_activity, s.cwd_short]))
         + '|' + JSON.stringify(FEED.recent.map(s => [s.session_id, s.ago]))
         + '|' + JSON.stringify([FEED.limits, FEED.aggregates]);
 }

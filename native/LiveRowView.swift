@@ -211,6 +211,14 @@ final class LiveRowView: NSView {
         }
         stack.addArrangedSubview(headerRow)
 
+        // Claude Code's own status for this session: "busy 4m · active 2m ago".
+        if let sl = inst.statusLine {
+            addLine(NSAttributedString(string: sl, attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: BarFont.scaled(11), weight: .regular),
+                .foregroundColor: inst.status == "busy" ? menuTeal : NSColor.secondaryLabelColor,
+            ]), token: .stateActive)
+        }
+
         // Tab title (when distinct from leaf). Tagged with modelToken so it
         // counts as part of the "identity" cluster for hover purposes.
         if rowShows(.tabTitle), let tab = inst.tabTitle, !tab.isEmpty, tab != leaf {
@@ -630,6 +638,7 @@ struct LiveRowViewRepresentable: NSViewRepresentable {
 
     private func applyUpdate(to v: LiveRowView) {
         let leaf: String = {
+            if let n = inst.name, !n.isEmpty { return n }
             if let tt = inst.tabTitle, !tt.isEmpty { return tt }
             if let cwd = inst.cwd, !cwd.isEmpty { return (cwd as NSString).lastPathComponent }
             return inst.cwdShort ?? "(unknown)"
@@ -638,7 +647,7 @@ struct LiveRowViewRepresentable: NSViewRepresentable {
             guard let cwd = inst.cwd, !cwd.isEmpty else { return nil }
             return cwd.replacingOccurrences(of: home, with: "~")
         }()
-        let stateStr = inst.sessionState?.state ?? "idle"
+        let stateStr = inst.effectiveState
         let stateDetail = inst.sessionState?.detail ?? ""
         let stateIcons: [String: String] = [
             "thinking": "💭", "responding": "✍️", "tool_use": "🔧",

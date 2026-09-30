@@ -91,6 +91,12 @@ struct LiveInstance: Codable {
     var provider: String? = nil
     /// Claude Code's own session kind ("interactive"); nil on older scan output.
     var kind: String? = nil
+    /// Session name, status (busy / idle / shell) and its timestamps, straight
+    /// from ~/.claude/sessions/<pid>.json. ISO-UTC strings.
+    var name: String? = nil
+    var status: String? = nil
+    var statusSince: String? = nil
+    var lastActivity: String? = nil
 
     /// Whether this row is a real, interactive Claude Code session: the only
     /// kind of process a bulk action may signal.
@@ -98,8 +104,27 @@ struct LiveInstance: Codable {
         (provider ?? "claude") == "claude" && (kind ?? "interactive") == "interactive"
     }
 
+    /// The state the row renders. Claude Code's own idle/shell status beats
+    /// the transcript-tail guess; "busy" keeps the guess for its detail.
+    var effectiveState: String {
+        let guess = sessionState?.state ?? "idle"
+        if status == "idle" || status == "shell" { return "idle" }
+        return guess
+    }
+
+    /// "busy 4m · active 2m ago" from the session file, or nil without one.
+    var statusLine: String? {
+        guard let st = status, !st.isEmpty else { return nil }
+        var parts = [st]
+        if let s = secondsSince(iso: statusSince) { parts[0] += " \(formatAgo(seconds: s))" }
+        if let a = secondsSince(iso: lastActivity) { parts.append("active \(formatAgo(seconds: a)) ago") }
+        return parts.joined(separator: " · ")
+    }
+
     enum CodingKeys: String, CodingKey {
-        case pid, model, cwd, elapsed, turns, statusline, provider, kind
+        case pid, model, cwd, elapsed, turns, statusline, provider, kind, name, status
+        case statusSince = "status_since"
+        case lastActivity = "last_activity"
         case modelFull = "model_full"
         case cwdShort = "cwd_short"
         case inputTokens = "input_tokens"
@@ -163,7 +188,11 @@ extension LiveInstance {
             permissionMode: mergedPerm,
             lastTool: mergedLastTool,
             provider: provider,
-            kind: kind
+            kind: kind,
+            name: name,
+            status: status,
+            statusSince: statusSince,
+            lastActivity: lastActivity
         )
     }
 }
@@ -451,6 +480,12 @@ func formatAgo(seconds n: Int) -> String {
     if s < 3600   { return "\(s / 60)m" }
     if s < 86_400 { return "\(s / 3600)h" }
     return "\(s / 86_400)d"
+}
+
+/// Whole seconds since an ISO-8601 UTC timestamp, or nil if it doesn't parse.
+func secondsSince(iso: String?) -> Int? {
+    guard let s = iso, !s.isEmpty, let d = ISO8601DateFormatter().date(from: s) else { return nil }
+    return max(0, Int(Date().timeIntervalSince(d)))
 }
 
 // Cached DateFormatters for the user's 24h-vs-12h preference. Previously
