@@ -40,6 +40,9 @@ import zlib
 from collections import Counter
 from datetime import datetime
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import turns
+
 
 # ── Small formatting helpers (presentation-neutral) ─────────────────────────
 
@@ -377,13 +380,18 @@ class TranscriptParser:
             elif isinstance(msg, str):
                 content = msg
             if content.strip():
-                self._add({
+                rec = {
                     'id': _rec_id(line_uuid, 'u', ts_iso, content),
                     'role': 'user', 'kind': 'user',
                     'text': content.strip(),
                     'system_reminders': content.count('<system-reminder>'),
                     **stamp, 'sidechain': sidechain,
-                })
+                }
+                # who wrote it (owner, command, hook, peer, task…), as scan.sh sees it
+                t = turns.classify(obj)
+                if t:
+                    rec.update(turn=t['kind'], label=t['label'], command=t['command'], args=t['args'])
+                self._add(rec)
                 meta['counts']['user'] += 1
             return
 

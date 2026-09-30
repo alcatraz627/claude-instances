@@ -608,6 +608,9 @@ t_eq "ended list hides stubs under 4 turns" "4,10" \
 t_eq "last prompt skips notifications, skill bodies, command wrappers, peers, interrupts" \
      "A=fix the login bug|B=/catchup at notes.md|C=-|D=ship it" \
      "$(python3 "$SCAN_PROBE" prompt_filter)"
+t_eq "transcript records say who wrote each user line" \
+     "clear:/clear hidden command:/catchup injected typed task hook peer hidden" \
+     "$(python3 "$REPO_ROOT/tests/fixtures/turns-probe.py")"
 t_grep "live rows carry the session file's name/status" lib/hub-server.py '"status_since": inst.get'
 t_grep "cards label with the session name"  lib/hub-index.html 'cleanTitle\(s.name\)'
 
