@@ -155,7 +155,7 @@ else
 fi
 rm -f "$SCAN_OUT"
 
-# ── T3.5 — provider seam: default field + codex fixture ─────────────────────
+# ── T3.5 — provider seam: every row is claude ───────────────────────────────
 
 t_section "provider seam"
 SEAM_OUT=$(mktemp)
@@ -181,59 +181,6 @@ else
     t_fail "scan.sh history[0] missing/wrong 'provider' (or history empty)"
 fi
 rm -f "$SEAM_OUT"
-
-# Codex fixture: stage a real (redacted) rollout under today's date shard —
-# inside codex_transcript_iter's 14-day window — run a real scan, confirm it
-# surfaces as a 'codex' history entry, then clean up. A synthetic session_id
-# (not the real on-disk codex session's id) keeps the assertions deterministic
-# regardless of what real codex history this machine has.
-CODEX_FIXTURE="$REPO_ROOT/tests/fixtures/sample-codex-session.jsonl"
-CODEX_FIXTURE_SID="test-fixture-codex-0000000000001"
-CODEX_SHARD="$HOME/.codex/sessions/$(date -u +%Y)/$(date -u +%m)/$(date -u +%d)"
-CODEX_STAGED="$CODEX_SHARD/rollout-test-fixture-${CODEX_FIXTURE_SID}.jsonl"
-mkdir -p "$CODEX_SHARD"
-cp "$CODEX_FIXTURE" "$CODEX_STAGED"
-
-CODEX_SCAN_OUT=$(mktemp)
-bash lib/scan.sh > "$CODEX_SCAN_OUT" 2>/dev/null
-
-CODEX_CHECK() {
-    python3 -c "
-import json,sys
-hist = json.load(open('$CODEX_SCAN_OUT')).get('history', [])
-match = next((s for s in hist if s.get('session_id') == '$CODEX_FIXTURE_SID'), None)
-sys.exit(0 if match and match.get('$1') == '''$2''' else 1)" 2>/dev/null
-}
-
-if CODEX_CHECK provider codex; then
-    t_pass "codex fixture surfaces in history with provider:'codex'"
-else
-    t_fail "codex fixture did not surface in history with provider:'codex'"
-fi
-if CODEX_CHECK model 'openai/0.142.5'; then
-    t_pass "codex fixture model shown as model_provider/cli_version"
-else
-    t_fail "codex fixture model field wrong"
-fi
-if CODEX_CHECK project 'Claude/fastfetch-explorer'; then
-    t_pass "codex fixture project derived from session_meta cwd"
-else
-    t_fail "codex fixture project field wrong"
-fi
-if python3 -c "
-import json,sys
-hist = json.load(open('$CODEX_SCAN_OUT')).get('history', [])
-match = next((s for s in hist if s.get('session_id') == '$CODEX_FIXTURE_SID'), None)
-sys.exit(0 if match and match.get('turns') == 2 else 1)" 2>/dev/null; then
-    t_pass "codex fixture turn count (assistant messages)"
-else
-    t_fail "codex fixture turn count wrong"
-fi
-
-rm -f "$CODEX_SCAN_OUT" "$CODEX_STAGED"
-rmdir "$CODEX_SHARD" 2>/dev/null || true
-rmdir "$(dirname "$CODEX_SHARD")" 2>/dev/null || true
-rmdir "$(dirname "$(dirname "$CODEX_SHARD")")" 2>/dev/null || true
 
 # ── T4 — scan.sh --quick produces valid JSON ─────────────────────────────────
 
@@ -699,8 +646,6 @@ t_eq "cache write is atomic, tmp cleaned"   "ATOMIC:CLEAN" \
 
 t_section "small truths (R3)"
 
-t_eq "codex unknown tokens are None, and total"  "None:None:1:0:1" \
-     "$(python3 "$SCAN_PROBE" codex_none)"
 t_eq "stale tpath pointers are ignored"          "OK:STALE_IGNORED" \
      "$(python3 "$SCAN_PROBE" tpath_stale)"
 t_grep "hub pidfile is port-scoped"      lib/hub.sh 'claude-hub-\$\{PORT\}\.pid'

@@ -689,13 +689,7 @@ def get_session_tokens(pid, cwd, prefer_sid=''):
 
 # ─── Provider interface ──────────────────────────────────────────
 #
-# Every agentic CLI this scanner watches (claude today, codex, aider/
-# antigravity later) plugs in as one dict of four capabilities. Adding a new
-# runtime means writing these four functions and appending to PROVIDERS.
-# One residual seam: get_live_instances still routes claude-specific
-# enrichment (statusline metrics, token files) by provider name — a new
-# provider gets the generic path until that enrichment is lifted into the
-# provider dict.
+# The scanner's one CLI (claude) is described as a dict of capabilities.
 #
 #   name            stamped onto every instance/session this provider yields
 #   proc_match      (argv0_basename, cmdline) -> bool: is this ps line ours?
@@ -818,105 +812,6 @@ def claude_parse_session(filepath):
         'tokens_out': total_output,
     }
 
-def codex_proc_match(basename, cmdline):
-    return basename == 'codex'
-
-def codex_proc_meta(cmdline):
-    # codex doesn't expose --model/--resume on argv the way claude does;
-    # the session_meta line (read once the transcript is found) is the real
-    # source for model info — see codex_parse_session.
-    return {'model_hint': 'unknown', 'resume_id': ''}
-
-def codex_transcript_iter():
-    """Yield codex rollout transcript paths from the last 14 days of date shards.
-
-    Codex shards sessions by day (YYYY/MM/DD/rollout-*.jsonl); an unbounded
-    walk would grow with the user's entire codex history, so this caps to a
-    recent window matching the "recent sessions" framing get_session_history
-    already applies to claude via max_sessions.
-    """
-    base = os.path.join(home, '.codex', 'sessions')
-    if not os.path.isdir(base):
-        return
-    now = datetime.now(timezone.utc)
-    for days_back in range(15):
-        day = now - timedelta(days=days_back)
-        shard = os.path.join(base, day.strftime('%Y'), day.strftime('%m'), day.strftime('%d'))
-        if not os.path.isdir(shard):
-            continue
-        try:
-            for f in os.listdir(shard):
-                if f.startswith('rollout-') and f.endswith('.jsonl'):
-                    yield os.path.join(shard, f)
-        except OSError:
-            continue
-
-def codex_parse_session(filepath):
-    """Read a codex rollout's session_meta (line 1 — session id/cwd/model
-    come free, no scanning needed) plus a cheap one-pass tally of assistant
-    turns and tool calls from the rest of the file.
-
-    Unlike claude (one project dir per cwd), codex shards by date — so
-    `project_display` here comes from the payload's actual cwd, not the
-    containing directory name (which would just be a date like "05").
-    """
-    session_id, cwd = '', ''
-    model_provider, cli_version = '', ''
-    turns = 0
-    tool_calls = 0
-    try:
-        with open(filepath, 'r', errors='replace') as f:
-            try:
-                meta = json.loads(f.readline())
-            except json.JSONDecodeError:
-                return None
-            if meta.get('type') != 'session_meta':
-                return None
-            payload = meta.get('payload') or {}
-            session_id = payload.get('session_id', '') or Path(filepath).stem
-            cwd = payload.get('cwd', '') or ''
-            model_provider = payload.get('model_provider', '')
-            cli_version = payload.get('cli_version', '')
-
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get('type') != 'response_item':
-                    continue
-                p = obj.get('payload') or {}
-                ptype = p.get('type', '')
-                if ptype == 'message' and p.get('role') == 'assistant':
-                    turns += 1
-                elif ptype in ('function_call', 'custom_tool_call'):
-                    tool_calls += 1
-    except OSError:
-        return None
-
-    if not session_id:
-        return None
-
-    segs = [s for s in cwd.split('/') if s]
-    project_display = '/'.join(segs[-2:]) if segs else cwd
-
-    return {
-        'id': session_id,
-        'cwd': cwd,
-        'model': f"{model_provider}/{cli_version}" if (model_provider or cli_version) else 'unknown',
-        'turns': turns,
-        'tool_calls': tool_calls,
-        # The codex format carries no usage keys at all (verified against real
-        # rollouts). None means "unknown", which is a different fact from 0
-        # ("used nothing") — same doctrine as cost_usd.
-        'tokens_in': None,
-        'tokens_out': None,
-        'project_display': project_display,
-    }
-
 claude_provider = {
     'name': 'claude',
     'proc_match': claude_proc_match,
@@ -925,15 +820,9 @@ claude_provider = {
     'proc_meta': claude_proc_meta,
 }
 
-codex_provider = {
-    'name': 'codex',
-    'proc_match': codex_proc_match,
-    'transcript_iter': codex_transcript_iter,
-    'parse_session': codex_parse_session,
-    'proc_meta': codex_proc_meta,
-}
-
-PROVIDERS = [claude_provider, codex_provider]
+# Claude only. Codex was a provider here once; every `codex` process
+# (app-server daemons included) became a ghost live row, so it was dropped.
+PROVIDERS = [claude_provider]
 
 # ─── Live instances ──────────────────────────────────────────────
 
@@ -1390,83 +1279,6 @@ def _build_claude_instance(pid, cmdline, provider):
         'ipc': get_ipc_info(session_data['session_id'], quick_mode, cwd),
     }
 
-def _build_codex_instance(pid, cmdline, provider):
-    """Minimal live-instance row for a running codex process.
-
-    Codex doesn't have claude's per-pid statusline file or tab-title
-    registry, so this stays a thin row (pid, cwd, model) rather than
-    forcing codex data through fields it has no source for. Model comes
-    from pairing this process's cwd against a recent codex transcript
-    (transcript_iter is already capped to 14 days, so this stays cheap).
-    """
-    pid_str = str(pid)
-    meta = provider['proc_meta'](cmdline)
-
-    cwd = _proc_cwds.get(pid_str, '')
-    if not cwd:
-        try:
-            lsof = subprocess.run(
-                ['lsof', '-p', pid_str, '-d', 'cwd', '-Fn'],
-                capture_output=True, text=True, timeout=2
-            )
-            for lline in lsof.stdout.splitlines():
-                if lline.startswith('n/'):
-                    cwd = lline[1:]
-                    break
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-
-    elapsed = _proc_elapsed.get(pid_str, '?')
-    if elapsed == '?':
-        try:
-            ps_result = subprocess.run(
-                ['ps', '-p', pid_str, '-o', 'etime='],
-                capture_output=True, text=True, timeout=2
-            )
-            elapsed = ps_result.stdout.strip() or '?'
-        except (subprocess.TimeoutExpired, OSError):
-            elapsed = '?'
-
-    model_display = 'unknown'
-    session_id = ''
-    if cwd:
-        for filepath in provider['transcript_iter']():
-            parsed = provider['parse_session'](filepath)
-            if parsed and parsed.get('cwd') == cwd:
-                model_display = parsed.get('model', 'unknown')
-                session_id = parsed.get('id', '')
-                break
-
-    cwd_short = cwd.replace(home, '~') if cwd else '?'
-
-    return {
-        'pid': pid,
-        'model': model_display,
-        'model_full': model_display,
-        'cwd': cwd,
-        'cwd_short': cwd_short,
-        'elapsed': elapsed,
-        'resume_id': meta['resume_id'],
-        'session_id': session_id,
-        'input_tokens': 0,
-        'output_tokens': 0,
-        'cache_read': 0,
-        'turns': 0,
-        'tool_calls': 0,
-        # Nobody prices a codex session here, and $0.00 would read as free.
-        'cost_usd': None,
-        'tab_title': '',
-        'subagent_count': 0,
-        'session_state': {'state': 'idle', 'detail': ''},
-        'git_branch': git_branch(cwd),
-        'git_modified': git_modified_count(cwd),
-        'last_prompt': '',
-        'permission_mode': '',
-        'last_tool': None,
-        'statusline': {},
-        'provider': provider['name'],
-    }
-
 def get_live_instances():
     """Find running agentic-CLI processes (any registered provider) and
     build a live-instance row for each, keyed off one shared `ps` pass.
@@ -1513,10 +1325,7 @@ def get_live_instances():
             _ipc_digest_prefetch(sorted(c for c in cwds if c))
 
         for pid, cmdline, provider in matched:
-            if provider['name'] == 'claude':
-                instance = _build_claude_instance(pid, cmdline, provider)
-            else:
-                instance = _build_codex_instance(pid, cmdline, provider)
+            instance = _build_claude_instance(pid, cmdline, provider)
             if instance:
                 instances.append(instance)
     except (subprocess.TimeoutExpired, OSError):
@@ -1580,11 +1389,7 @@ def get_session_history(max_sessions=20):
     """
     sessions = []
 
-    # Each provider's own files, most-recent first — kept separate (instead
-    # of merging up front) so a low-volume provider's latest session gets a
-    # guaranteed slot below rather than being crowded out of the merged
-    # top-N by a high-volume one (many active claude sessions vs. one
-    # recent codex session, say).
+    # Each provider's own files, most-recent first.
     per_provider = []
     for provider in PROVIDERS:
         files = []
@@ -1617,10 +1422,7 @@ def get_session_history(max_sessions=20):
         total_input = parsed.get('tokens_in', 0)
         total_output = parsed.get('tokens_out', 0)
 
-        # Project display: providers that can supply one directly (codex —
-        # storage is date-sharded, not project-sharded) do so via
-        # 'project_display'; claude falls back to decoding the project dir
-        # name, same as this scanner has always done.
+        # Project display decodes the project dir name.
         project_display = parsed.get('project_display')
         if project_display is None:
             project_dir_name = Path(filepath).parent.name
@@ -1632,9 +1434,7 @@ def get_session_history(max_sessions=20):
                 project_display = '/'.join(segs[-2:])
 
         model_short = short_model(model)
-        # `or 0` because a .get(key, 0) default never fires for codex — the
-        # key exists holding None. Today an unpriced model returns before
-        # touching the counts; this stops relying on that ordering accident.
+        # `or 0`: a token count may be None (unknown), never a crash.
         cost_usd = estimate_cost(model_short, total_input or 0, total_output or 0)
 
         # Cache model for event enrichment
