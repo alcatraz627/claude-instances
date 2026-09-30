@@ -266,6 +266,22 @@ def main(argv):
             print(f"{fmt(with_agent)}:{fmt(unknown)}")
         finally:
             shutil.rmtree(root, ignore_errors=True)
+    elif op == "machine_facts":
+        # A statusline fact every live row shares is about the machine, so it is
+        # said once; a row whose value differs keeps it; one row proves nothing.
+        ns2 = load()
+        split = ns2["split_machine_facts"]
+
+        def row(mcp, pm2):
+            return {"statusline": {"mcp_down": mcp, "pm2_errored": pm2, "scratchpad_count": "44",
+                                   "ctx_remaining": "50"}}
+        rows = [row("a,b", "1"), row("a,b", "1"), row("a,b", "2")]
+        m = split(rows)
+        kept = [r["statusline"]["pm2_errored"] for r in rows]
+        one = [row("a,b", "1")]
+        m1 = split(one)
+        print(f"{sorted(m.items())}|{[r['statusline']['mcp_down'] for r in rows]}|{kept}"
+              f"|ctx={rows[0]['statusline']['ctx_remaining']}|single={m1}:{one[0]['statusline']['mcp_down']}")
     elif op == "read_pid_file":
         print(load()["read_pid_file"](int(argv[1]), argv[2]).strip())
     elif op == "tokens":

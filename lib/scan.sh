@@ -1526,7 +1526,32 @@ def short_model(model):
 
 # ─── Assemble ────────────────────────────────────────────────────
 
+# Statusline facts that can be about the whole machine rather than one session.
+MACHINE_FACTS = ('mcp_down', 'scratchpad_count', 'wal_since_cp', 'pm2_online', 'pm2_errored')
+
+def split_machine_facts(live):
+    """Lift facts every live row shares into one machine-wide block.
+
+    The statusline writes the same MCP-down list and counters into every
+    session's file, and a warning shown on every row stops reading as a
+    warning. A value is lifted only when two or more rows all carry it; a row
+    whose value differs keeps its own. Returns the block and blanks the rows.
+    """
+    machine = {}
+    if len(live) < 2:
+        return machine
+    for key in MACHINE_FACTS:
+        values = {(r.get('statusline') or {}).get(key, '') for r in live}
+        if len(values) == 1:
+            v = values.pop()
+            if v:
+                machine[key] = v
+                for r in live:
+                    r['statusline'][key] = ''
+    return machine
+
 live = get_live_instances()
+machine = split_machine_facts(live)
 if not quick_mode:
     run_ipc_disagreement_pass(live)
 
@@ -1534,6 +1559,7 @@ output = {
     'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'live_count': len(live),
     'live': live,
+    'machine': machine,
     # History is a full-scan read; --quick leaves it empty.
     'history': [] if quick_mode else get_session_history(
         live_sids={i.get('session_id') for i in live if i.get('session_id')}),

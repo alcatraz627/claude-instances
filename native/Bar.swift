@@ -187,7 +187,8 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         self.cachedData = ScanResult(
                             live: mergedLive,
                             history: existing.history,
-                            liveCount: r.liveCount
+                            liveCount: r.liveCount,
+                            machine: r.machine
                         )
                     } else {
                         self.cachedData = r
@@ -399,6 +400,17 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if totalOut  > 0  { headerParts.append("↑\(fmtTokens(totalOut))") }
         if totalCost > 0  { headerParts.append(fmtCost(totalCost)) }
         addSectionHeader(menu, headerParts.joined(separator: "  ·  "), icon: "sparkles")
+
+        // A condition every session shares is said once, here, not on each row.
+        if rowShows(.mcpDown), let mcp = data.machine?["mcp_down"], !mcp.isEmpty {
+            let item = NSMenuItem()
+            item.attributedTitle = NSAttributedString(string: "  ⚠ MCP down on this Mac: \(mcp)", attributes: [
+                .font: NSFont.systemFont(ofSize: 12),
+                .foregroundColor: NSColor.systemRed,
+            ])
+            item.isEnabled = false
+            menu.addItem(item)
+        }
 
         for (idx, inst) in live.enumerated() {
             // Build the live-updating row view. All visual content

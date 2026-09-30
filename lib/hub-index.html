@@ -152,6 +152,7 @@ h1 { font: 650 21px/1.2 var(--sans); letter-spacing: -.014em; margin: 0; }
 .p-alert { display: flex; align-items: center; gap: 7px; margin: 0 13px 9px; padding: 4px 10px;
     border-radius: 6px; background: var(--err-soft); color: var(--err); font: 600 11.5px var(--sans); width: max-content; }
 .p-alert .icon { width: 13px; height: 13px; }
+.p-alert.machine { margin: 6px 0 10px; }
 .p-foot { display: flex; flex-wrap: wrap; gap: 3px 14px; padding: 8px 13px;
     border-top: 1px solid var(--edge); background: var(--well);
     font: 10.5px var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
@@ -488,6 +489,7 @@ function statusText(s) {
 }
 function adaptFeed(d) {
     FEED.host = (d.host || '').replace(/\.local$/, '');
+    FEED.machine = d.machine || {};
     FEED.live = (d.live || []).map(s => Object.assign({}, s, {
         // The session file's status wins over the tail guess: busy is working,
         // idle and shell are the owner's turn.
@@ -674,6 +676,12 @@ function ipcDegradedHTML(live) {
     }
     if (Date.now() - (+localStorage.ipcDegradedSince) < 86400e3) return '';
     return `<div class="ipcdegraded">ipc bridge degraded for over 24h — sessions run fine; mail counts are unknown. Runbook: docs/meld-runbook.md</div>`;
+}
+/* A condition every live session shares (the scan lifts it into `machine`)
+   is said once here, not as the same red pill on every card. */
+function machineHTML() {
+    const m = FEED.machine || {};
+    return m.mcp_down ? `<div class="p-alert machine">${ic('alert')}MCP down on this Mac: ${esc(m.mcp_down)}</div>` : '';
 }
 function fmtAgeS(s) {
     if (!Number.isInteger(s) || s < 0) return '?';
@@ -913,6 +921,7 @@ function render() {
         ipcBadgeHTML(live) +
         `</div></div>` +
         ipcDegradedHTML(live) +
+        machineHTML() +
         ((VDIR && !VDIR.query) ? '' :
         `<div class="qbar">${ic('search')}<input id="fq" placeholder="Browse the fleet — sessions AND transcripts" autocomplete="off" spellcheck="false"><span class="qstat" id="qstat"></span></div>` +
         `<div class="qhint" id="qhint"></div>`) +

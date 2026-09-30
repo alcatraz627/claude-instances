@@ -19,9 +19,12 @@ struct ScanResult: Codable {
     let live: [LiveInstance]
     let history: [SessionHistory]
     let liveCount: Int
+    /// Statusline facts every live session shares (the MCP-down list, shared
+    /// counters), said once instead of on every row.
+    var machine: [String: String]? = nil
 
     enum CodingKeys: String, CodingKey {
-        case live, history
+        case live, history, machine
         case liveCount = "live_count"
     }
 }

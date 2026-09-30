@@ -580,6 +580,7 @@ def sessions_payload():
         "host": socket.gethostname(),
         "live": live,
         "recent": recent,
+        "machine": scan.get("machine") or {},
         "refreshing": refreshing,
     }
 
