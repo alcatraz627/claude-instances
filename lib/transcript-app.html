@@ -1349,7 +1349,7 @@ function ledgerRowsHTML(run) {
                 `<span class="tp">${prevHTML(t)}</span>` +
                 (t.is_error ? `<span class="terr">error</span>` : '') +
                 (t.tokens_out ? `<span class="tk">↑${kfmt(t.tokens_out)}</span>` : '') + `</button>` +
-                (topen ? `<div class="tbody"><div class="tb-scroll">${toolBody(t)}${resultHTML(t)}</div></div>` : '');
+                (topen ? `<div class="tbody"><div class="tb-scroll">${callBody(t)}</div></div>` : '');
         }).join('');
     }).join('');
 }
@@ -1379,13 +1379,31 @@ function resultHTML(t) {
         (more ? `<button class="res-more" data-full="${esc(t.id)}">show full output</button>` : '');
 }
 /* Full bodies fetched from /data?result=<id>, kept across re-renders. */
-const FULL = new Map(), _fullFetching = new Set();
+const FULL = new Map(), INPUTS = new Map(), _fullFetching = new Set();
+/* A call with its full input: inline when /data sent it, else once fetched. */
+function withInput(t) {
+    if (t.input !== undefined || !INPUTS.has(t.id)) return t;
+    return Object.assign({}, t, { input: INPUTS.get(t.id) });
+}
+/* The expanded body of one call: input, then output. A large input was left
+   out of /data, so the first expand fetches it. */
+function callBody(t) {
+    if (t.input === undefined && t.input_chars && !INPUTS.has(t.id)) {
+        fetchFull(t.id);
+        return `<div class="cap">loading ${kfmt(t.input_chars)} chars of input…</div>${resultHTML(t)}`;
+    }
+    return toolBody(withInput(t)) + resultHTML(t);
+}
 function fetchFull(id) {
     if (!id || FULL.has(id) || _fullFetching.has(id)) return;
     _fullFetching.add(id);
     fetch(API + 'data?result=' + encodeURIComponent(id), { cache: 'no-cache' })
         .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
-        .then(d => { FULL.set(id, d.result != null ? d.result : (d.thinking != null ? d.thinking : '')); renderChapters(); })
+        .then(d => {
+            FULL.set(id, d.result != null ? d.result : (d.thinking != null ? d.thinking : ''));
+            if (d.input !== undefined) INPUTS.set(id, d.input);
+            renderChapters();
+        })
         .catch(() => {})
         .finally(() => _fullFetching.delete(id));
 }

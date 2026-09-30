@@ -589,7 +589,7 @@ def parse_transcript(jsonl_file, subagent_index=None):
     ]
     meta['total_tool_calls'] = sum(tool_counter.values())
     meta['total_records'] = len(records)
-    return {'meta': meta, 'records': records, 'blobs': blobs}
+    return {'meta': meta, 'records': records, 'blobs': blobs, 'calls': calls_by_id}
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
@@ -640,6 +640,7 @@ def main(argv):
         result['meta']['since'] = since
 
     result.pop('blobs', None)
+    result.pop('calls', None)
     json.dump(result, sys.stdout, ensure_ascii=False)
     sys.stdout.write('\n')
     return 0

@@ -291,6 +291,37 @@ def _parse_cached(target):
         return result
 
 
+# A tool input this small rides along in /data; a larger one (a Write's whole
+# file, an Edit's before and after) is fetched on expand via ?result=<id>.
+INPUT_INLINE_MAX = 400
+_CALL_UNSENT = ("line_uuid", "message_id", "ts", "ts_full", "ts_iso")
+
+
+def slim_call(call):
+    """A tool call as /data sends it: a fresh dict, full input only if small."""
+    # Per-call timestamps and source ids repeat the group's and no reader uses them.
+    out = {k: v for k, v in call.items() if k not in _CALL_UNSENT}
+    inp = out.pop("input", None)
+    size = len(json.dumps(inp, ensure_ascii=False)) if inp is not None else 0
+    if size <= INPUT_INLINE_MAX:
+        out["input"] = inp
+    else:
+        out["input_chars"] = size
+    return out
+
+
+def slim_records(records):
+    """The records as /data sends them. Fresh copies of every tools record, so
+    the cached parse is never mutated and never serialised while it grows."""
+    out = []
+    for r in records:
+        if r.get("role") == "tools":
+            r = dict(r)
+            r["tools"] = [slim_call(t) for t in r["tools"]]
+        out.append(r)
+    return out
+
+
 def sessions_payload():
     """Reshape scan output into the index page's feed: live first, then recent.
 
@@ -509,6 +540,7 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
             result["records"] = [r for r in result["records"]
                                  if r["seq"] > s or r.get("open")]
             result["meta"]["since"] = s
+        result["records"] = slim_records(result["records"])
         self._json(200, result, cache="no-cache", etag=etag)
 
     def _serve_blob(self, parsed, want, etag):
@@ -517,13 +549,17 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
         if not want:
             return self._json(400, {"error": "result must be an id"})
         blobs = parsed.get("blobs") or {}
-        if want not in blobs:
+        calls = parsed.get("calls") or {}
+        if want not in blobs and want not in calls:
             return self._json(404, {"error": f"no result {want}"})
         body = {"id": want}
         if want.endswith(":think"):
             body["thinking"] = blobs[want]
         else:
-            body["result"] = blobs[want]
+            if want in blobs:
+                body["result"] = blobs[want]
+            if want in calls:
+                body["input"] = calls[want].get("input")
         self._json(200, body, cache="no-cache", etag=etag)
 
 

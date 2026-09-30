@@ -191,6 +191,28 @@ expect("/data carries a short result preview, not the full output",
 st, _, body = http_get(f"/s/{sidR}/data?result=Rt0")
 expect("?result=<id> returns the full output",
        st == 200 and json.loads(body).get("result") == long_out, f"status={st}")
+sidW = "5e500000-0000-4000-8000-000000000002"
+pW = os.path.join(PROJ, f"{sidW}.jsonl")
+big = "x = 1\n" * 2000
+with open(pW, "w") as f:
+    f.write(json.dumps({"type": "assistant", "uuid": _next_uuid(), "timestamp": "2026-07-17T00:00:01Z",
+                        "message": {"role": "assistant", "model": "claude-opus-4-8", "usage": {},
+                                    "content": [{"type": "tool_use", "id": "Wt0", "name": "Write",
+                                                 "input": {"file_path": "/tmp/a.py", "content": big}},
+                                                {"type": "tool_use", "id": "Wt1", "name": "Read",
+                                                 "input": {"file_path": "/tmp/a.py"}}]}}) + "\n")
+st, _, body = http_get(f"/s/{sidW}/data")
+tw = json.loads(body)["records"][-1]["tools"]
+expect("a large tool input stays out of /data; a small one rides along",
+       "input" not in tw[0] and tw[0].get("input_chars", 0) > 10000
+       and tw[1].get("input") == {"file_path": "/tmp/a.py"} and big not in body.decode(),
+       f"write keys={sorted(tw[0])}")
+st, _, body = http_get(f"/s/{sidW}/data?result=Wt0")
+expect("?result=<id> returns the full input",
+       st == 200 and (json.loads(body).get("input") or {}).get("content") == big, f"status={st}")
+cached_call = hub._PARSE_CACHE[pW][1]["records"][-1]["tools"][0]
+expect("slimming never mutates the cached parse", cached_call.get("input", {}).get("content") == big,
+       f"cached keys={sorted(cached_call)}")
 st, _, _ = http_get(f"/s/{sidR}/data?result=nope")
 expect("?result= for an unknown id is a 404", st == 404, f"status={st}")
 
