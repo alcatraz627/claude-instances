@@ -445,7 +445,7 @@ struct AppearanceSection: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 280)
-                Text("Affects the dashboard window. The menu's translucent material adapts to the OS regardless.")
+                Text("Affects this Settings window. The menu follows the system, and the hub pages have their own switch.")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .lineLimit(2)

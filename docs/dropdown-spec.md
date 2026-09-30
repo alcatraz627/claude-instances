@@ -204,15 +204,16 @@ icon and a submenu. The submenu lists the **first 14** sessions, each a
 `columned(cells, stops: [196, 240, 290, 338])` for true column alignment (no
 `leftPad`): `<model badge> <project, tail-truncated to 22> <turns>t <size> <cost|–>
 <relative time>` (badge in model colour; the rest mono caption, secondary). Agent
-sub-sessions show `↳ agent` instead of a project. If >14: ` … and N more (open
-Dashboard)` (dim). Trailing separator.
+sub-sessions show `↳ agent` instead of a project. The submenu ends with
+**All sessions in the hub**, which opens the hub's board. Trailing separator.
 
 ## 8. Section: Actions (`addActionsSection`)
 
 - **New Session**, `plus.circle`, ⌘N.
-- **Dashboard**, `rectangle.3.group`, ⌘D.
+- **Settings…**, `gearshape`, ⌘, (the standalone Settings window).
 - **Sessions (phone)**, `iphone`. Ensures the hub is running, opens its index, and
   copies the tailnet URL to the clipboard when Tailscale is up.
+- **Switchboard**, `slider.vertical.3`. Opens the Switchboard app's panel.
 - **Refresh Now**, `arrow.clockwise`, ⌘R. One click. Title carries the cadence +
   last-scan age inline: `Refresh Now    <cadence> · <N>s ago`.
 - **Auto-refresh interval**, `timer`, a submenu (disclosure chevron) with the

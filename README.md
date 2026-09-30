@@ -20,11 +20,11 @@
 
 <!-- ── Preview (full UI mockup) ─────────────────────────────────────────────── -->
 <details>
-<summary><b>UI preview</b>, menu bar dropdown + dashboard (click to expand)</summary>
+<summary><b>UI preview</b>, menu bar dropdown (the preview predates the hub; sessions now open there) (click to expand)</summary>
 
 <div align="center">
 
-<img src="assets/preview.svg" alt="UI preview: menu bar dropdown + dashboard" width="640">
+<img src="assets/preview.svg" alt="UI preview: menu bar dropdown" width="640">
 
 </div>
 
@@ -166,7 +166,8 @@ the top to match the user mental model.
   carry per-type Unicode symbols, semantic colors, and inline model badges.
 - **History**: collapsed to a single `History (N)` row with a submenu; click a session to
   resume via `claude --resume` in a new Ghostty tab.
-- **Actions**: New Session (Cmd+N), Dashboard (Cmd+D), Sessions (phone), one-click
+- **All sessions in the hub**: one row that opens the session hub's board in the browser.
+- **Actions**: New Session (Cmd+N), Settings… (Cmd+,), Sessions (phone), Switchboard, one-click
   **Refresh Now** (Cmd+R) with the cadence + last-scan age inline, an **Auto-refresh
   interval** submenu (1/2/5/10/30/60s + Pause, persisted), Terminate All, Quit Widget.
 - **Footer**: "Updated Ns ago · refresh: cadence", escalates when paused.
@@ -247,23 +248,24 @@ and 8-second live append, all mobile-first. Tool calls render richly: `Edit` /
 `Write` as colored diffs, `Bash` as a command block, with copy-as-markdown (which
 works over plain http too) and a jump-to-latest button. Dark default, light toggle.
 
-### Native Dashboard (SwiftUI)
+### Settings window (SwiftUI)
 
-A floating `NSPanel` with `NavigationSplitView` sidebar and `.ultraThinMaterial`:
+The native dashboard was retired: every session, live or ended, is on the session
+hub's board, and the menu's **All sessions in the hub** row opens it. What stays
+native is one standalone window, **Settings…** (Cmd+,), with these sections:
 
-| Tab | Description |
+| Section | What it sets |
 |-----|-------------|
-| **Overview** | Today/Week aggregate cards (sessions, turns, tokens, cost), model usage breakdown badges, 8 stat cards, rate limit bars, live status |
-| **Live** | Instance cards with full metrics, action buttons, transcript opens the session hub |
-| **History** | Searchable, sortable table with tokens, cost estimates, hover-reveal resume/transcript actions, summary stats footer |
-| **Events** | Timeline with deep history toggle, event type filter picker, model badges, tab title context, tool details for PostToolUse events |
-| **All Sessions** | Deep filesystem scan of ALL past sessions with search, sort, resume, and transcript actions |
-| **Settings** | **Appearance** (System/Light/Dark theme) · **Widget Menu** (palette editor with bidirectional hover preview, Tailwind color picker, per-token reset) · **Menu Behavior** (density / default tab / time format) · **Refresh & Warnings** (usage zones + per-row visibility) · **Keybinds** (per-action submenu shortcuts) |
-| **About** | App info, build metadata, keyboard shortcuts, data sources, tab guide, troubleshooting |
+| **Appearance** | System / Light / Dark for this Settings window |
+| **Widget Menu** | Palette editor with bidirectional hover preview, Tailwind colour picker, per-token reset |
+| **Menu Behavior** | Row density |
+| **Display Sizing** · **Menu Bar Badge** | Menu sizes and what the menu-bar badge counts |
+| **Refresh & Warnings** · **Row Visibility** | Refresh cadence, usage zones, which rows show |
+| **Keybinds** | Per-action submenu shortcuts |
 
 ### Settings → Widget Menu (palette editor)
 
-The Settings tab includes a centrally-tunable color palette for the menu. **17 palette
+The Settings window includes a centrally-tunable color palette for the menu. **17 palette
 tokens**, each persisting to UserDefaults as a hex string under `palette.<token>`:
 
 | Token | Used for |
@@ -310,25 +312,17 @@ shouldn't be tunable.
 
 ### Settings → Appearance
 
-System / Light / Dark picker. Applies to the dashboard window's chrome via
+System / Light / Dark picker for the Settings window, via
 `NSApp.appearance = NSAppearance(named: ...)`. Persisted under `appearance.mode`. The
-menu's translucent material adapts to the OS regardless.
+menu's translucent material follows the OS regardless, and the hub pages keep their
+own dark/light switch.
 
 ### Settings → Menu Behavior
-
-Three persisted preferences, each wired to its render path:
 
 - **Density** (compact / cozy / comfortable), controls the `stack.spacing`
   of LiveRowView. `densitySpacing()` is read on every `update()`, so the change
   applies on the next refresh tick. Notification: `.menuBehaviorDidChange` →
   BarDelegate calls `refreshLiveRows()`.
-- **Default tab**, which dashboard tab opens on next launch.
-  `DashboardRootView.selectedTab` initializes from
-  `UserDefaults.string(forKey: "defaultTab")`, falling back to `.overview`.
-- **Time format** (24h toggle), `userTimeFormatter(includesDate:)` returns
-  `"MMM d, HH:mm"` when on, `"MMM d, h:mm a"` otherwise. Currently consumed
-  by `AllSessionsTabView`'s history table; other absolute-time displays
-  consult the same helper.
 
 ## Architecture
 
@@ -342,25 +336,24 @@ Three persisted preferences, each wired to its render path:
       v                      v                    v
 +--------------------------------------------------------------------------+
 |  CORE                                                                    |
-|  BarDelegate -->  ScanResult Cache  -->  DashboardData (@Published)      |
+|  BarDelegate -->  ScanResult Cache                                      |
 |     quick scan: merge live (preserving enrichment from prev full scan)   |
 |     full scan:  replace everything (history, events, aggregates, git)    |
 +-----+----------------------+--------------------+-----------------------+
-      | menuNeedsUpdate      | refreshLiveRows    | SwiftUI binding
+      | menuNeedsUpdate      | refreshLiveRows    | Settings…
       | + delegate hooks     | (every tick when   |
       v                      | menu is open)      v
 +----------------------------+   +---------------------------------------+
-|  NSMenu Dropdown                |  SwiftUI Dashboard (NSPanel)         |
-|  . Rate limit bars (+ resets)   |  . Overview / Live / History         |
-|  . Usage stats (today / week)   |  . Events / All Sessions             |
-|  . Live instances (view-based,  |  . Settings (palette + appearance    |
-|    live-updating LiveRowView)   |    + behavior)                       |
-|  . Recent events                |  . About                             |
-|  . Session history              |                                      |
-|  . Refresh submenu (cadence)    |  +------------------------------+    |
-|  . Actions (Cmd+N/D)            |  |  Settings preview ↔ palette  |    |
-+----------------+----------------+  |  bidirectional hover state   |    |
-                 |                   |  via shared @State binding   |    |
+|  NSMenu Dropdown                |  Settings window (SwiftUI)           |
+|  . Rate limit bars (+ resets)   |  . Appearance, Widget Menu palette   |
+|  . Usage stats (today / week)   |  . Menu Behavior, sizing, badge      |
+|  . Live instances (view-based,  |  . Refresh & Warnings, visibility    |
+|    live-updating LiveRowView)   |  . Keybinds                          |
+|  . Recent events                |                                      |
+|  . Session history              |  +------------------------------+    |
+|  . All sessions in the hub      |  |  Settings preview ↔ palette  |    |
+|  . Actions (Cmd+N, Cmd+,)       |  |  bidirectional hover state   |    |
++----------------+----------------+  |  via shared @State binding   |    |
                  |                   +--------------+---------------+    |
                  v                                  v
 +--------------------------------------------------------------------------+
@@ -397,7 +390,8 @@ Three persisted preferences, each wired to its render path:
 │   ├── Actions.swift                # Ghostty/resume, file open, hub bridge, scanner
 │   ├── LiveRowView.swift            # The live instance row NSView
 │   ├── Bar.swift                    # BarDelegate + menu builders
-│   ├── Dashboard.swift              # SwiftUI dashboard + tabs
+│   ├── Settings.swift               # SwiftUI Settings sections
+│   ├── SettingsWindowController.swift # The standalone Settings window
 │   ├── claude-logo.svg              # Menu-bar icon
 │   ├── color-sampler.swift          # Internal: vibrancy color preview tool
 │   ├── build.sh                     # Compile (swiftc -O native/*.swift) + install + manage
@@ -432,9 +426,8 @@ Three persisted preferences, each wired to its render path:
 | `PaletteStore` | Singleton. 17 user-tunable color tokens + defaults + UserDefaults overrides. Posts `didChangeNotification` on every mutation. |
 | `ScanResult` | Codable struct decoded from `scan.sh` JSON. Live instances, history, events, rate limits, aggregates. |
 | `LiveInstance` | Per-instance data. Includes `preservingEnrichment(from:)` so quick scans don't wipe git/prompt fields. |
-| `DashboardController` | Manages the floating `NSPanel`. Creates SwiftUI views via `NSHostingView`. |
-| `DashboardData` | `ObservableObject` bridging cached scan data into SwiftUI. Handles on-demand All Sessions scan. |
-| `SettingsTabView` | Palette editor + Appearance picker + Menu Behavior toggles. Bidirectional preview ↔ palette hover via shared `@State hoveredToken`. |
+| `SettingsWindowController` | Owns the standalone Settings window; hosts `SettingsTabView` in an `NSHostingController`. |
+| `SettingsTabView` | Palette editor + Appearance picker + Menu Behavior and the other sections. Bidirectional preview ↔ palette hover via shared `@State hoveredToken`. |
 | `TailwindPicker` | 13 × 5 swatch popover. Hover shows `<hue>-<shade> · #HEX`. |
 | `focusGhosttyTab()` | AppleScript bridge, finds and focuses the Ghostty tab matching a working directory. |
 | `resumeSession()` | AppleScript, opens a new Ghostty tab, cd's to the project, runs `claude --resume`. |
@@ -465,8 +458,8 @@ Rate limit percentages flow through a cross-process cache:
    `resets_at_weekly`)
 3. **scan.sh** reads the cache file (in both quick and full scans) and includes it in
    the JSON output as `limits`
-4. **Swift widget** decodes `RateLimits` and renders the progress bars in both NSMenu
-   and SwiftUI dashboard, with countdown until each window resets
+4. **Swift widget** decodes `RateLimits` and renders the progress bars in the menu,
+   with a countdown until each window resets
 
 ### Data Flow: Palette → Render
 
@@ -563,7 +556,7 @@ For the live transcript viewer:
 | Palette change didn't apply | Notification fires but a stale `LiveRowView` may not have rebuilt. Close + reopen the menu once |
 | Transcript page won't load | `lsof -i :<port>` for `5400 + (pid % 500)`. Server may have hit idle/death timeout; click View Transcript again |
 | No rate limit bar | Requires an active Claude session for statusline.sh to write `.limits.json`. Check: `cat ~/.claude/widgets/.limits.json` |
-| Dashboard won't open | Requires macOS 13+. Check logs for SwiftUI errors |
+| Settings won't open | Requires macOS 13+. Check logs for SwiftUI errors |
 | "Focus" doesn't switch tabs | Ghostty must have Accessibility permission in System Settings |
 
 ## License
