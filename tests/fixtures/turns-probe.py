@@ -54,12 +54,26 @@ if sys.argv[1:] == ["chapters"]:
               a("## Review\nLooks fine.", 3),
               u("<command-name>/model</command-name><command-args></command-args>")]
 
+if sys.argv[1:] == ["modes"]:
+    # Claude Code writes a "mode" line (always "normal", the input mode) beside
+    # every "permission-mode" line; only the second is a permission mode.
+    normal = json.dumps({"type": "mode", "mode": "normal"})
+    perm = lambda pm: json.dumps({"type": "permission-mode", "permissionMode": pm})
+    LINES = [normal, perm("bypassPermissions"), u("one", origin={"kind": "human"}), a("ok", 1),
+             normal, perm("bypassPermissions"), u("two", origin={"kind": "human"}), a("ok", 2),
+             normal, perm("auto"), u("three", origin={"kind": "human"})]
+
 root = tempfile.mkdtemp(prefix="turns-")
 try:
     p = os.path.join(root, "s.jsonl")
     with open(p, "w") as fh:
         fh.write("\n".join(LINES) + "\n")
-    recs = transcript.parse_transcript(p)["records"]
+    res = transcript.parse_transcript(p)
+    recs = res["records"]
+    if sys.argv[1:] == ["modes"]:
+        flips = [r["text"].split("→ ")[-1] for r in recs if r.get("event_type") == "mode-change"]
+        print(" ".join(flips), "| now", res["meta"]["permission_mode"])
+        sys.exit(0)
     if sys.argv[1:] in (["chapters"], ["tail"]):
         rp = os.path.join(root, "records.json")
         with open(rp, "w") as fh:

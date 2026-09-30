@@ -615,6 +615,9 @@ t_eq "last prompt skips notifications, skill bodies, command wrappers, peers, in
 t_eq "transcript records say who wrote each user line" \
      "clear:/clear hidden command:/catchup injected typed task hook peer hidden" \
      "$(python3 "$REPO_ROOT/tests/fixtures/turns-probe.py")"
+t_eq "the input-mode line beside each permission-mode line is not a mode change" \
+     "bypassPermissions auto | now auto" \
+     "$(python3 "$REPO_ROOT/tests/fixtures/turns-probe.py" modes)"
 if command -v node >/dev/null 2>&1; then
     t_eq "chapters are your messages; harness turns fold in, commands wait for your next message" \
          "fix the tab bug cmds=/catchup at x.md h=task:1,hook:1,peer:1 div=clear | second ask | Review cmds=/review,/model" \

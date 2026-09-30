@@ -319,8 +319,12 @@ class TranscriptParser:
                 meta['ai_title'] = t
             return
 
-        if msg_type in ('permission-mode', 'mode'):
-            pm = obj.get('permissionMode') or obj.get('mode') or ''
+        # A "mode" line is the input mode (always "normal"), not a permission
+        # mode; reading it as one flipped the badge twice every turn.
+        if msg_type == 'mode':
+            return
+        if msg_type == 'permission-mode':
+            pm = obj.get('permissionMode') or ''
             if pm and pm != meta['permission_mode']:
                 meta['permission_mode'] = pm
                 self._flush_tools()
