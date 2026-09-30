@@ -1,7 +1,8 @@
 """Checks that transcript.py labels who wrote each user record, using the
 same classifier as scan.sh. Prints one token per user record: kind, plus
-the command name for commands."""
-import json, os, sys, tempfile, shutil
+the command name for commands. With "chapters", prints the transcript page's
+chapters for the same session instead (via chapters-probe.js)."""
+import json, os, sys, tempfile, shutil, subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "..", "lib"))
@@ -28,12 +29,35 @@ for line in (
 ):
     LINES.append(line())
 
+
+def a(text, n):
+    return json.dumps({"type": "assistant", "uuid": f"a{n}", "message": {
+        "id": f"m{n}", "model": "claude-opus-5-5", "role": "assistant",
+        "content": [{"type": "text", "text": text}], "usage": {}}})
+
+
+if sys.argv[1:] == ["chapters"]:
+    # after the owner's ask: Claude answers, a command runs with a reply and
+    # no typed message after it, then a command with nothing after it at all
+    LINES += [a("On it.", 1), u("second ask", origin={"kind": "human"}), a("Done.", 2),
+              u("<command-name>/review</command-name><command-args></command-args>", origin={"kind": "human"}),
+              a("## Review\nLooks fine.", 3),
+              u("<command-name>/model</command-name><command-args></command-args>")]
+
 root = tempfile.mkdtemp(prefix="turns-")
 try:
     p = os.path.join(root, "s.jsonl")
     with open(p, "w") as fh:
         fh.write("\n".join(LINES) + "\n")
     recs = transcript.parse_transcript(p)["records"]
+    if sys.argv[1:] == ["chapters"]:
+        rp = os.path.join(root, "records.json")
+        with open(rp, "w") as fh:
+            json.dump(recs, fh)
+        run = subprocess.run(["node", os.path.join(HERE, "chapters-probe.js"), rp],
+                             capture_output=True, text=True)
+        print((run.stdout or run.stderr).strip())
+        sys.exit(0)
     out = []
     for r in recs:
         if r.get("role") != "user":

@@ -100,7 +100,8 @@ def classify(obj):
             return _turn('hidden', text)
         if text.startswith('Stop hook feedback:'):
             body = text[len('Stop hook feedback:'):].strip()
-            return _turn('hook', text, 'Stop hook: ' + (_first_line(body) or 'feedback'))
+            head = _first_line(body).split(' — ')[0]   # hook messages lead with a heading
+            return _turn('hook', text, 'Stop hook: ' + (head or 'feedback'))
         return _turn('system', text, _first_line(_REMINDER.sub(
             lambda m: m.group(0)[len('<system-reminder>'):-len('</system-reminder>')], text)))
 

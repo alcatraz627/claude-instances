@@ -611,6 +611,13 @@ t_eq "last prompt skips notifications, skill bodies, command wrappers, peers, in
 t_eq "transcript records say who wrote each user line" \
      "clear:/clear hidden command:/catchup injected typed task hook peer hidden" \
      "$(python3 "$REPO_ROOT/tests/fixtures/turns-probe.py")"
+if command -v node >/dev/null 2>&1; then
+    t_eq "chapters are your messages; harness turns fold in, commands wait for your next message" \
+         "fix the tab bug cmds=/catchup at x.md h=task:1,hook:1,peer:1 div=clear | second ask | Review cmds=/review,/model" \
+         "$(python3 "$REPO_ROOT/tests/fixtures/turns-probe.py" chapters)"
+else
+    t_fail "chapters probe needs node (SKIP-loud: not installed)"
+fi
 t_grep "live rows carry the session file's name/status" lib/hub-server.py '"status_since": inst.get'
 t_grep "cards label with the session name"  lib/hub-index.html 'cleanTitle\(s.name\)'
 
