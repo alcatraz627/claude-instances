@@ -613,7 +613,10 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const ic = n => `<svg class="icon" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const kfmt = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : String(n);
-const SS = { theme: 'cv-theme' };
+// 'hub-theme' holds only an explicit choice; the old 'cv-theme' mixed in
+// OS-resolved values saved at load, so it is dropped (see hub-index.html).
+const SS = { theme: 'hub-theme' };
+try { localStorage.removeItem('cv-theme'); } catch (e) {}
 const hljsLink = document.createElement('link');
 hljsLink.rel = 'stylesheet'; document.head.appendChild(hljsLink);
 function applyTheme(t) {
@@ -621,8 +624,15 @@ function applyTheme(t) {
     hljsLink.href = t === 'light' ? '/vendor/hljs-github.min.css' : '/vendor/hljs-github-dark.min.css';
     $('#themeBtn').innerHTML = ic(t === 'light' ? 'sun' : 'moon');
     document.querySelectorAll('#vpTheme button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.theme === t)));
+}
+/* Only a choice made here is saved; the OS-resolved theme is not, or the page
+   would never follow the OS again after one visit. */
+function chooseTheme(t) {
+    applyTheme(t);
     try { localStorage.setItem(SS.theme, t); } catch (e) {}
 }
+const osTheme = matchMedia('(prefers-color-scheme: light)');
+function savedTheme() { try { return localStorage.getItem(SS.theme); } catch (e) { return null; } }
 function copyText(txt, btn) {
     const done = () => { if (!btn) return; btn.classList.add('ok'); btn.textContent = 'copied';
         setTimeout(() => { btn.classList.remove('ok'); btn.textContent = 'copy'; }, 1200); };
@@ -1532,7 +1542,7 @@ function setMode(mode) {
         `<p>The session just started — chapter one appears with your first prompt.</p></div>`;
 }
 window.setMode = setMode;
-$('#themeBtn').onclick = () => vt(() => applyTheme(document.documentElement.classList.contains('light') ? 'dark' : 'light'));
+$('#themeBtn').onclick = () => vt(() => chooseTheme(document.documentElement.classList.contains('light') ? 'dark' : 'light'));
 $('#tbTitle').onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
 
 /* ================= handoff view controls (theme · palette · direction · text size · timeline) */
@@ -1717,12 +1727,13 @@ document.addEventListener('click', e => {
 });
 $('#vpDir').onclick = e => { const b = e.target.closest('button'); if (b) vt(() => applyDir(b.dataset.dir)); };
 $('#vpSkin').onclick = e => { const b = e.target.closest('button'); if (b) vt(() => applyPalette(b.dataset.skin)); };
-$('#vpTheme').onclick = e => { const b = e.target.closest('button'); if (b) vt(() => applyTheme(b.dataset.theme)); };
+$('#vpTheme').onclick = e => { const b = e.target.closest('button'); if (b) vt(() => chooseTheme(b.dataset.theme)); };
 $('#vpFs').oninput = e => applyTextSize(+e.target.value);
 $('#vpTl').onchange = e => setTimeline(e.target.checked, true);
 
 /* ================= init — fetch the real session, then go live */
-applyTheme((() => { try { return localStorage.getItem(SS.theme) || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'); } catch (e) { return 'dark'; } })());
+applyTheme(savedTheme() || (osTheme.matches ? 'light' : 'dark'));
+osTheme.addEventListener('change', e => { if (!savedTheme()) applyTheme(e.matches ? 'light' : 'dark'); });
 applyDir(load('hx-dir', 'chapters'));
 applyPalette(load('cc-skin', 'native'));
 applyTextSize(parseFloat(load('hx-fs', '15.5')));
