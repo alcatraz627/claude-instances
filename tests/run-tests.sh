@@ -505,6 +505,10 @@ t_eq "counts a small session exactly"        "3:3:False" \
 # hence a day of real work totalling 6 input tokens.
 t_eq "history counts turns like live does"   "12:120:60" \
      "$(python3 "$SCAN_PROBE" history_session 12)"
+# One message is written as one line per content block, each repeating its id
+# and usage; the dropdown summed them and read about 4x the real tokens.
+t_eq "a multi-line message counts once"      "live=2:20:150:1000:2|hist=2:20:150" \
+     "$(python3 "$SCAN_PROBE" dedup_usage)"
 
 # ── Day boundaries ───────────────────────────────────────────────────────────
 #

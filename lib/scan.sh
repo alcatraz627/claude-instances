@@ -286,6 +286,16 @@ def _ago_seconds(ts):
     except (ValueError, TypeError, AttributeError):
         return 0
 
+def _message_key(msg, line_no):
+    """Which assistant message a transcript line belongs to.
+
+    Claude Code writes one line per content block, and each line repeats its
+    message's id and full usage, so turns and tokens are counted per message.
+    A line with no id stands for itself.
+    """
+    mid = msg.get('id')
+    return mid if isinstance(mid, str) and mid else f'line:{line_no}'
+
 def read_transcript(filepath):
     """Everything a live row needs from one read of its transcript.
 
@@ -300,9 +310,10 @@ def read_transcript(filepath):
            'tail': []}
     tail = collections.deque(maxlen=3)
     last_tool_ts = ''
+    usage_by_msg = {}
     try:
         with open(filepath, 'r', errors='replace') as f:
-            for line in f:
+            for n, line in enumerate(f):
                 if line.strip():
                     tail.append(line)
                 is_asst = '"assistant"' in line
@@ -322,17 +333,12 @@ def read_transcript(filepath):
                     if p:
                         out['last_prompt'] = p
                 elif t == 'assistant':
-                    out['turns'] += 1
                     msg = obj.get('message', {})
                     if not isinstance(msg, dict):
                         continue
                     if msg.get('model'):
                         out['model'] = msg['model']
-                    usage = msg.get('usage') or {}
-                    out['input_tokens'] += token_count(usage.get('input_tokens'))
-                    out['output_tokens'] += token_count(usage.get('output_tokens'))
-                    out['cache_read'] += token_count(usage.get('cache_read_input_tokens'))
-                    out['cache_create'] += token_count(usage.get('cache_creation_input_tokens'))
+                    usage_by_msg[_message_key(msg, n)] = msg.get('usage') or {}
                     content = msg.get('content', [])
                     if not isinstance(content, list):
                         continue
@@ -348,6 +354,12 @@ def read_transcript(filepath):
                         last_tool_ts = obj.get('timestamp', '')
     except OSError:
         return out
+    out['turns'] = len(usage_by_msg)
+    for usage in usage_by_msg.values():
+        out['input_tokens'] += token_count(usage.get('input_tokens'))
+        out['output_tokens'] += token_count(usage.get('output_tokens'))
+        out['cache_read'] += token_count(usage.get('cache_read_input_tokens'))
+        out['cache_create'] += token_count(usage.get('cache_creation_input_tokens'))
     if out['last_tool'] is not None:
         out['last_tool']['ago_seconds'] = _ago_seconds(last_tool_ts)
     if out['last_prompt']:
@@ -642,9 +654,7 @@ def claude_parse_session(filepath):
     the day's total read as a couple of thousand.
     """
     model = 'unknown'
-    turn_count = 0
-    total_input = 0
-    total_output = 0
+    usage_by_msg = {}
     try:
         first_lines = []
         with open(filepath, 'r', errors='replace') as f:
@@ -659,10 +669,13 @@ def claude_parse_session(filepath):
                     continue
                 if obj.get('type') != 'assistant':
                     continue
-                turn_count += 1
-                usage = (obj.get('message') or {}).get('usage') or {}
-                total_input += token_count(usage.get('input_tokens'))
-                total_output += token_count(usage.get('output_tokens'))
+                msg = obj.get('message')
+                if not isinstance(msg, dict):
+                    msg = {}
+                usage_by_msg[_message_key(msg, i)] = msg.get('usage') or {}
+        turn_count = len(usage_by_msg)
+        total_input = sum(token_count(u.get('input_tokens')) for u in usage_by_msg.values())
+        total_output = sum(token_count(u.get('output_tokens')) for u in usage_by_msg.values())
 
         for line in first_lines:
             try:

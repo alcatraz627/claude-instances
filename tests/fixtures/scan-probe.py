@@ -158,6 +158,34 @@ def main(argv):
             print(f"{r['turns']}:{r['tokens_in']}:{r['tokens_out']}")
         finally:
             shutil.rmtree(root, ignore_errors=True)
+    elif op == "dedup_usage":
+        # Claude Code writes one line per content block, and every line of a
+        # message repeats that message's id and usage. Summing per line counted
+        # a 3-block message three times; the transcript page (which de-dups by
+        # id) showed a quarter of the dropdown's tokens for the same session.
+        import tempfile, shutil
+        root = tempfile.mkdtemp(prefix="dedup-")
+        try:
+            f = os.path.join(root, "s.jsonl")
+            u = {"input_tokens": 10, "output_tokens": 100, "cache_read_input_tokens": 1000}
+            with open(f, "w") as fh:
+                for block in ({"type": "text", "text": "hi"},
+                              {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+                              {"type": "tool_use", "name": "Read", "input": {"file_path": "/a"}}):
+                    fh.write(json.dumps({"type": "assistant", "message": {
+                        "id": "msg_1", "model": "claude-opus-5-5", "usage": u,
+                        "content": [block]}}) + "\n")
+                fh.write(json.dumps({"type": "assistant", "message": {
+                    "id": "msg_2", "model": "claude-opus-5-5",
+                    "usage": {"input_tokens": 10, "output_tokens": 50},
+                    "content": [{"type": "text", "text": "done"}]}}) + "\n")
+            ns2 = load()
+            r = ns2["read_transcript"](f)
+            h = ns2["claude_parse_session"](f)
+            print(f"live={r['turns']}:{r['input_tokens']}:{r['output_tokens']}:{r['cache_read']}:{r['tool_calls']}"
+                  f"|hist={h['turns']}:{h['tokens_in']}:{h['tokens_out']}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
     elif op == "read_pid_file":
         print(load()["read_pid_file"](int(argv[1]), argv[2]).strip())
     elif op == "tokens":
