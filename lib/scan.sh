@@ -576,61 +576,53 @@ def estimate_cost(model_short, input_tokens, output_tokens):
         return cost if math.isfinite(cost) else None
     return 0.0
 
-def _resolve_session_path(pid, cwd, prefer_sid=''):
+def _find_transcript(cwd, sid):
+    """Absolute path of transcript <sid>.jsonl, or '' if it is not on disk.
+
+    Looks in the cwd's project dir first, then every project dir, since a
+    session's transcript lives under the cwd it started in.
+    """
+    if not sid or '/' in sid or not os.path.isdir(projects_dir):
+        return ''
+    if cwd:
+        slug = re.sub(r'[/.]', '-', cwd).lstrip('-')
+        for d in ('-' + slug, slug):
+            p = os.path.join(projects_dir, d, f"{sid}.jsonl")
+            if os.path.isfile(p):
+                return p
+    try:
+        for e in os.scandir(projects_dir):
+            p = os.path.join(e.path, f"{sid}.jsonl")
+            if e.is_dir() and os.path.isfile(p):
+                return p
+    except OSError:
+        pass
+    return ''
+
+def _resolve_session_path(pid, cwd, prefer_sid='', file_sid=''):
     """Which transcript belongs to this PID? Absolute path, or '' if unknown.
 
-    Three sources, best first:
-
-      1. What the process itself reported — see read_transcript_path().
-      2. An explicit `--resume <id>`, when that transcript is in this project.
-      3. The newest transcript in the cwd's project dir.
-
-    Source 3 is a guess and is wrong whenever one cwd hosts several live
-    sessions: every one of them resolves to the same newest file, so the same
-    conversation is rendered once per process while the others vanish. It stays
-    only as a last resort, for a session whose statusline has never rendered.
+    The session file's id wins when there is one. Otherwise, for a process
+    that has not written its file yet: what the process reported through the
+    statusline (read_transcript_path), then an explicit `--resume <id>`.
+    Never "the newest transcript in the cwd": one cwd often hosts several
+    live sessions, and that guess gave them all the same conversation.
     """
+    if file_sid:
+        return _find_transcript(cwd, file_sid)
     tpath = read_transcript_path(pid)
     if tpath:
         return tpath
+    return _find_transcript(cwd, prefer_sid)
 
-    if not cwd or not os.path.isdir(projects_dir):
-        return ''
-
-    # Derive project slug from CWD
-    slug = re.sub(r'[/.]', '-', cwd).lstrip('-')
-    proj_dir = os.path.join(projects_dir, '-' + slug)
-    if not os.path.isdir(proj_dir):
-        proj_dir = os.path.join(projects_dir, slug)
-    if not os.path.isdir(proj_dir):
-        return ''
-
-    jsonl_files = []
-    try:
-        for f in os.listdir(proj_dir):
-            if f.endswith('.jsonl') and not f.startswith('.'):
-                full = os.path.join(proj_dir, f)
-                jsonl_files.append((os.path.getmtime(full), full))
-    except OSError:
-        return ''
-    if not jsonl_files:
-        return ''
-
-    jsonl_files.sort(reverse=True)
-    if prefer_sid:
-        for _, full in jsonl_files:
-            if Path(full).stem == prefer_sid:
-                return full
-    return jsonl_files[0][1]
-
-def get_session_tokens(pid, cwd, prefer_sid=''):
+def get_session_tokens(pid, cwd, prefer_sid='', file_sid=''):
     """Find the active session JSONL for a PID and aggregate token usage."""
     result = {'model': 'unknown', 'input_tokens': 0, 'output_tokens': 0,
               'cache_read': 0, 'cache_create': 0, 'cost_usd': 0.0,
-              'session_id': '', 'turns': 0, 'tool_calls': 0,
+              'session_id': file_sid, 'turns': 0, 'tool_calls': 0,
               'jsonl_path': ''}
 
-    filepath = _resolve_session_path(pid, cwd, prefer_sid)
+    filepath = _resolve_session_path(pid, cwd, prefer_sid, file_sid)
     if not filepath:
         return result
     result['session_id'] = Path(filepath).stem
@@ -1149,18 +1141,34 @@ def run_ipc_disagreement_pass(live):
             pass
 
 
-def _build_claude_instance(pid, cmdline, provider):
-    """Build the full live-instance row for a matched claude process —
-    everything downstream of proc_match (cwd, tokens, git, tab title, ...).
+def _ms_to_iso(ms):
+    """Epoch milliseconds from a session file as ISO-UTC, or '' if not a number."""
+    if isinstance(ms, bool) or not isinstance(ms, (int, float)) or not math.isfinite(ms):
+        return ''
+    try:
+        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    except (OverflowError, OSError, ValueError):
+        return ''
+
+def _str_field(sess, key):
+    v = sess.get(key) if sess else None
+    return v if isinstance(v, str) else ''
+
+def _build_claude_instance(pid, cmdline, provider, sess=None):
+    """Build the full live-instance row for one live session.
+
+    `sess` is the session's ~/.claude/sessions/<pid>.json when it has one;
+    its session id and cwd win over anything derived from the process.
     """
     pid_str = str(pid)
     meta = provider['proc_meta'](cmdline)
     model_flag = meta['model_hint']
     resume_id = meta['resume_id']
+    file_sid = _str_field(sess, 'sessionId')
 
     # cwd and uptime come from the batched lookup; the per-pid calls below only
     # run for a process that appeared after it (a session started mid-scan).
-    cwd = _proc_cwds.get(pid_str, '')
+    cwd = _str_field(sess, 'cwd') or _proc_cwds.get(pid_str, '')
     if not cwd:
         try:
             lsof = subprocess.run(
@@ -1192,7 +1200,7 @@ def _build_claude_instance(pid, cmdline, provider):
     ctx_remaining = read_context_remaining(pid)
 
     # Get session tokens and model from JSONL
-    session_data = get_session_tokens(pid, cwd, prefer_sid=resume_id)
+    session_data = get_session_tokens(pid, cwd, prefer_sid=resume_id, file_sid=file_sid)
     if model_flag == 'unknown' and session_data['model'] != 'unknown':
         model_flag = session_data['model']
 
@@ -1276,56 +1284,152 @@ def _build_claude_instance(pid, cmdline, provider):
             'pm2_errored': statusline.get('pm2_errored', ''),
         },
         'provider': provider['name'],
+        # 'interactive' from the session file; 'pending' for a young process
+        # that has not written its file yet.
+        'kind': _str_field(sess, 'kind') or 'pending',
+        'name': _str_field(sess, 'name'),
+        'status': _str_field(sess, 'status'),
+        'status_since': _ms_to_iso((sess or {}).get('statusUpdatedAt')),
+        'last_activity': _ms_to_iso((sess or {}).get('updatedAt')),
         'ipc': get_ipc_info(session_data['session_id'], quick_mode, cwd),
     }
 
-def get_live_instances():
-    """Find running agentic-CLI processes (any registered provider) and
-    build a live-instance row for each, keyed off one shared `ps` pass.
+# ─── Liveness: Claude Code's own session registry ───────────────
+#
+# Claude Code writes ~/.claude/sessions/<pid>.json for each session it runs.
+# A live row exists iff that file exists, its pid is running, the file's
+# procStart matches the running process's start time (a reused pid fails
+# this), and kind == "interactive" (headless `claude -p` workers fail it).
+
+SESSIONS_DIR = os.environ.get('HUB_SESSIONS_DIR') or os.path.join(home, '.claude', 'sessions')
+
+# A claude process with no session file yet is shown only this long; an
+# interactive session writes its file at startup, so an older one is not one.
+FALLBACK_GRACE_S = 60
+
+_HEADLESS_FLAGS = ('-p', '--print', '--output-format', '--input-format')
+
+def _ps_snapshot():
+    """Raw `ps` text: pid, start time, argv for every process.
+
+    `ps`, not `pgrep -f`: the compiled claude binary's argv is not readable
+    through pgrep on this machine, so pgrep silently finds no sessions.
     """
+    r = subprocess.run(['ps', '-Ao', 'pid=,lstart=,args='],
+                       capture_output=True, text=True, timeout=3)
+    return r.stdout if r.returncode == 0 else ''
+
+def _parse_start(text, utc):
+    """A ps-style start time ('Wed Sep 23 18:07:15 2026') as epoch seconds."""
+    import time, calendar
+    try:
+        st = time.strptime(' '.join((text or '').split()), '%a %b %d %H:%M:%S %Y')
+    except ValueError:
+        return None
+    return calendar.timegm(st) if utc else time.mktime(st)
+
+def parse_ps(text):
+    """pid -> (start_epoch, cmdline) from `ps -Ao pid=,lstart=,args=` text."""
+    procs = {}
+    for line in text.splitlines():
+        parts = line.split(None, 6)
+        if len(parts) < 7 or not parts[0].isdigit():
+            continue
+        procs[int(parts[0])] = (_parse_start(' '.join(parts[1:6]), utc=False), parts[6])
+    return procs
+
+def read_session_files(d=None):
+    """pid -> parsed ~/.claude/sessions/<pid>.json. Unreadable files are skipped."""
+    d = d or SESSIONS_DIR
+    out = {}
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return out
+    for n in names:
+        stem, ext = os.path.splitext(n)
+        if ext != '.json' or not stem.isdigit():
+            continue
+        p = os.path.join(d, n)
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p) as f:
+                obj = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(obj, dict):
+            out[int(stem)] = obj
+    return out
+
+def _proc_start_matches(proc_start, actual_epoch):
+    """Does the file's procStart name this process's start time?
+
+    The file's clock has been UTC on this machine while ps prints local time,
+    so either reading within two seconds counts as a match.
+    """
+    if actual_epoch is None or not isinstance(proc_start, str):
+        return False
+    for utc in (True, False):
+        t = _parse_start(proc_start, utc)
+        if t is not None and abs(t - actual_epoch) <= 2:
+            return True
+    return False
+
+def _is_headless(cmdline):
+    return any(tok in _HEADLESS_FLAGS or tok.startswith('--print=')
+               for tok in cmdline.split())
+
+def select_live(procs, sessions, now=None):
+    """Which processes are live interactive Claude sessions.
+
+    Returns [(pid, cmdline, session_dict_or_None)]. The session file is the
+    authority; a claude process without a valid file is kept only while it is
+    young enough to still be writing one.
+    """
+    import time
+    now = now if now is not None else time.time()
+    rows, claimed = [], set()
+    for pid, sess in sorted(sessions.items()):
+        proc = procs.get(pid)
+        if proc is None:
+            continue                      # stale file: pid is gone
+        if not _proc_start_matches(sess.get('procStart'), proc[0]):
+            continue                      # pid reused by another process
+        claimed.add(pid)                  # this file speaks for this process
+        if sess.get('kind') != 'interactive':
+            continue                      # headless worker, or anything else
+        rows.append((pid, proc[1], sess))
+    for pid, (start, cmdline) in sorted(procs.items()):
+        if pid in claimed:
+            continue
+        basename = os.path.basename(cmdline.split(None, 1)[0]) if cmdline.strip() else ''
+        if not claude_proc_match(basename, cmdline) or _is_headless(cmdline):
+            continue
+        if start is None or now - start > FALLBACK_GRACE_S:
+            continue
+        rows.append((pid, cmdline, None))
+    return rows
+
+def get_live_instances():
+    """One row per live interactive Claude session (see select_live)."""
     instances = []
     try:
-        # Enumerate with `ps`, NOT `pgrep -f`: the compiled (Bun) claude binary's
-        # argv is not readable through pgrep / KERN_PROCARGS on this machine, so a
-        # `pgrep -fl claude` scan silently returns ZERO live sessions (verified
-        # 2026-07-06 — `pgrep -f` matched none of a live session's tokens while
-        # `ps -o args` showed them). ps reads the accounting args reliably, and
-        # doing it once here covers every registered provider.
-        result = subprocess.run(
-            ['ps', '-Ao', 'pid=,args='],
-            capture_output=True, text=True, timeout=3
-        )
-        if result.returncode != 0:
-            return instances
-
-        matched = []
-        for line in result.stdout.strip().split('\n'):
-            if not line.strip():
-                continue
-            parts = line.strip().split(None, 1)
-            if len(parts) < 2:
-                continue
-            pid_str = parts[0]
-            cmdline = parts[1]
-            basename = os.path.basename(cmdline.split(None, 1)[0])
-
-            provider = next((p for p in PROVIDERS if p['proc_match'](basename, cmdline)), None)
-            if provider is None:
-                continue
-            matched.append((int(pid_str), cmdline, provider))
+        procs = parse_ps(_ps_snapshot())
+        selected = select_live(procs, read_session_files())
 
         # Ask about the whole fleet once, before building any row.
-        prime_process_info([p for p, _, _ in matched])
+        prime_process_info([p for p, _, _ in selected])
 
         # All digest calls launch together under one shared deadline, so the
         # per-cwd cache is warm before any card asks for it.
         if not quick_mode and _IPC_OVERLAY and _IPC_DIGEST_ON and os.path.exists(_IPC_BIN):
-            cwds = {_proc_cwds.get(str(p), '')
-                    for p, _, prov in matched if prov['name'] == 'claude'}
+            cwds = {(s or {}).get('cwd') or _proc_cwds.get(str(p), '')
+                    for p, _, s in selected}
             _ipc_digest_prefetch(sorted(c for c in cwds if c))
 
-        for pid, cmdline, provider in matched:
-            instance = _build_claude_instance(pid, cmdline, provider)
+        for pid, cmdline, sess in selected:
+            instance = _build_claude_instance(pid, cmdline, claude_provider, sess)
             if instance:
                 instances.append(instance)
     except (subprocess.TimeoutExpired, OSError):
