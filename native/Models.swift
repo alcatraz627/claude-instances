@@ -109,6 +109,7 @@ struct LiveInstance: Codable {
     var effectiveState: String {
         let guess = sessionState?.state ?? "idle"
         if status == "idle" || status == "shell" { return "idle" }
+        if status == "busy" && guess == "idle" { return "busy" }
         return guess
     }
 

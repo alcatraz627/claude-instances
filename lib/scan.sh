@@ -1083,6 +1083,20 @@ def _ms_to_iso(ms):
     except (OverflowError, OSError, ValueError):
         return ''
 
+def _last_activity(sess, jsonl_path):
+    """Newer of the session file's updatedAt and the transcript's mtime.
+
+    updatedAt moves only when the status changes, so a long busy stretch
+    would otherwise read as no activity at all.
+    """
+    best = (sess or {}).get('updatedAt')
+    best = best / 1000 if isinstance(best, (int, float)) and not isinstance(best, bool) else 0
+    try:
+        best = max(best, os.path.getmtime(jsonl_path)) if jsonl_path else best
+    except OSError:
+        pass
+    return _ms_to_iso(best * 1000) if best else ''
+
 def _str_field(sess, key):
     v = sess.get(key) if sess else None
     return v if isinstance(v, str) else ''
@@ -1221,7 +1235,7 @@ def _build_claude_instance(pid, cmdline, provider, sess=None):
         'name': _str_field(sess, 'name'),
         'status': _str_field(sess, 'status'),
         'status_since': _ms_to_iso((sess or {}).get('statusUpdatedAt')),
-        'last_activity': _ms_to_iso((sess or {}).get('updatedAt')),
+        'last_activity': _last_activity(sess, session_data['jsonl_path']),
         'ipc': get_ipc_info(session_data['session_id'], quick_mode, cwd),
     }
 
