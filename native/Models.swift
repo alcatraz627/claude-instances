@@ -18,15 +18,10 @@ extension String {
 struct ScanResult: Codable {
     let live: [LiveInstance]
     let history: [SessionHistory]
-    let recentEvents: [Event]?
-    let deepEvents: [Event]?
-    let aggregates: Aggregates?
     let liveCount: Int
 
     enum CodingKeys: String, CodingKey {
-        case live, history, aggregates
-        case recentEvents = "recent_events"
-        case deepEvents = "deep_events"
+        case live, history
         case liveCount = "live_count"
     }
 }
@@ -34,32 +29,6 @@ struct ScanResult: Codable {
 struct SessionState: Codable {
     let state: String?    // thinking, responding, tool_use, tool_result, idle
     let detail: String?   // e.g. tool name or empty
-}
-
-struct AggregatesPeriod: Codable {
-    let sessions: Int?
-    let turns: Int?
-    let tokensIn: Int?
-    let tokensOut: Int?
-    let costUsd: Double?
-
-    enum CodingKeys: String, CodingKey {
-        case sessions, turns
-        case tokensIn = "tokens_in"
-        case tokensOut = "tokens_out"
-        case costUsd = "cost_usd"
-    }
-}
-
-struct Aggregates: Codable {
-    let today: AggregatesPeriod?
-    let week: AggregatesPeriod?
-    let modelBreakdown: [String: Int]?
-
-    enum CodingKeys: String, CodingKey {
-        case today, week
-        case modelBreakdown = "model_breakdown"
-    }
 }
 
 struct LiveInstance: Codable {
@@ -246,22 +215,6 @@ struct SessionHistory: Codable {
         case tokensIn = "tokens_in"
         case tokensOut = "tokens_out"
         case costUsd = "cost_usd"
-    }
-}
-
-struct Event: Codable {
-    let event: String
-    let ts: String
-    let project: String?
-    let sessionId: String?
-    let model: String?
-    let tabTitle: String?
-    let tool: String?
-
-    enum CodingKeys: String, CodingKey {
-        case event, ts, project, model, tool
-        case sessionId = "session_id"
-        case tabTitle = "tab_title"
     }
 }
 

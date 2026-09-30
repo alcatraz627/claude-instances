@@ -1,39 +1,32 @@
 #!/usr/bin/env bash
-# scan.sh — enumerate live Claude Code instances + recent session history.
+# scan.sh — list live Claude Code sessions and recent session history.
 #
-# Output: JSON to stdout with structure:
-#   { "live": [...], "history": [...], "aggregates": {...} }
+# Output: JSON to stdout: { "ts", "live_count", "live": [...], "history": [...] }
 #
-# Live instances: discovered via pgrep + process info + statusline metrics.
-# History: enumerated from ~/.claude/projects/*/*.jsonl.
-# Aggregates: today/week session stats, model breakdown — computed over the
-#   full window via the ~/.claude/widgets/.session-summaries.json cache, not
-#   over the 20-row display list.
+# Live: one row per ~/.claude/sessions/<pid>.json whose pid is running with a
+#   matching start time and kind "interactive" (see select_live).
+# History: recent transcripts under ~/.claude/projects/*/*.jsonl, stubs hidden.
 #
 # Flags:
-#   --quick   Skip history, events, aggregates (fast path for 5s polling)
+#   --quick   Skip history and git (fast path for the 5s poll)
 
 set -uo pipefail
 
 PROJECTS_DIR="${HOME}/.claude/projects"
-EVENTS_FILE="${HOME}/.claude/events.jsonl"
 STATUSLINE_DIR="/tmp"
-SUMMARY_CACHE="${HOME}/.claude/widgets/.session-summaries.json"
 QUICK_MODE=0
 [[ "${1:-}" == "--quick" ]] && QUICK_MODE=1
 
-python3 - "$PROJECTS_DIR" "" "$EVENTS_FILE" "$STATUSLINE_DIR" "$QUICK_MODE" "$SUMMARY_CACHE" <<'PYEOF'
+# argv[2] and argv[3] are unused placeholders kept so callers that exec the
+# embedded script (tests/fixtures/scan-probe.py) keep their positions.
+python3 - "$PROJECTS_DIR" "" "" "$STATUSLINE_DIR" "$QUICK_MODE" <<'PYEOF'
 import sys, json, os, subprocess, re, math
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 projects_dir = sys.argv[1]
-events_file = sys.argv[3]
 statusline_dir = sys.argv[4]
 quick_mode = sys.argv[5] == '1'
-# Absent (probe contexts that predate it) means no persistence: the aggregate
-# walk still works, it just re-parses every scan.
-summary_cache = sys.argv[6] if len(sys.argv) > 6 else ''
 
 home = os.path.expanduser('~')
 
@@ -429,35 +422,6 @@ def infer_session_state(entries):
             text = last_block.get('text', '')
             result['detail'] = text[:37] + '...' if len(text) > 40 else text[:40]
     return result
-
-# ─── Session JSONL token aggregator ─────────────────────────────
-
-# Cost rates per million tokens
-def tail_lines(path, n, avg_line=400):
-    """The last n lines of a file, without reading the rest of it.
-
-    These logs are append-only and only their tail is ever wanted, but they grow
-    without bound — events.jsonl is 26MB and 110k lines here, and reading all of
-    it to keep 500 lines cost more than everything else on the fast path put
-    together. Seeks back a guessed span and widens if it undershot.
-    """
-    try:
-        size = os.path.getsize(path)
-    except OSError:
-        return []
-    span = min(size, n * avg_line)
-    while True:
-        try:
-            with open(path, 'r', errors='replace') as f:
-                f.seek(max(0, size - span))
-                if span < size:
-                    f.readline()      # drop the partial line the seek landed in
-                lines = f.readlines()
-        except OSError:
-            return []
-        if len(lines) >= n or span >= size:
-            return lines[-n:]
-        span = min(size, span * 4)
 
 # ─── Batched process lookups ───────────────────────────────────
 #
@@ -1379,50 +1343,6 @@ def get_live_instances():
 
     return instances
 
-# ─── Session model cache (for event enrichment) ────────────────
-
-_session_model_cache = {}
-
-def get_session_model(session_id):
-    """Look up model for a session ID from JSONL first-lines cache."""
-    if session_id in _session_model_cache:
-        return _session_model_cache[session_id]
-
-    if not os.path.isdir(projects_dir):
-        return ''
-
-    # Search all project dirs for this session's JSONL
-    try:
-        for d in os.listdir(projects_dir):
-            path = os.path.join(projects_dir, d, f"{session_id}.jsonl")
-            if os.path.exists(path):
-                try:
-                    with open(path, 'r', errors='replace') as f:
-                        for i, line in enumerate(f):
-                            if i > 30:
-                                break
-                            try:
-                                obj = json.loads(line.strip())
-                                if obj.get('type') == 'assistant':
-                                    model = obj.get('message', {}).get('model', '')
-                                    if model:
-                                        short = model
-                                        if 'opus' in model: short = 'opus'
-                                        elif 'sonnet' in model: short = 'sonnet'
-                                        elif 'haiku' in model: short = 'haiku'
-                                        _session_model_cache[session_id] = short
-                                        return short
-                            except json.JSONDecodeError:
-                                continue
-                except OSError:
-                    pass
-                break
-    except OSError:
-        pass
-
-    _session_model_cache[session_id] = ''
-    return ''
-
 # ─── Session history ─────────────────────────────────────────────
 
 # Sessions with fewer assistant turns than this are stubs (opened and closed,
@@ -1470,8 +1390,6 @@ def get_session_history(max_sessions=20):
         # `or 0`: a token count may be None (unknown), never a crash.
         cost_usd = estimate_cost(model_short, total_input or 0, total_output or 0)
 
-        # Cache model for event enrichment
-        _session_model_cache[session_id] = model_short
 
         try:
             size = os.path.getsize(filepath)
@@ -1495,332 +1413,12 @@ def get_session_history(max_sessions=20):
 
     return sessions
 
-# ─── Recent events ───────────────────────────────────────────────
-
-# Expanded event types
-TRACKED_EVENTS = {
-    'SessionStart', 'Stop', 'PermissionRequest', 'PostCompact', 'PreCompact',
-    'SubagentStart', 'SubagentStop', 'Notification',
-    'PostToolUse',
-}
-
-# Tool types worth showing in events (skip noisy reads/searches)
-NOTABLE_TOOLS = {'Edit', 'Write', 'Bash', 'Agent'}
-
-def get_recent_events(max_events=10, deep_max=50):
-    """Get the most recent notable events with model + tab title enrichment."""
-    events = []
-    if not os.path.exists(events_file):
-        return events, []
-    try:
-        all_events = []
-        for line in tail_lines(events_file, 500):
-            try:
-                obj = json.loads(line.strip())
-                event = obj.get('event', '')
-                if event not in TRACKED_EVENTS:
-                    continue
-                # Filter PostToolUse to only notable tools
-                if event == 'PostToolUse':
-                    tool = obj.get('tool', '')
-                    if tool not in NOTABLE_TOOLS:
-                        continue
-
-                sid = obj.get('session_id', '')
-                evt = {
-                    'ts': obj.get('ts', ''),
-                    'event': event,
-                    'project': obj.get('project', ''),
-                    'session_id': sid,
-                    'model': get_session_model(sid) if sid else '',
-                    'tab_title': read_tab_title(sid) if sid else '',
-                    'tool': obj.get('tool', ''),
-                }
-                all_events.append(evt)
-            except json.JSONDecodeError:
-                pass
-
-        # Recent events (for main menu display)
-        recent = all_events[-max_events:]
-        # Deep events (for submenu)
-        deep = all_events[-deep_max:]
-
-        return recent, deep
-    except OSError:
-        pass
-    return [], []
-
-# ─── Aggregates ──────────────────────────────────────────────────
-
-def local_day(iso_utc):
-    """The local calendar day an ISO-UTC timestamp fell on, or '' if unreadable.
-
-    A day means the reader's day. Work at 01:00 belongs to the date they would
-    call today, whatever UTC happened to be doing at the time.
-    """
-    # fromisoformat, not a fixed strptime pattern: the stamp this is fed today
-    # has no fractional seconds, but a parse failure here doesn't error — it
-    # returns '' and the session quietly disappears from every bucket. Accept
-    # the whole ISO family so a change upstream can't silently delete a day.
-    try:
-        dt = datetime.fromisoformat((iso_utc or '').replace('Z', '+00:00'))
-    except (ValueError, TypeError, AttributeError):
-        return ''
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone().strftime('%Y-%m-%d')
-
-def compute_aggregates(history):
-    """Compute today/week session stats and model breakdown.
-
-    Buckets by the local day, not UTC. History stamps `modified` in UTC, and
-    comparing that against a UTC "today" is self-consistent and still wrong for
-    anyone east or west of it: at +05:30 the day's first five and a half hours
-    carry yesterday's UTC date, so a night's work vanished from `today` the
-    moment UTC rolled over.
-    """
-    now = datetime.now().astimezone()
-    today_str = now.strftime('%Y-%m-%d')
-    week_ago = (now - timedelta(days=7)).strftime('%Y-%m-%d')
-
-    today_sessions = []
-    week_sessions = []
-    model_counts = {}
-
-    for s in history:
-        mod = local_day(s.get('modified', ''))
-        if mod == today_str:
-            today_sessions.append(s)
-            # Today's bucket only: the bar renders model_breakdown on its
-            # "Today" row (native/Bar.swift), so an unfiltered count over
-            # the window walk would show the week's mix under a Today label.
-            model = s.get('model', 'unknown')
-            model_counts[model] = model_counts.get(model, 0) + 1
-        if mod >= week_ago:
-            week_sessions.append(s)
-
-    def summarize(sessions):
-        return {
-            'sessions': len(sessions),
-            'turns': sum(s.get('turns', 0) for s in sessions),
-            # `or 0` skips unknown token counts (codex sessions carry None)
-            # rather than crashing the sum — same shape as cost below.
-            'tokens_in': sum(s.get('tokens_in') or 0 for s in sessions),
-            'tokens_out': sum(s.get('tokens_out') or 0 for s in sessions),
-            # `or 0` skips unpriced sessions rather than crashing the sum on a
-            # None. The total is therefore a floor when any model has no rate.
-            'cost_usd': round(sum(s.get('cost_usd') or 0 for s in sessions), 4),
-        }
-
-    return {
-        'today': summarize(today_sessions),
-        'week': summarize(week_sessions),
-        'model_breakdown': model_counts,
-    }
-
-# ─── Aggregate window (summary cache) ────────────────────────────
-#
-# The history list caps at 20 because it is a list of rows; totals labeled
-# "today" and "week" must see every session in their window or they are
-# confident falsehoods (148 real sessions once read as 19). Walking the whole
-# window is only affordable through a per-file summary cache: parse results
-# keyed by (mtime_ns, size), so unchanged transcripts never re-parse.
-#
-# The cache is a file on disk and therefore untrusted input, same doctrine as
-# token_count: any damage — bad JSON, wrong shape, non-int counts — means
-# re-parsing the real transcript, never crashing and never trusting garbage.
-
 def short_model(model):
     """Family name ('opus') out of a full model id ('claude-opus-4-8')."""
     for family in ('opus', 'sonnet', 'haiku'):
         if family in model:
             return family
     return model
-
-def _valid_summary(s):
-    """A cached summary the scan may trust: right shape, right types, sane
-    ranges. Type-valid but range-invalid ints (negative, absurd) re-parse —
-    isinstance alone let tokens_out: 10**300 straight into the day's total.
-    None is legitimate for token counts (codex carries no usage keys):
-    "unknown" is a different fact from 0, and stays distinct in the cache."""
-    if not isinstance(s, dict) or not isinstance(s.get('model'), str):
-        return False
-    v = s.get('turns')
-    if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v <= 10**12:
-        return False
-    for k in ('tokens_in', 'tokens_out'):
-        v = s.get(k)
-        if v is None:
-            continue
-        if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v <= 10**12:
-            return False
-    return True
-
-def load_summary_cache():
-    """Last scan's per-file summaries, or {} when absent or damaged."""
-    try:
-        with open(summary_cache, 'r') as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-def save_summary_cache(cache):
-    """Write the cache atomically (tmp + rename), best-effort.
-
-    A failed write costs the next scan a re-parse; it must never cost the
-    scan its output, so errors are swallowed and the tmp file cleaned up.
-    """
-    if not summary_cache:
-        return
-    tmp = f"{summary_cache}.tmp.{os.getpid()}"
-    try:
-        os.makedirs(os.path.dirname(summary_cache), exist_ok=True)
-        with open(tmp, 'w') as f:
-            json.dump(cache, f)
-        os.replace(tmp, summary_cache)
-    except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-
-def get_aggregate_history(window_days=7):
-    """Every provider session in the aggregate window, as minimal rows for
-    compute_aggregates. Only new or changed files pay a parse, where
-    "changed" means a different (mtime_ns, size) — a same-size rewrite
-    forged to the same mtime would serve the stale summary. That is the
-    tradeoff make and rsync accept, and transcripts only ever append."""
-    now_local = datetime.now().astimezone()
-    cutoff = (now_local - timedelta(days=window_days)).replace(
-        hour=0, minute=0, second=0, microsecond=0)
-    # An hour of slack so a DST-shifted midnight can't exclude a session that
-    # compute_aggregates would still bucket into the week.
-    cutoff_epoch = cutoff.timestamp() - 3600
-
-    cache = load_summary_cache()
-    fresh = {}
-    rows = []
-    for provider in PROVIDERS:
-        for filepath in provider['transcript_iter']():
-            try:
-                st = os.stat(filepath)
-            except OSError:
-                continue
-            if st.st_mtime < cutoff_epoch:
-                continue
-            ent = cache.get(filepath)
-            summary = None
-            if (isinstance(ent, dict) and ent.get('mtime_ns') == st.st_mtime_ns
-                    and ent.get('size') == st.st_size
-                    and _valid_summary(ent.get('summary'))):
-                summary = ent['summary']
-            if summary is None:
-                parsed = provider['parse_session'](filepath)
-                if not parsed:
-                    continue
-                summary = {
-                    'model': parsed.get('model') or 'unknown',
-                    'turns': parsed.get('turns', 0),
-                    'tokens_in': parsed.get('tokens_in', 0),
-                    'tokens_out': parsed.get('tokens_out', 0),
-                }
-            fresh[filepath] = {'mtime_ns': st.st_mtime_ns, 'size': st.st_size,
-                               'summary': summary}
-            model_short = short_model(summary['model'])
-            rows.append({
-                'modified': datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-                'model': model_short,
-                'turns': summary['turns'],
-                'tokens_in': summary['tokens_in'],
-                'tokens_out': summary['tokens_out'],
-                'cost_usd': estimate_cost(model_short, summary['tokens_in'] or 0,
-                                          summary['tokens_out'] or 0),
-            })
-    # Rewriting from scratch prunes files that are gone or aged out; skip the
-    # write when nothing changed (this runs on every dashboard poll).
-    if fresh != cache:
-        save_summary_cache(fresh)
-    return rows
-
-# ─── claudew metrics ─────────────────────────────────────────────
-
-CLAUDEW_EVENTS = os.path.join(home, '.claude', 'claudew', 'events.jsonl')
-CLAUDEW_STATE = os.path.join(home, '.claude', 'claudew', 'state')
-
-def get_claudew_metrics():
-    """Read claudew lifecycle events and plugin state for widget display."""
-    metrics = {
-        'recent_exits': [],
-        'recovery_attempts': 0,
-        'total_exits': 0,
-        'last_class': '',
-        'enabled_plugins': [],
-    }
-
-    # Read host events (last 50 lines)
-    if os.path.exists(CLAUDEW_EVENTS):
-        try:
-            exits = []
-            for line in tail_lines(CLAUDEW_EVENTS, 50):
-                try:
-                    obj = json.loads(line.strip())
-                    if obj.get('event') == 'exit':
-                        exits.append({
-                            'ts': obj.get('ts', ''),
-                            'class': obj.get('class', ''),
-                            'exit_code': obj.get('exit_code', 0),
-                            'retry': obj.get('retry', 0),
-                        })
-                except json.JSONDecodeError:
-                    continue
-            metrics['recent_exits'] = exits[-10:]  # last 10
-            metrics['total_exits'] = len(exits)
-            metrics['recovery_attempts'] = sum(1 for e in exits if e.get('retry', 0) > 0)
-            if exits:
-                metrics['last_class'] = exits[-1].get('class', '')
-        except OSError:
-            pass
-
-    # Read auto-resume plugin state
-    resume_exits_path = os.path.join(CLAUDEW_STATE, '00-auto-resume', 'exits.jsonl')
-    if os.path.exists(resume_exits_path):
-        try:
-            # Read the reason field rather than grepping the raw line: the
-            # substring matched anywhere, including inside a message quoting it.
-            reasons = []
-            for l in tail_lines(resume_exits_path, 50):
-                try:
-                    reasons.append(json.loads(l).get('reason', ''))
-                except (json.JSONDecodeError, ValueError, AttributeError):
-                    continue
-            rate_limits = reasons.count('RATE_LIMIT')
-            api_errors = reasons.count('API_ERROR')
-            metrics['rate_limit_exits'] = rate_limits
-            metrics['api_error_exits'] = api_errors
-        except OSError:
-            pass
-
-    # Read enabled plugins from config.toml
-    config_path = os.path.join(home, '.claude', 'claudew', 'config.toml')
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith('enabled'):
-                        # Parse single-line array: enabled = ["00-auto-resume", ...]
-                        m = re.search(r'\[(.+)\]', line)
-                        if m:
-                            raw = m.group(1)
-                            plugins = [p.strip().strip('"').strip("'")
-                                       for p in raw.split(',') if p.strip()]
-                            metrics['enabled_plugins'] = plugins
-                        break
-        except OSError:
-            pass
-
-    return metrics
 
 # ─── Assemble ────────────────────────────────────────────────────
 
@@ -1832,30 +1430,9 @@ output = {
     'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'live_count': len(live),
     'live': live,
+    # History is a full-scan read; --quick leaves it empty.
+    'history': [] if quick_mode else get_session_history(),
 }
-
-if quick_mode:
-    # Quick mode: only live data, skip expensive operations
-    output['history'] = []
-    output['recent_events'] = []
-    output['deep_events'] = []
-    output['aggregates'] = {'today': {}, 'week': {}, 'model_breakdown': {}}
-else:
-    # Full scan: include everything
-    history = get_session_history()
-    recent_events, deep_events = get_recent_events()
-    # Not compute_aggregates(history): totals must see past the display cap.
-    aggregates = compute_aggregates(get_aggregate_history())
-
-    output['history'] = history
-    output['recent_events'] = recent_events
-    output['deep_events'] = deep_events
-    output['aggregates'] = aggregates
-
-# claudew metrics — lightweight file reads, include in both modes
-claudew = get_claudew_metrics()
-if claudew.get('total_exits', 0) > 0 or claudew.get('enabled_plugins'):
-    output['claudew'] = claudew
 
 print(json.dumps(output))
 PYEOF

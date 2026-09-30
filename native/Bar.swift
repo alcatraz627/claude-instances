@@ -187,9 +187,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         self.cachedData = ScanResult(
                             live: mergedLive,
                             history: existing.history,
-                            recentEvents: existing.recentEvents,
-                            deepEvents: existing.deepEvents,
-                            aggregates: existing.aggregates,
                             liveCount: r.liveCount
                         )
                     } else {
@@ -216,15 +213,10 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let btn = statusItem.button else { return }
 
         // Badge composition is user-configurable (Settings → Menu Bar Badge).
-        let showCount    = UserDefaults.standard.object(forKey: "ui.badge.showCount")    as? Bool ?? true
-        let showPermWarn = UserDefaults.standard.object(forKey: "ui.badge.showPermWarn") as? Bool ?? true
+        let showCount = UserDefaults.standard.object(forKey: "ui.badge.showCount") as? Bool ?? true
 
         let liveCount = cachedData?.liveCount ?? 0
-        let hasPerm = showPermWarn && (cachedData?.recentEvents?.suffix(3).contains { $0.event == "PermissionRequest" } ?? false)
-        let countText: String = {
-            if !showCount { return hasPerm ? "⚠" : "" }
-            return hasPerm ? "⚠ \(liveCount)" : (liveCount > 0 ? "\(liveCount)" : "–")
-        }()
+        let countText = !showCount ? "" : (liveCount > 0 ? "\(liveCount)" : "–")
 
         btn.image = composeBadgeImage(count: countText)
         btn.imagePosition = .imageOnly
@@ -370,8 +362,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // ── Live instances ───────────────────────────────────────────────────
         addLiveInstancesSection(menu, data)
 
-        // ── Events ───────────────────────────────────────────────────────────
-        addEventsSection(menu, data)
 
         // ── History ──────────────────────────────────────────────────────────
         addHistorySection(menu, data)
@@ -539,90 +529,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.addItem(.separator())
             }
         }
-        menu.addItem(.separator())
-    }
-
-    // ── Section: Events ──────────────────────────────────────────────────────
-
-    private let eventIcons: [String: String] = [
-        "SessionStart": "▶", "Stop": "■", "PermissionRequest": "⚠",
-        "PostCompact": "⟳", "PreCompact": "⟲", "SubagentStart": "↳",
-        "SubagentStop": "↲", "Notification": "🔔", "PostToolUse": "🔧",
-    ]
-    private let eventColors: [String: NSColor] = [
-        "SessionStart": menuGreen, "Stop": .systemRed,
-        "PermissionRequest": .systemOrange, "PostCompact": .systemBlue,
-        "PreCompact": .systemBlue, "SubagentStart": .systemPurple,
-        "SubagentStop": .systemPurple, "Notification": menuYellow,
-        "PostToolUse": menuTeal,
-    ]
-
-    private func formatEventItem(_ evt: Event) -> NSAttributedString {
-        let icon = eventIcons[evt.event] ?? "·"
-        let color = eventColors[evt.event] ?? .secondaryLabelColor
-        var ts = evt.ts
-        if ts.contains("T") {
-            ts = String(ts.split(separator: "T").last?.prefix(5) ?? "?")
-        }
-
-        // Model badge
-        let m = modelDisplay(evt.model)
-        let modelBadge = evt.model != nil ? "\(m.badge) " : ""
-
-        // Event name + tool detail
-        var evtName = evt.event
-        if evt.event == "PostToolUse", let tool = evt.tool, !tool.isEmpty {
-            evtName = tool
-        }
-        if evtName.count > 14 { evtName = String(evtName.prefix(14)) }
-
-        // Title or project
-        var context = ""
-        if let tt = evt.tabTitle, !tt.isEmpty {
-            context = tt.count > 16 ? "…" + tt.suffix(15) : tt
-        } else if let proj = evt.project, !proj.isEmpty {
-            context = proj.count > 16 ? "…" + proj.suffix(15) : proj
-        }
-
-        // Columned so glyph | time | name | context line up across rows whether
-        // or not a model badge is present (the old fixed-padding misaligned them).
-        let glyphCell = NSMutableAttributedString()
-        glyphCell.append(seg("  \(icon)", BarFont.body, color))
-        if !modelBadge.isEmpty { glyphCell.append(seg(" \(m.badge)", BarFont.monoCaption, m.color)) }
-        let cells: [NSAttributedString] = [
-            glyphCell,
-            seg(ts, BarFont.monoCaption, .tertiaryLabelColor),
-            seg(evtName, BarFont.monoCaption, color),
-            seg(context, BarFont.caption, .secondaryLabelColor),
-        ]
-        return columned(cells, stops: [42, 86, 190])
-    }
-
-    private func addEventsSection(_ menu: NSMenu, _ data: ScanResult) {
-        guard let events = data.recentEvents, !events.isEmpty else { return }
-        let deep = data.deepEvents ?? []
-        let total = max(events.count, deep.count)
-
-        // Collapsed to one row + submenu — keeps the menu short; recent activity
-        // is one hover away.
-        let head = NSMenuItem()
-        head.attributedTitle = NSAttributedString(string: "  Recent Events (\(total))", attributes: [
-            .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor,
-        ])
-        setIcon(head, "list.bullet")
-
-        let sub = NSMenu()
-        for evt in events.suffix(12).reversed() {
-            let s = NSMenuItem(); s.attributedTitle = formatEventItem(evt); s.isEnabled = false; sub.addItem(s)
-        }
-        if deep.count > events.count {
-            sub.addItem(.separator())
-            for evt in deep.suffix(30).reversed() {
-                let s = NSMenuItem(); s.attributedTitle = formatEventItem(evt); s.isEnabled = false; sub.addItem(s)
-            }
-        }
-        head.submenu = sub
-        menu.addItem(head)
         menu.addItem(.separator())
     }
 

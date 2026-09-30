@@ -106,12 +106,12 @@ t_section "usage removed"
 t_check "no rate-limit code in the bar"      bash -c '! rg -q "rateLimit|zoneColor|usage-zones-changed" native/ --glob "*.swift"'
 t_check "hub index draws no usage meters"    bash -c '! rg -q "FEED.limits|class=\"meter" lib/hub-index.html'
 t_check "scan emits no limits"               bash -c '! rg -q "get_limits" lib/scan.sh'
+t_check "no events, aggregates or claudew"   bash -c '! rg -q "recent_events|compute_aggregates|claudew|summary_cache" lib/scan.sh lib/hub-server.py'
+t_check "no events or perm glyph in the bar" bash -c '! rg -q "recentEvents|PermissionRequest|EventsTabView" native/ --glob "*.swift"'
 
-# ── Events + History collapse P6 ─────────────────────────────────────────────
-t_section "events + history collapse (P6)"
-t_grep "events collapsed to one row"   native/ 'Recent Events \('
+# ── History collapse P6 ──────────────────────────────────────────────────────
+t_section "history collapse (P6)"
 t_grep "history collapsed to one row"  native/ 'for sess in history.prefix\(14\)'
-t_grep "event rows column-aligned"     native/ 'columned\(cells, stops'
 t_grep "history rows column-aligned"   native/ 'columned\(cells, stops: \[196'
 
 # ── T3 — scan.sh full produces valid JSON ────────────────────────────────────
@@ -125,7 +125,7 @@ else
     t_fail "scan.sh output is not valid JSON"
 fi
 # Required top-level keys.
-for key in live history aggregates; do
+for key in live history; do
     if python3 -c "
 import json,sys
 d = json.load(open('$SCAN_OUT'))
@@ -526,8 +526,6 @@ _fifo_read=$(perl -e 'my $p=fork; if($p==0){setpgrp(0,0); exec(@ARGV)} local $SI
 t_eq "a FIFO does not hang the scan"  "None"  "$_fifo_read"
 trash "/tmp/claude-cost-${COST_PID}" 2>/dev/null || true
 
-# An unpriced session must not take the aggregates down with it.
-t_eq "aggregates survive a None cost" "1.5"   "$(python3 "$SCAN_PROBE" agg_sum '[1.5, null]')"
 
 # Transcripts are just files on disk and json.loads accepts a bare Infinity, so
 # usage counts are untrusted input. Guard at the boundary they enter through.
@@ -589,58 +587,8 @@ t_grep "only requested pids are cached" lib/scan.sh 'cur in want'
 
 t_grep "process info is batched"        lib/scan.sh 'def prime_process_info'
 t_grep "batched before any row is built" lib/scan.sh 'prime_process_info\(\[p for p'
-t_grep "logs are tailed, not slurped"   lib/scan.sh 'def tail_lines'
-# Exactly one readlines() may remain: the one inside tail_lines, which reads
-# only the span it seeked to. Any second one is a whole-file slurp again.
-t_eq "only tail_lines slurps"           "1"   "$(rg -c 'readlines\(\)' lib/scan.sh)"
-t_eq "tail_lines returns the last n"    "3" \
-     "$(printf 'a\nb\nc\nd\ne\n' > /tmp/tl-test.txt; python3 "$SCAN_PROBE" tail /tmp/tl-test.txt 3; trash /tmp/tl-test.txt 2>/dev/null)"
-
-t_section "day boundaries"
-
-t_eq "19:00Z is next-day in +05:30"  "2026-07-17" \
-     "$(TZ=Asia/Kolkata python3 "$SCAN_PROBE" local_day '2026-07-16T19:00:00Z')"
-t_eq "19:00Z is same-day in UTC"     "2026-07-16" \
-     "$(TZ=UTC python3 "$SCAN_PROBE" local_day '2026-07-16T19:00:00Z')"
-t_eq "19:00Z is same-day in -07:00"  "2026-07-16" \
-     "$(TZ=America/Los_Angeles python3 "$SCAN_PROBE" local_day '2026-07-16T19:00:00Z')"
-t_eq "malformed stamp is not a day"  "" \
-     "$(python3 "$SCAN_PROBE" local_day 'not-a-timestamp')"
-t_eq "01:00 local counts as today (+05:30)" "1:1" \
-     "$(TZ=Asia/Kolkata python3 "$SCAN_PROBE" buckets)"
-t_eq "01:00 local counts as today (UTC)"    "1:1" \
-     "$(TZ=UTC python3 "$SCAN_PROBE" buckets)"
-t_eq "01:00 local counts as today (+12:00)" "1:1" \
-     "$(TZ=Pacific/Auckland python3 "$SCAN_PROBE" buckets)"
-
-# ── Aggregate window (R1) ────────────────────────────────────────────────────
-#
-# The header's totals used to be computed over the 20-row display list, so
-# "today: 19 sessions" really meant "however many of the newest 20 were
-# today's" — 148 real sessions read as 19. The aggregates now walk the whole
-# window through a per-file summary cache; the display list stays capped
-# because it is a list of rows, not a total.
-
-t_section "aggregate window (R1)"
-
-t_eq "aggregates see past the display cap"  "25:20:25:125" \
-     "$(python3 "$SCAN_PROBE" agg_window 25)"
-t_eq "the shipped output walks the window"  "25:20" \
-     "$(python3 "$SCAN_PROBE" agg_e2e 25)"
-t_eq "sub-agent transcripts are not sessions" "3:3:15" \
-     "$(python3 "$SCAN_PROBE" agg_sessions_only)"
-# The bar renders model_breakdown on its "Today" row; an unfiltered count over
-# the window walk showed the week's model mix wearing a Today label.
-t_eq "model badges count today, not the window" '2:3:{"opus": 2}' \
-     "$(python3 "$SCAN_PROBE" agg_models_today)"
-t_eq "unchanged files come from the cache"  "3:0:1:3" \
-     "$(python3 "$SCAN_PROBE" agg_cache_reuse 3)"
-t_eq "corrupt cache rebuilds and repairs"   "3:REPAIRED" \
-     "$(python3 "$SCAN_PROBE" agg_cache_corrupt 3)"
-t_eq "wrong-shape cache entries re-parse"   "3:15:PRUNED" \
-     "$(python3 "$SCAN_PROBE" agg_cache_shape 3)"
-t_eq "cache write is atomic, tmp cleaned"   "ATOMIC:CLEAN" \
-     "$(python3 "$SCAN_PROBE" agg_cache_atomic 3)"
+# Transcripts are streamed line by line; a readlines() is a whole-file slurp.
+t_check "no whole-file slurp in the scan"  bash -c '! rg -q "readlines\(\)" lib/scan.sh'
 
 t_section "ghost sessions"
 

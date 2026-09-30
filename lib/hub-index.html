@@ -422,8 +422,7 @@ $('#themeBtn').onclick = () => vt(() => applyTheme(document.documentElement.clas
    GET /api/sessions every poll; per-session tails stream from each
    session's own GET /s/<id>/data?since=<seq> (keyed by session_id —
    never by feed position). */
-const FEED = { host: '', live: [], recent: [],
-    aggregates: { today: { sessions: 0, tokens_out: 0, cost_usd: 0 } } };
+const FEED = { host: '', live: [], recent: [] };
 const ctxCls = p => p < 10 ? 'hot' : p < 25 ? 'warn' : '';
 const kfmt = n => { n = +n || 0; return n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + 'K' : String(n); };
 // null cost means nobody could price this model, which is not the same as free.
@@ -516,8 +515,6 @@ function adaptFeed(d) {
         _ageMin: s.modified ? Math.max(0, (Date.now() - new Date(s.modified).getTime()) / 60000) : 9e9,
         cwd_short: s.cwd_short || '(session)',
     }));
-    const ag = (d.aggregates || {}).today || {};
-    FEED.aggregates = { today: { sessions: +ag.sessions || 0, tokens_out: kfmt(ag.turns != null ? ag.tokens_out : 0), cost_usd: +ag.cost_usd || 0 } };
 }
 
 /* density + sort, persisted */
@@ -904,7 +901,6 @@ function sortGroup(arr) {
 function render() {
     const live = FEED.live;
     const turn = live.filter(s => s.state === 'idle').length;
-    const A = FEED.aggregates.today;
     const hostEl = document.querySelector('.tb-host'); if (hostEl) hostEl.textContent = FEED.host || '';
     const wasFocused = document.activeElement && document.activeElement.id === 'fq';
     $('#chipLive').innerHTML = `<span class="pulse"></span>${live.length} live`;
@@ -913,7 +909,6 @@ function render() {
     $('#main').innerHTML =
         `<div class="mh-row"><h1>Sessions</h1>` +
         `<div class="mh-line">` +
-        `<span>today <b>${A.sessions}</b> sessions · <b>↑${A.tokens_out}</b> · <b>$${A.cost_usd.toFixed(2)}</b></span>` +
         ipcBadgeHTML(live) +
         `</div></div>` +
         ipcDegradedHTML(live) +
@@ -1020,8 +1015,7 @@ let mode = 'loading';
 let booted = false, lastHash = '';
 function feedHash() {
     return JSON.stringify(FEED.live.map(s => [s.session_id, s.state, s.doing, s.ctx_remaining, s.cost_usd, s.turns, s.output_tokens, s.git_branch, s.git_modified, s.mcp_down, s.elapsed, s.status, s.status_since, s.last_activity, s.cwd_short]))
-        + '|' + JSON.stringify(FEED.recent.map(s => [s.session_id, s.ago]))
-        + '|' + JSON.stringify([FEED.aggregates]);
+        + '|' + JSON.stringify(FEED.recent.map(s => [s.session_id, s.ago]));
 }
 let refreshRepoll = 0;
 function setRefreshCue(on) {

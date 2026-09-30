@@ -232,7 +232,6 @@ enum DashboardTab: String, CaseIterable, Identifiable {
     case overview    = "Overview"
     case live        = "Live"
     case history     = "History"
-    case events      = "Events"
     case allSessions = "All Sessions"
     case settings    = "Settings"
     case about       = "About"
@@ -244,7 +243,6 @@ enum DashboardTab: String, CaseIterable, Identifiable {
         case .overview:    return "square.grid.2x2.fill"
         case .live:        return "sparkles"
         case .history:     return "clock.arrow.circlepath"
-        case .events:      return "list.bullet"
         case .allSessions: return "tray.full.fill"
         case .settings:    return "slider.horizontal.3"
         case .about:       return "info.circle"
@@ -254,7 +252,7 @@ enum DashboardTab: String, CaseIterable, Identifiable {
     var section: String {
         switch self {
         case .overview, .live:          return "Dashboard"
-        case .history, .events:         return "Details"
+        case .history:                  return "Details"
         case .allSessions:              return "Details"
         case .settings, .about:         return "Help"
         }
@@ -298,7 +296,6 @@ struct SidebarButton: View {
         case .overview:    return .blue
         case .live:        return .green
         case .history:     return .purple
-        case .events:      return .orange
         case .allSessions: return .indigo
         case .settings:    return .gray
         case .about:       return .secondary
@@ -427,8 +424,6 @@ struct DashboardRootView: View {
                                 onCopyPID: onCopyPID, onOpenTranscript: onOpenTranscript)
                 case .history:
                     HistoryTabView(data: dataSource.data, onResume: onResume, onOpenFile: onOpenFile)
-                case .events:
-                    EventsTabView(data: dataSource.data)
                 case .allSessions:
                     AllSessionsTabView(dataSource: dataSource, onResume: onResume,
                                        onOpenFile: onOpenFile)
@@ -527,78 +522,6 @@ struct OverviewTabView: View {
                     let modelCounts = Dictionary(grouping: d.history) { $0.model ?? "unknown" }
                         .mapValues { $0.count }
 
-                    // ── Today / This Week aggregates (from scan.sh) ──
-                    if let agg = d.aggregates, (agg.today != nil || agg.week != nil) {
-                        HStack(alignment: .top, spacing: 10) {
-                            if let today = agg.today {
-                                OverviewSection(title: "Today", icon: "sun.max.fill", iconColor: .yellow) {
-                                    VStack(spacing: 8) {
-                                        HStack(spacing: 0) {
-                                            AggregateMetric(label: "Sessions", value: "\(today.sessions ?? 0)", color: .blue)
-                                            Divider().frame(height: 28)
-                                            AggregateMetric(label: "Turns", value: fmtTokens(today.turns ?? 0), color: .purple)
-                                            Spacer()
-                                        }
-                                        HStack(spacing: 0) {
-                                            AggregateMetric(label: "Tokens In", value: fmtTokens(today.tokensIn ?? 0), color: .cyan)
-                                            Divider().frame(height: 28)
-                                            AggregateMetric(label: "Tokens Out", value: fmtTokens(today.tokensOut ?? 0), color: .indigo)
-                                            Divider().frame(height: 28)
-                                            AggregateMetric(label: "Cost", value: fmtCost(today.costUsd ?? 0), color: .mint)
-                                            Spacer()
-                                        }
-                                    }
-                                }
-                            }
-                            if let week = agg.week {
-                                OverviewSection(title: "This Week", icon: "calendar", iconColor: .blue) {
-                                    VStack(spacing: 8) {
-                                        HStack(spacing: 0) {
-                                            AggregateMetric(label: "Sessions", value: "\(week.sessions ?? 0)", color: .blue)
-                                            Divider().frame(height: 28)
-                                            AggregateMetric(label: "Turns", value: fmtTokens(week.turns ?? 0), color: .purple)
-                                            Spacer()
-                                        }
-                                        HStack(spacing: 0) {
-                                            AggregateMetric(label: "Tokens In", value: fmtTokens(week.tokensIn ?? 0), color: .cyan)
-                                            Divider().frame(height: 28)
-                                            AggregateMetric(label: "Tokens Out", value: fmtTokens(week.tokensOut ?? 0), color: .indigo)
-                                            Divider().frame(height: 28)
-                                            AggregateMetric(label: "Cost", value: fmtCost(week.costUsd ?? 0), color: .mint)
-                                            Spacer()
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Model breakdown badges (from aggregates)
-                        if let mb = agg.modelBreakdown, !mb.isEmpty {
-                            OverviewSection(title: "Model Usage", icon: "cpu.fill", iconColor: .pink) {
-                                HStack(spacing: 8) {
-                                    ForEach(mb.sorted(by: { $0.value > $1.value }), id: \.key) { model, count in
-                                        let m = modelDisplay(model)
-                                        HStack(spacing: 4) {
-                                            Text(m.badge)
-                                            Text(m.label)
-                                                .font(.system(size: 12, weight: .bold))
-                                            Text("×\(count)")
-                                                .font(.system(size: 12))
-                                                .foregroundColor(.secondary)
-                                        }
-                                        .foregroundColor(Color(nsColor: m.color))
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 5)
-                                        .background(
-                                            Capsule().fill(Color(nsColor: m.color).opacity(0.1))
-                                        )
-                                    }
-                                    Spacer()
-                                }
-                            }
-                        }
-                    }
-
                     // ── Top stat cards (2 rows of 4) ──
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
                         StatCard(title: "Live", value: "\(d.liveCount)", icon: "bolt.fill", color: .green,
@@ -633,54 +556,6 @@ struct OverviewTabView: View {
                         }
                     }
 
-                    // ── Recent events ──
-                    if let events = d.recentEvents, !events.isEmpty {
-                        OverviewSection(title: "Recent Events", icon: "clock", iconColor: .blue) {
-                            VStack(alignment: .leading, spacing: 0) {
-                                ForEach(Array(events.suffix(5).reversed().enumerated()), id: \.offset) { idx, evt in
-                                    HStack(spacing: 10) {
-                                        VStack(spacing: 0) {
-                                            if idx > 0 {
-                                                Rectangle()
-                                                    .fill(Color.secondary.opacity(0.2))
-                                                    .frame(width: 1, height: 4)
-                                            }
-                                            Circle()
-                                                .fill(eventColor(evt.event))
-                                                .frame(width: 7, height: 7)
-                                            if idx < min(4, events.count - 1) {
-                                                Rectangle()
-                                                    .fill(Color.secondary.opacity(0.2))
-                                                    .frame(width: 1, height: 4)
-                                            }
-                                        }
-                                        .frame(width: 7)
-
-                                        Text(eventTime(evt.ts))
-                                            .font(.system(size: 11, design: .monospaced))
-                                            .foregroundColor(.secondary)
-                                            .frame(width: 42, alignment: .leading)
-
-                                        EventBadge(event: evt.event)
-
-                                        // Model badge inline
-                                        if let model = evt.model, !model.isEmpty {
-                                            let em = modelDisplay(model)
-                                            Text(em.badge)
-                                                .font(.system(size: 10))
-                                                .foregroundColor(Color(nsColor: em.color))
-                                        }
-
-                                        Text(evt.tabTitle ?? evt.project ?? "")
-                                            .font(.system(size: 11))
-                                            .foregroundColor(.secondary)
-                                            .lineLimit(1)
-                                        Spacer()
-                                    }
-                                }
-                            }
-                        }
-                    }
                 } else {
                     VStack(spacing: 12) {
                         ProgressView()
@@ -749,21 +624,6 @@ struct AggregateMetric: View {
         }
         .frame(minWidth: 80)
         .padding(.horizontal, 12)
-    }
-}
-
-struct EventBadge: View {
-    let event: String
-
-    var body: some View {
-        Text(eventLabel(event))
-            .font(.system(size: 11, weight: .medium))
-            .foregroundColor(eventColor(event))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(
-                Capsule().fill(eventColor(event).opacity(0.12))
-            )
     }
 }
 
@@ -1474,195 +1334,7 @@ struct ColumnHeader: View {
     }
 }
 
-// ─── SwiftUI: Events Tab ────────────────────────────────────────────────────
-
-struct EventsTabView: View {
-    let data: ScanResult?
-
-    @State private var filterType: String = "All"
-    @State private var showDeepHistory: Bool = false
-
-    private var allEventTypes: [String] {
-        var types = Set<String>()
-        if let events = data?.recentEvents { events.forEach { types.insert($0.event) } }
-        if let deep = data?.deepEvents { deep.forEach { types.insert($0.event) } }
-        return ["All"] + types.sorted()
-    }
-
-    private var displayEvents: [Event] {
-        let source: [Event]
-        if showDeepHistory, let deep = data?.deepEvents, !deep.isEmpty {
-            source = deep
-        } else {
-            source = data?.recentEvents ?? []
-        }
-        if filterType == "All" { return source.reversed() }
-        return source.filter { $0.event == filterType }.reversed()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header
-            HStack(alignment: .firstTextBaseline) {
-                Text("Events")
-                    .font(.system(size: 22, weight: .bold))
-                Spacer()
-                Text("\(displayEvents.count) events")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.secondary)
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 24)
-            .padding(.bottom, 8)
-
-            // Filter bar
-            HStack(spacing: 12) {
-                // Deep history toggle
-                if data?.deepEvents != nil {
-                    Toggle(isOn: $showDeepHistory) {
-                        Text("Deep History")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                }
-
-                Spacer()
-
-                // Event type filter
-                Picker("Type", selection: $filterType) {
-                    ForEach(allEventTypes, id: \.self) { type in
-                        Text(type == "All" ? "All Types" : eventLabel(type))
-                            .tag(type)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(width: 160)
-            }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 12)
-
-            Rectangle()
-                .fill(Color.secondary.opacity(0.15))
-                .frame(height: 1)
-                .padding(.horizontal, 20)
-
-            if !displayEvents.isEmpty {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(displayEvents.enumerated()), id: \.offset) { idx, evt in
-                            HStack(alignment: .top, spacing: 16) {
-                                // Timeline column — dot with connecting lines
-                                VStack(spacing: 0) {
-                                    Rectangle()
-                                        .fill(idx == 0 ? Color.clear : Color.secondary.opacity(0.2))
-                                        .frame(width: 1, height: 12)
-                                    Circle()
-                                        .fill(eventColor(evt.event))
-                                        .frame(width: 10, height: 10)
-                                    Rectangle()
-                                        .fill(idx == displayEvents.count - 1 ? Color.clear : Color.secondary.opacity(0.2))
-                                        .frame(width: 1)
-                                        .frame(maxHeight: .infinity)
-                                }
-                                .frame(width: 10)
-
-                                // Event content
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack(spacing: 8) {
-                                        EventBadge(event: evt.event)
-
-                                        // Model badge
-                                        if let model = evt.model, !model.isEmpty {
-                                            let m = modelDisplay(model)
-                                            HStack(spacing: 3) {
-                                                Text(m.badge)
-                                                Text(m.label)
-                                                    .font(.system(size: 11, weight: .bold))
-                                            }
-                                            .foregroundColor(Color(nsColor: m.color))
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(
-                                                Capsule().fill(Color(nsColor: m.color).opacity(0.1))
-                                            )
-                                        }
-
-                                        Text(eventTime(evt.ts))
-                                            .font(.system(size: 12, design: .monospaced))
-                                            .foregroundColor(.secondary)
-                                    }
-
-                                    // Tab title or project
-                                    HStack(spacing: 6) {
-                                        if let title = evt.tabTitle, !title.isEmpty {
-                                            Text(title)
-                                                .font(.system(size: 13, weight: .medium))
-                                                .foregroundColor(.primary.opacity(0.9))
-                                                .lineLimit(1)
-                                            if let proj = evt.project, !proj.isEmpty {
-                                                Text("·")
-                                                    .foregroundColor(.secondary.opacity(0.4))
-                                                Text(proj)
-                                                    .font(.system(size: 12))
-                                                    .foregroundColor(.secondary)
-                                                    .lineLimit(1)
-                                            }
-                                        } else if let proj = evt.project, !proj.isEmpty {
-                                            Text(proj)
-                                                .font(.system(size: 13))
-                                                .foregroundColor(.primary.opacity(0.8))
-                                                .lineLimit(1)
-                                        }
-                                    }
-
-                                    // Tool detail for PostToolUse events
-                                    if evt.event == "PostToolUse", let tool = evt.tool, !tool.isEmpty {
-                                        HStack(spacing: 4) {
-                                            Image(systemName: "wrench.fill")
-                                                .font(.system(size: 9))
-                                                .foregroundColor(.teal.opacity(0.7))
-                                            Text(tool)
-                                                .font(.system(size: 11, design: .monospaced))
-                                                .foregroundColor(.teal)
-                                        }
-                                    }
-
-                                    if let sid = evt.sessionId, !sid.isEmpty {
-                                        Text(sid)
-                                            .font(.system(size: 11, design: .monospaced))
-                                            .foregroundColor(.secondary.opacity(0.6))
-                                            .lineLimit(1)
-                                    }
-                                }
-                                .padding(.vertical, 6)
-
-                                Spacer()
-                            }
-                            .frame(minHeight: 56)
-                        }
-                    }
-                    .padding(24)
-                }
-            } else {
-                VStack(spacing: 12) {
-                    Image(systemName: "clock")
-                        .font(.system(size: 40))
-                        .foregroundColor(.secondary.opacity(0.3))
-                    Text("No events recorded")
-                        .font(.system(size: 14))
-                        .foregroundColor(.secondary)
-                    Text("Events appear when sessions start, stop, or compact")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary.opacity(0.6))
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-    }
-}
-
-// ─── SwiftUI: All Sessions Tab ─────────────────────────────────────────────
+// ─── SwiftUI: All Sessions Tab ──────────────────────────────────────────────
 
 struct AllSessionsTabView: View {
     @ObservedObject var dataSource: DashboardData
@@ -2266,12 +1938,10 @@ struct DisplaySizingSection: View {
     }
 }
 
-/// Settings → Menu Bar Badge. What the menu-bar icon shows — the live session
-/// count, the per-limit usage rows (5h / weekly), the permission-request marker,
-/// and the "resets soon" dot threshold. Read live by `updateButton()`.
+/// Settings → Menu Bar Badge: whether the icon shows the live session count.
+/// Read live by `updateButton()`.
 struct MenuBarBadgeSection: View {
     @AppStorage("ui.badge.showCount")     private var showCount = true
-    @AppStorage("ui.badge.showPermWarn")  private var showPermWarn = true
 
     private func postChange() {
         NotificationCenter.default.post(name: .menuBehaviorDidChange, object: nil)
@@ -2284,8 +1954,6 @@ struct MenuBarBadgeSection: View {
             VStack(alignment: .leading, spacing: 12) {
                 Toggle("Show live session count", isOn: $showCount)
                     .toggleStyle(.checkbox).onChange(of: showCount) { _, _ in postChange() }
-                Toggle("Show permission-request marker (⚠)", isOn: $showPermWarn)
-                    .toggleStyle(.checkbox).onChange(of: showPermWarn) { _, _ in postChange() }
             }
             .padding(.vertical, 4)
         }
@@ -2388,7 +2056,7 @@ struct MenuBehaviorSection: View {
                     Toggle("Use 24-hour clock", isOn: $use24h)
                         .toggleStyle(.checkbox)
                         .onChange(of: use24h) { _, _ in postChange() }
-                    Text("Applies to absolute timestamps in the dashboard (history, sessions, events).")
+                    Text("Applies to absolute timestamps in the dashboard (history, sessions).")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                         .lineLimit(2)
@@ -2801,8 +2469,6 @@ struct AboutTabView: View {
                                 desc: "Running instances with metrics, hover actions, transcript viewer")
                         TabHelp(icon: "clock.arrow.circlepath", color: .purple, name: "History",
                                 desc: "Recent sessions — search, sort, resume, tokens, cost")
-                        TabHelp(icon: "list.bullet", color: .orange, name: "Events",
-                                desc: "Timeline of start/stop/compact/permission/hook events")
                         TabHelp(icon: "tray.full.fill", color: .indigo, name: "All Sessions",
                                 desc: "Deep scan of all past sessions with search and resume")
                         TabHelp(icon: "slider.horizontal.3", color: .gray, name: "Settings",
@@ -2984,43 +2650,3 @@ private struct TroubleshootRow: View {
         }
     }
 }
-
-// ─── SwiftUI Helpers ────────────────────────────────────────────────────────
-
-func eventColor(_ event: String) -> Color {
-    switch event {
-    case "SessionStart":      return .green
-    case "Stop":              return .red
-    case "PermissionRequest": return .orange
-    case "PostCompact":       return .blue
-    case "PreCompact":        return .blue
-    case "SubagentStart":     return .purple
-    case "SubagentStop":      return .purple
-    case "Notification":      return .yellow
-    case "PostToolUse":       return .teal
-    default:                  return .secondary
-    }
-}
-
-func eventLabel(_ event: String) -> String {
-    switch event {
-    case "SessionStart":      return "Started"
-    case "Stop":              return "Stopped"
-    case "PermissionRequest": return "Permission"
-    case "PostCompact":       return "Compacted"
-    case "PreCompact":        return "Compacting"
-    case "SubagentStart":     return "Agent ▶"
-    case "SubagentStop":      return "Agent ■"
-    case "Notification":      return "Notified"
-    case "PostToolUse":       return "Tool"
-    default:                  return event
-    }
-}
-
-func eventTime(_ ts: String) -> String {
-    if ts.contains("T"), let time = ts.split(separator: "T").last {
-        return String(time.prefix(5))
-    }
-    return ts
-}
-
