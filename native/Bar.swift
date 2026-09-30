@@ -10,11 +10,9 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
     var scanTimer: Timer?
 
-    // Public so DashboardController can read cached data
     private(set) var cachedData: ScanResult?
     private var lastScanError = false
     private var theMenu: NSMenu!
-    private var dashboardController: DashboardController?
     private var settingsController: SettingsWindowController?
 
     /// Tick counter for quick/full scan alternation.
@@ -99,7 +97,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             forName: .menuBehaviorDidChange,
             object: nil, queue: .main
         ) { [weak self] _ in
-            invalidateTimeFormatterCache()
             self?.restartScanTimer()
             self?.refreshLiveRows()
             self?.updateButton()
@@ -199,8 +196,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.lastScanError = true
                 }
                 self.updateButton()
-                // Push fresh data to dashboard if open
-                self.dashboardController?.updateData(self.cachedData)
                 // Live-update the open menu's per-instance rows. Only does
                 // work when menuIsOpen=true; cheap no-op otherwise.
                 self.refreshLiveRows()
@@ -580,14 +575,14 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.isEnabled = true
             sub.addItem(item)
         }
-        if history.count > 14 {
-            let more = NSMenuItem()
-            more.attributedTitle = NSAttributedString(string: "  … and \(history.count - 14) more (open Dashboard)", attributes: [
-                .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor,
-            ])
-            more.isEnabled = false
-            sub.addItem(more)
-        }
+        // The full list lives in the hub's session index.
+        let more = NSMenuItem()
+        more.attributedTitle = NSAttributedString(string: "  All sessions in the hub", attributes: [
+            .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor,
+        ])
+        more.action = #selector(openHubIndex)
+        more.target = self
+        sub.addItem(more)
         head.submenu = sub
         menu.addItem(head)
         menu.addItem(.separator())
@@ -597,7 +592,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func addActionsSection(_ menu: NSMenu, _ data: ScanResult) {
         addAction(menu, "New Session", #selector(newSession), icon: "plus.circle", key: "n")
-        addAction(menu, "Dashboard", #selector(openDashboard), icon: "rectangle.3.group", key: "d")
         addAction(menu, "Settings…", #selector(openSettings), icon: "gearshape", key: ",")
         addAction(menu, "Sessions (phone)", #selector(openHubIndex), icon: "iphone")
         addAction(menu, "Switchboard", #selector(openSwitchboard), icon: "slider.vertical.3")
@@ -822,14 +816,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func openDashboard() {
-        dlog("opening native dashboard")
-        if dashboardController == nil {
-            dashboardController = DashboardController()
-        }
-        dashboardController?.showOrFront(data: cachedData, barDelegate: self)
-    }
-
     @objc private func openSettings() {
         dlog("opening settings window")
         if settingsController == nil {
@@ -974,12 +960,3 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// MARK: - Native Dashboard (SwiftUI + NSPanel)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// ─── Observable data source (bridges cached scan data → SwiftUI) ─────────────
-
-/// One active transcript HTTP server. Discovered by scanning
-/// `/tmp/claude-widget-*.server` for files whose PID is still alive.

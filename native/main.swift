@@ -96,13 +96,8 @@ func fmtSize(_ kb: Double) -> String {
     return kb > 1024 ? String(format: "%.1fM", kb / 1024) : "\(Int(kb))K"
 }
 
-// Cached ISO8601 formatters. Allocating a new one each call was a real
-// perf hit: relativeTime() runs once per history row and once per
-// All-Sessions row on every dashboard render (5s tick). 50+ rows × 2
-// formatters per call × ~1-3ms per allocation was tens of milliseconds
-// of main-thread work per refresh — visible as dashboard "hitch."
-// DateFormatter is thread-safe for parsing on macOS 10.10+, so a single
-// shared instance is fine.
+// Cached ISO8601 formatters: allocating one per call cost milliseconds per
+// row. Parsing is thread-safe on macOS 10.10+, so one shared instance is fine.
 let iso8601WithFractionalFormatter: ISO8601DateFormatter = {
     let f = ISO8601DateFormatter()
     f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

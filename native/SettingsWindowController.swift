@@ -1,17 +1,14 @@
 // SettingsWindowController.swift
 // The standalone Settings window (⌘, / the "Settings…" menu item).
 //
-// Hosts the SAME SettingsTabView the dashboard's Settings tab renders, so both
-// surfaces show one implementation — a dedicated window is the natural home for
-// prefs without opening the heavy 960×680 dashboard. The section views read/write
-// UserDefaults + PaletteStore directly (no DashboardData dependency), so hosting
-// them here needs no refactor.
+// Hosts SettingsTabView (native/Settings.swift). The section views read and
+// write UserDefaults and PaletteStore directly.
 
 import AppKit
 import SwiftUI
 
-// Not @MainActor: only ever invoked from main-thread menu actions, matching the
-// DashboardController pattern in this codebase (AppKit calls stay on main).
+// Not @MainActor: only ever invoked from main-thread menu actions (AppKit calls
+// stay on main).
 final class SettingsWindowController {
     private var window: NSWindow?
 

@@ -22,7 +22,7 @@ SOURCES=(
     "$SCRIPT_DIR/Actions.swift"
     "$SCRIPT_DIR/LiveRowView.swift"
     "$SCRIPT_DIR/Bar.swift"
-    "$SCRIPT_DIR/Dashboard.swift"
+    "$SCRIPT_DIR/Settings.swift"
     "$SCRIPT_DIR/SettingsWindowController.swift"
 )
 src_hash() { cat "${SOURCES[@]}" 2>/dev/null | md5 | awk '{print substr($NF,1,8)}'; }

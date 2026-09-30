@@ -281,7 +281,10 @@ t_grep "NSColor.hexString writer"              native/ 'var hexString'
 t_grep "all 12 tokens registered"              native/ 'metricMemory.*memory'
 t_grep "modelDisplay reads PaletteStore"       native/ 'PaletteStore.shared.color\(for: .modelOpus\)'
 t_grep "LiveRowViewRepresentable for SwiftUI"  native/ 'struct LiveRowViewRepresentable: NSViewRepresentable'
-t_grep "SettingsTabView wired in dashboard"    native/ 'case .settings:'
+t_grep "Settings window hosts SettingsTabView"  native/SettingsWindowController.swift 'SettingsTabView\('
+# The Dashboard window was removed (owner ruling D1, 2026-09-30); its Overview
+# reported the 20-session history cap as the total.
+t_check "no Dashboard window code remains"     bash -c '! rg -q "DashboardController|DashboardTab|scanAllSessions" native/ --glob "*.swift"'
 t_grep "tailwindPalette table"                 native/ 'tailwindPalette: \[\(hue: String'
 t_grep "PaletteEditorRow row component"        native/ 'struct PaletteEditorRow'
 t_grep "TailwindPicker popover"                native/ 'struct TailwindPicker'
@@ -299,9 +302,6 @@ t_grep "appearance applied at launch"          native/ 'applyAppearancePref\(loa
 # Menu Behavior settings are WIRED, not placeholders
 t_grep "density read in LiveRowView.update"    native/ 'stack.spacing = densitySpacing\(\)'
 t_grep "densitySpacing accessor"               native/ 'func densitySpacing'
-t_grep "defaultTab honored in DashboardRootView" native/ 'UserDefaults.standard.string\(forKey: "defaultTab"\)'
-t_grep "userTimeFormatter helper"              native/ 'func userTimeFormatter'
-t_grep "AllSessions dateFmt reads user pref"   native/ 'userTimeFormatter\(includesDate: true\)'
 t_grep "menuBehaviorDidChange notification"    native/ 'menuBehaviorDidChange'
 t_grep "BarDelegate observes behavior change"  native/ 'forName: .menuBehaviorDidChange'
 # Per-chip token tagging — covers EVERY palette token in the preview
@@ -345,7 +345,6 @@ t_grep "last_tool emitted in scan.sh"          lib/scan.sh "'last_tool'"
 t_grep "transcript read once per scan"      lib/scan.sh 'def read_transcript'
 t_grep "formatAgo helper"                      native/ 'func formatAgo'
 t_grep "last-tool line rendered when fresh"    native/ 'suppressBecauseStale'
-# Transcript server lifecycle controls in the dashboard
 # Refresh + warnings + row visibility — Settings UI plus reader sites
 t_grep "RefreshAndWarningsSection view"        native/ 'struct RefreshAndWarningsSection'
 t_grep "RowElement enum"                       native/ 'enum RowElement'

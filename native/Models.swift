@@ -429,31 +429,4 @@ func secondsSince(iso: String?) -> Int? {
     return max(0, Int(Date().timeIntervalSince(d)))
 }
 
-// Cached DateFormatters for the user's 24h-vs-12h preference. Previously
-// userTimeFormatter() allocated a fresh DateFormatter per call — and was
-// being called once per AllSessions row × every dashboard refresh, which
-// was milliseconds of avoidable work on the main thread per tick.
-//
-// We hold four formatters (2 dimensions × 2 values). When the user
-// toggles time.use24h, we wipe the cache via .menuBehaviorDidChange.
-
-var _timeFormatterCache: [String: DateFormatter] = [:]
-let _timeFormatterQueue = DispatchQueue(label: "claude.tf.cache")
-
-func userTimeFormatter(includesDate: Bool = false) -> DateFormatter {
-    let use24h = UserDefaults.standard.bool(forKey: "time.use24h")
-    let key = "\(use24h ? "24" : "12")-\(includesDate ? "d" : "t")"
-    return _timeFormatterQueue.sync {
-        if let cached = _timeFormatterCache[key] { return cached }
-        let f = DateFormatter()
-        let time = use24h ? "HH:mm" : "h:mm a"
-        f.dateFormat = includesDate ? "MMM d, \(time)" : time
-        _timeFormatterCache[key] = f
-        return f
-    }
-}
-
-func invalidateTimeFormatterCache() {
-    _timeFormatterQueue.sync { _timeFormatterCache.removeAll() }
-}
 
