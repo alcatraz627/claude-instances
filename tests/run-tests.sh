@@ -220,6 +220,8 @@ t_grep "chapters are built on approach"   lib/transcript-app.html 'new Intersect
 t_grep "a toggle rebuilds one chapter"    lib/transcript-app.html 'fillChapter\(\+lg.closest'
 t_check "page reads liveness from /data, not the fleet scan" bash -c '! rg -q "/api/sessions" lib/transcript-app.html'
 t_grep "failed polls raise the disconnected bar" lib/transcript-app.html 'Disconnected, retrying'
+t_check "page loads nothing from a CDN" bash -c '! rg -q "https?://cdn" lib/transcript-app.html'
+t_check "vendored marked and highlight.js are present" bash -c 'test -s lib/vendor/marked.min.js && test -s lib/vendor/highlight.min.js && test -s lib/vendor/hljs-github.min.css && test -s lib/vendor/hljs-github-dark.min.css'
 t_grep "bar opens hub transcript"      native/ 'func openHubTranscript'
 t_grep "bar 'Sessions (phone)' action" native/ 'func openHubIndex'
 

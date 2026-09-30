@@ -301,6 +301,13 @@ expect("a one-character query is refused", st == 400, f"status={st}")
 st, _, _ = http_get(f"/s/{sidR}/data?result=nope")
 expect("?result= for an unknown id is a 404", st == 404, f"status={st}")
 
+# ---- Test 3d: vendored libraries are served, and nothing else under lib ----
+st, h, body = http_get("/vendor/highlight.min.js")
+expect("the hub serves the vendored highlight.js",
+       st == 200 and "javascript" in h.get("Content-Type", "") and b"hljs" in body, f"status={st}")
+st, _, _ = http_get("/vendor/hub-server.py")
+expect("a file outside the vendor list is a 404", st == 404, f"status={st}")
+
 # ---- Test 4: stale /api/sessions serves instantly, one background refresh ----
 SLOW = os.path.join(ROOT, "slow-scan.sh")
 with open(SLOW, "w") as f:

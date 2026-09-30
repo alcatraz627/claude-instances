@@ -57,6 +57,14 @@ PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 SCAN_SCRIPT = os.path.join(HERE, "scan.sh")
 APP_HTML = os.path.join(HERE, "transcript-app.html")
 INDEX_HTML = os.path.join(HERE, "hub-index.html")
+VENDOR_DIR = os.path.join(HERE, "vendor")
+# Only these names are served from VENDOR_DIR; nothing else on disk is reachable.
+VENDOR_FILES = {
+    "marked.min.js": "text/javascript; charset=utf-8",
+    "highlight.min.js": "text/javascript; charset=utf-8",
+    "hljs-github.min.css": "text/css; charset=utf-8",
+    "hljs-github-dark.min.css": "text/css; charset=utf-8",
+}
 
 # A session id is a UUID; allow the loose [\w-] so older/odd ids still route.
 SID_RE = re.compile(r"^/s/([\w-]+)(?:/(data|search))?/?$")
@@ -622,6 +630,8 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
         if path == "/favicon.ico":
             return self._send(204, b"", "image/x-icon")
 
+        if path.startswith("/vendor/"):
+            return self._serve_vendor(path[len("/vendor/"):])
         if path == "/search":
             return self._serve_search((qs.get("sid") or [""])[0], qs)
         m = SID_RE.match(path)
@@ -636,6 +646,19 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
         self._send(404, "Not found", "text/plain; charset=utf-8")
 
     do_HEAD = do_GET
+
+    def _serve_vendor(self, name):
+        """The page's markdown and highlighting libraries, served from lib/vendor
+        so the page works offline and inside Switchboard's WKWebView."""
+        ctype = VENDOR_FILES.get(name)
+        if not ctype:
+            return self._send(404, "Not found", "text/plain; charset=utf-8")
+        try:
+            body = _read_file(os.path.join(VENDOR_DIR, name))
+        except OSError:
+            return self._send(404, "Not found", "text/plain; charset=utf-8")
+        # Versioned copies that change only with a commit; an hour is plenty.
+        self._send(200, body, ctype, cache="public, max-age=3600")
 
     def _serve_index(self):
         try:
