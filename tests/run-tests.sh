@@ -422,21 +422,36 @@ t_section "cost reporting"
 
 COST_PID=999424
 
-t_eq "priced model still prices"      "90.0"  "$(python3 "$SCAN_PROBE" estimate opus 1000000 1000000)"
-t_eq "sonnet rate intact"             "18.0"  "$(python3 "$SCAN_PROBE" estimate sonnet 1000000 1000000)"
-t_eq "unpriced model is None, not 0"  "None"  "$(python3 "$SCAN_PROBE" estimate fable 1000000 1000000)"
-t_eq "full model id normalizes"       "90.0"  "$(python3 "$SCAN_PROBE" estimate claude-opus-4-8 1000000 1000000)"
+# Rates are per model id, from the Claude pricing reference (cached 2026-09-25):
+# input/output per MTok, cache reads 0.1x input (0.05x Opus 5.5, 0.025x Fable
+# 5.1), cache writes 1.25x input for 5 minutes and 2x for an hour. The old
+# table priced every Opus at the retired $15/$75, three to four times too high.
+t_eq "opus 4.8 prices at 5/25"        "30.0"  "$(python3 "$SCAN_PROBE" estimate claude-opus-4-8 1000000 1000000)"
+t_eq "opus 5.5 prices at 4/20"        "24.0"  "$(python3 "$SCAN_PROBE" estimate claude-opus-5-5 1000000 1000000)"
+t_eq "fable 5.1 prices at 10/50"      "60.0"  "$(python3 "$SCAN_PROBE" estimate claude-fable-5-1 1000000 1000000)"
+t_eq "sonnet 4.6 prices at 3/15"      "18.0"  "$(python3 "$SCAN_PROBE" estimate claude-sonnet-4-6 1000000 1000000)"
+t_eq "a dated haiku id prices"        "6.0"   "$(python3 "$SCAN_PROBE" estimate claude-haiku-4-5-20251001 1000000 1000000)"
+t_eq "opus 5.5 cache reads at 0.05x"  "0.2"   "$(python3 "$SCAN_PROBE" estimate claude-opus-5-5 0 0 1000000 0 0)"
+t_eq "fable 5.1 cache reads at 0.025x" "0.25" "$(python3 "$SCAN_PROBE" estimate claude-fable-5-1 0 0 1000000 0 0)"
+t_eq "sonnet 4.6 cache reads at 0.1x" "0.3"   "$(python3 "$SCAN_PROBE" estimate claude-sonnet-4-6 0 0 1000000 0 0)"
+t_eq "5-minute cache writes at 1.25x" "5.0"   "$(python3 "$SCAN_PROBE" estimate claude-opus-5-5 0 0 0 1000000 0)"
+t_eq "1-hour cache writes at 2x"      "8.0"   "$(python3 "$SCAN_PROBE" estimate claude-opus-5-5 0 0 0 0 1000000)"
+# A bare family names no price: which Opus? Unknown is None, not a guess.
+t_eq "a bare family alias is None"    "None"  "$(python3 "$SCAN_PROBE" estimate opus 1000000 1000000)"
+t_eq "unpriced model is None, not 0"  "None"  "$(python3 "$SCAN_PROBE" estimate claude-opus-9-9 1000000 1000000)"
 t_eq "empty model is None"            "None"  "$(python3 "$SCAN_PROBE" estimate '' 1000000 1000000)"
 # A name that merely contains a family word must not inherit its rates.
 t_eq "octopus is not opus"            "None"  "$(python3 "$SCAN_PROBE" estimate octopus 1000000 1000000)"
-t_eq "full haiku id still prices"     "1.5"   "$(python3 "$SCAN_PROBE" estimate claude-haiku-4-5-20251001 1000000 1000000)"
-t_eq "zero tokens costs nothing"      "0.0"   "$(python3 "$SCAN_PROBE" estimate opus 0 0)"
+t_eq "zero tokens costs nothing"      "0.0"   "$(python3 "$SCAN_PROBE" estimate claude-opus-5-5 0 0)"
 # json.loads accepts a bare Infinity, so a corrupt transcript's usage counts can
 # arrive as inf. An infinite cost serializes as a non-JSON literal and takes the
-# whole scan down — including every other session, via the aggregates.
-t_eq "infinite input tokens are None" "None"  "$(python3 "$SCAN_PROBE" estimate opus inf 100)"
-t_eq "infinite output tokens are None" "None" "$(python3 "$SCAN_PROBE" estimate opus 100 inf)"
-t_eq "NaN tokens are None"            "None"  "$(python3 "$SCAN_PROBE" estimate opus nan 100)"
+# whole scan down.
+t_eq "infinite input tokens are None" "None"  "$(python3 "$SCAN_PROBE" estimate claude-opus-5-5 inf 100)"
+t_eq "infinite output tokens are None" "None" "$(python3 "$SCAN_PROBE" estimate claude-opus-5-5 100 inf)"
+t_eq "NaN tokens are None"            "None"  "$(python3 "$SCAN_PROBE" estimate claude-opus-5-5 nan 100)"
+t_eq "infinite cache tokens are None" "None"  "$(python3 "$SCAN_PROBE" estimate claude-opus-5-5 0 0 inf 0 0)"
+t_eq "sub-agent spend is included; unpriced makes it unknown" "5.0:None" \
+     "$(python3 "$SCAN_PROBE" subagent_cost)"
 
 # read_cost trusts the daemon's file, but never a malformed one.
 printf '215.3312241500002\n' > "/tmp/claude-cost-${COST_PID}"

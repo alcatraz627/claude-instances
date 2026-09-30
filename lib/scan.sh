@@ -296,6 +296,53 @@ def _message_key(msg, line_no):
     mid = msg.get('id')
     return mid if isinstance(mid, str) and mid else f'line:{line_no}'
 
+def _sum_usage(usages):
+    """Token totals across a session's messages, each count through token_count.
+
+    cache_create_1h is the part of cache_create written to the 1-hour cache,
+    which is priced higher than the default 5-minute one.
+    """
+    t = {'input_tokens': 0, 'output_tokens': 0, 'cache_read': 0,
+         'cache_create': 0, 'cache_create_1h': 0}
+    for u in usages:
+        if not isinstance(u, dict):
+            continue
+        t['input_tokens'] += token_count(u.get('input_tokens'))
+        t['output_tokens'] += token_count(u.get('output_tokens'))
+        t['cache_read'] += token_count(u.get('cache_read_input_tokens'))
+        t['cache_create'] += token_count(u.get('cache_creation_input_tokens'))
+        cc = u.get('cache_creation')
+        if isinstance(cc, dict):
+            t['cache_create_1h'] += token_count(cc.get('ephemeral_1h_input_tokens'))
+    t['cache_create_1h'] = min(t['cache_create_1h'], t['cache_create'])
+    return t
+
+def session_cost(model_id, t, jsonl_path=''):
+    """What a session cost at list price, its sub-agents included, or None.
+
+    Sub-agents write their own transcripts under <sid>/subagents/, so a session
+    that delegated spent more than its own transcript shows. If any part is on
+    a model with no known price, the whole is unknown rather than too low.
+    """
+    cost = estimate_cost(model_id, t['input_tokens'], t['output_tokens'], t['cache_read'],
+                         t['cache_create'] - t['cache_create_1h'], t['cache_create_1h'])
+    if cost is None or not jsonl_path.endswith('.jsonl'):
+        return cost
+    try:
+        agents = [e.path for e in os.scandir(os.path.join(jsonl_path[:-len('.jsonl')], 'subagents'))
+                  if e.name.startswith('agent-') and e.name.endswith('.jsonl')]
+    except OSError:
+        return cost
+    for path in agents:
+        parsed = claude_parse_session(path)
+        if not parsed:
+            continue
+        part = session_cost(parsed['model'], parsed['usage'])
+        if part is None:
+            return None
+        cost += part
+    return round(cost, 4)
+
 def read_transcript(filepath):
     """Everything a live row needs from one read of its transcript.
 
@@ -354,12 +401,8 @@ def read_transcript(filepath):
                         last_tool_ts = obj.get('timestamp', '')
     except OSError:
         return out
+    out.update(_sum_usage(usage_by_msg.values()))
     out['turns'] = len(usage_by_msg)
-    for usage in usage_by_msg.values():
-        out['input_tokens'] += token_count(usage.get('input_tokens'))
-        out['output_tokens'] += token_count(usage.get('output_tokens'))
-        out['cache_read'] += token_count(usage.get('cache_read_input_tokens'))
-        out['cache_create'] += token_count(usage.get('cache_creation_input_tokens'))
     if out['last_tool'] is not None:
         out['last_tool']['ago_seconds'] = _ago_seconds(last_tool_ts)
     if out['last_prompt']:
@@ -504,41 +547,48 @@ def token_count(v):
         return 0
     return int(v) if math.isfinite(v) else 0
 
+# Dollars per million tokens: input, output, cache read. From the Claude
+# pricing reference (cached 2026-09-25). Cache writes are priced off input:
+# 1.25x for the 5-minute cache, 2x for the 1-hour one.
 COST_RATES = {
-    'opus': (15.0, 75.0),
-    'sonnet': (3.0, 15.0),
-    'haiku': (0.25, 1.25),
+    'claude-opus-5-5':   (4.0, 20.0, 0.20),
+    'claude-opus-5':     (5.0, 25.0, 0.50),
+    'claude-opus-4-8':   (5.0, 25.0, 0.50),
+    'claude-opus-4-7':   (5.0, 25.0, 0.50),
+    'claude-opus-4-6':   (5.0, 25.0, 0.50),
+    'claude-sonnet-5-5': (2.0, 10.0, 0.20),
+    'claude-sonnet-5':   (2.0, 10.0, 0.20),
+    'claude-sonnet-4-6': (3.0, 15.0, 0.30),
+    'claude-haiku-4-5':  (1.0, 5.0, 0.10),
+    'claude-fable-5-1':  (10.0, 50.0, 0.25),
+    'claude-fable-5':    (10.0, 50.0, 1.00),
 }
 
-def estimate_cost(model_short, input_tokens, output_tokens):
-    """Guess a session's cost from its token counts, or None if we can't.
+def estimate_cost(model_id, input_tokens, output_tokens,
+                  cache_read=0, cache_write_5m=0, cache_write_1h=0):
+    """What a session's tokens cost at list price, or None if we can't say.
 
-    None is the important half. Every model outside COST_RATES — fable, a codex
-    session, whatever ships next — used to price at $0.00, which is
-    indistinguishable from genuinely free and let a $215 session render as free.
-    An unknown model must say it is unknown; callers render that, they don't
-    total it.
-
-    Matches the family as a whole word, so a full id ('claude-opus-4-8') prices
-    the same as the short name a --model flag gives, while a name that merely
-    contains one ('octopus') doesn't inherit its rates.
+    None is the important half. A model missing from the table once priced at
+    $0.00, which reads exactly like free and let a $215 session render as free.
+    The rate is found by exact model id (a trailing date is allowed), so a bare
+    family alias ('opus', which Opus?) or an id this table has never seen says
+    it is unknown rather than borrowing a neighbour's price. Cache reads and
+    writes are priced too: in a long session they are most of the bill.
     """
-    m = (model_short or '').lower()
-    rates = next((r for family, r in COST_RATES.items()
-                  if re.search(rf'\b{family}\b', m)), None)
+    m = re.sub(r'-\d{8}$', '', (model_id or '').lower())
+    rates = COST_RATES.get(m)
     if rates is None:
         return None
-    # json.loads accepts a bare Infinity, so a corrupt transcript's usage counts
-    # can arrive as inf and multiply straight through to an infinite cost. That
-    # would serialize as the literal Infinity, which is not JSON, and take every
-    # consumer of this scan down with it — and via the aggregates it would take
-    # every other session's total too, not just the poisoned row.
-    if not (math.isfinite(input_tokens) and math.isfinite(output_tokens)):
+    counts = (input_tokens, output_tokens, cache_read, cache_write_5m, cache_write_1h)
+    # json.loads accepts a bare Infinity, so a corrupt transcript's usage can
+    # arrive as inf; an infinite cost would serialize as a non-JSON literal and
+    # take every consumer of this scan down with it.
+    if not all(isinstance(c, (int, float)) and math.isfinite(c) for c in counts):
         return None
-    if input_tokens > 0 or output_tokens > 0:
-        cost = round((input_tokens * rates[0] + output_tokens * rates[1]) / 1_000_000, 4)
-        return cost if math.isfinite(cost) else None
-    return 0.0
+    rate_in, rate_out, rate_read = rates
+    cost = (input_tokens * rate_in + output_tokens * rate_out + cache_read * rate_read
+            + cache_write_5m * rate_in * 1.25 + cache_write_1h * rate_in * 2.0) / 1_000_000
+    return round(cost, 4) if math.isfinite(cost) else None
 
 def _find_transcript(cwd, sid):
     """Absolute path of transcript <sid>.jsonl, or '' if it is not on disk.
@@ -586,7 +636,7 @@ def get_session_tokens(pid, cwd, prefer_sid='', file_sid=''):
     fiction (a 58MB session once read 44 of its 4488 turns).
     """
     result = {'model': 'unknown', 'input_tokens': 0, 'output_tokens': 0,
-              'cache_read': 0, 'cache_create': 0, 'cost_usd': 0.0,
+              'cache_read': 0, 'cache_create': 0, 'cache_create_1h': 0, 'cost_usd': 0.0,
               'session_id': file_sid, 'turns': 0, 'tool_calls': 0,
               'jsonl_path': '', 'permission_mode': '', 'last_tool': None,
               'last_prompt': '', 'tail': []}
@@ -701,8 +751,9 @@ def claude_parse_session(filepath):
                     msg = {}
                 usage_by_msg[_message_key(msg, i)] = msg.get('usage') or {}
         turn_count = len(usage_by_msg)
-        total_input = sum(token_count(u.get('input_tokens')) for u in usage_by_msg.values())
-        total_output = sum(token_count(u.get('output_tokens')) for u in usage_by_msg.values())
+        totals = _sum_usage(usage_by_msg.values())
+        total_input = totals['input_tokens']
+        total_output = totals['output_tokens']
 
         for line in first_lines:
             try:
@@ -740,6 +791,7 @@ def claude_parse_session(filepath):
         'tokens_out': total_output,
         'title': title,
         'cwd': cwd,
+        'usage': totals,
     }
 
 claude_provider = {
@@ -1173,9 +1225,7 @@ def _build_claude_instance(pid, cmdline, provider, sess=None):
     # for a session whose statusline has never rendered.
     cost_usd = read_cost(pid)
     if cost_usd is None:
-        cost_usd = estimate_cost(model_display,
-                                 session_data['input_tokens'],
-                                 session_data['output_tokens'])
+        cost_usd = session_cost(model_flag, session_data, session_data['jsonl_path'])
 
     # Shorten CWD for display
     cwd_short = cwd.replace(home, '~') if cwd else '?'
@@ -1432,8 +1482,7 @@ def get_session_history(max_sessions=20, live_sids=()):
 
         project_display = _project_label(parsed.get('cwd', ''), filepath)
         model_short = short_model(model)
-        # `or 0`: a token count may be None (unknown), never a crash.
-        cost_usd = estimate_cost(model_short, total_input or 0, total_output or 0)
+        cost_usd = session_cost(model, parsed.get('usage') or _sum_usage([]), filepath)
 
 
         try:

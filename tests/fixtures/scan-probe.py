@@ -96,8 +96,10 @@ def main(argv):
     if op == "estimate":
         # float(), not int() — a corrupt transcript can carry inf/nan through
         # json.loads, and those are exactly the cases worth asserting on.
+        # Optional 4th-6th args: cache read, 5-minute cache write, 1-hour cache write.
         model, ti, to = argv[1], float(argv[2]), float(argv[3])
-        print(fmt(ns["estimate_cost"](model, ti, to)))
+        extra = [float(x) for x in argv[4:7]]
+        print(fmt(ns["estimate_cost"](model, ti, to, *extra)))
     elif op == "read_cost":
         print(fmt(ns["read_cost"](int(argv[1]))))
     elif op == "turns_big":
@@ -239,6 +241,29 @@ def main(argv):
             live_absent = "live_absent" if all(x["session_id"] != "live-1" for x in rows) else "live_present"
             print(f"{len(rows)}|{r.get('name')}|{r.get('project')}|{r.get('model')}|{r.get('model_full')}|{live_absent}"
                   f"|{ns2['short_model']('claude-opus-5-5')},{ns2['short_model']('claude-sonnet-4-6')},{ns2['short_model']('opus')}")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    elif op == "subagent_cost":
+        # A session's cost includes its sub-agents' own transcripts; one on an
+        # unpriced model makes the total unknown rather than too low.
+        import tempfile, shutil
+        root = tempfile.mkdtemp(prefix="subcost-")
+        try:
+            def write(path, model):
+                with open(path, "w") as fh:
+                    fh.write(json.dumps({"type": "assistant", "message": {
+                        "id": "m", "model": model,
+                        "usage": {"input_tokens": 1_000_000, "output_tokens": 0}}}) + "\n")
+            main = os.path.join(root, "s.jsonl")
+            write(main, "claude-opus-5-5")
+            os.makedirs(os.path.join(root, "s", "subagents"))
+            write(os.path.join(root, "s", "subagents", "agent-a.jsonl"), "claude-haiku-4-5")
+            ns2 = load()
+            t = ns2["read_transcript"](main)
+            with_agent = ns2["session_cost"]("claude-opus-5-5", t, main)
+            write(os.path.join(root, "s", "subagents", "agent-b.jsonl"), "some-future-model")
+            unknown = ns2["session_cost"]("claude-opus-5-5", t, main)
+            print(f"{fmt(with_agent)}:{fmt(unknown)}")
         finally:
             shutil.rmtree(root, ignore_errors=True)
     elif op == "read_pid_file":
