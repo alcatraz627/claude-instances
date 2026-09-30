@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Claude Code session</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23191a21'/%3E%3Cg stroke='%23d97757' stroke-width='5.5' stroke-linecap='round'%3E%3Cpath d='M32 32 32 9'/%3E%3Cpath d='M32 32 46 14'/%3E%3Cpath d='M32 32 55 27'/%3E%3Cpath d='M32 32 50 44'/%3E%3Cpath d='M32 32 37 55'/%3E%3Cpath d='M32 32 21 52'/%3E%3Cpath d='M32 32 10 42'/%3E%3Cpath d='M32 32 9 25'/%3E%3Cpath d='M32 32 18 11'/%3E%3C/g%3E%3Ccircle cx='51' cy='51' r='6' fill='%234fb6a6' stroke='%23191a21' stroke-width='2.5'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="/vendor/hub-shared.css?v=1">
+<link rel="stylesheet" href="/vendor/hub-shared.css?v=2">
 <style>
 /* ============================================================ V3 "CHAPTERS"
    Conviction: a session is a story of your asks; skim is the primary job.
@@ -93,10 +93,7 @@ button { font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparen
 .tb-live .pulse { color: var(--lc); }
 .tb-live .lv-state { color: var(--lc); font-weight: 700; }
 .tb-live .lv-for { color: var(--dim); font: var(--t-xs) var(--mono); font-variant-numeric: tabular-nums; }
-.tb-live .lv-what { color: var(--faint); font: var(--t-xs) var(--sans); max-width: 26ch; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap; }
-.tb-live .lv-what:empty { display: none; }
-@media (max-width: 900px) { .tb-live .lv-what { display: none; } }
+.tb-live .lv-what { display: none; }   /* what it last did lives in the tooltip; the bar never cuts text */
 .tb-live .pulse { width: 7px; height: 7px; border-radius: 50%; background: currentColor; position: relative; }
 .tb-live.working .pulse::after { content: ''; position: absolute; inset: -4px; border-radius: 50%;
     border: 1.5px solid currentColor; opacity: 0; animation: pulse 2s var(--ease) infinite; }
@@ -125,6 +122,7 @@ button { font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparen
 @media (max-width: 480px) {
     .topbar { gap: 4px; padding: 0 8px; }
     .tb-back-lb, .tb-ch, .tb-live .lv-for { display: none; }
+    .tb-title, .tb-sep { display: none; }   /* no room to show it whole; the masthead has it */
 }
 
 /* ================= layout: outline sidebar + reading column */
@@ -150,7 +148,7 @@ button { font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparen
 .ol-meta:empty { display: none; }
 .ol-meta { display: flex; flex-wrap: wrap; gap: 0 6px; font: var(--t-xs) var(--mono); color: var(--faint); margin-top: 2px; }
 .ol-meta > span { white-space: nowrap; }
-.ol-meta > span + span::before { content: '·'; margin-right: 6px; }
+.ol-meta { gap: 0 10px; }
 .ol-meta .e { color: var(--err); font-weight: 700; }
 @media (max-width: 1099px) {
     .outline { position: fixed; left: 0; top: var(--tb-h); bottom: 0; z-index: 70; background: var(--bg);
@@ -189,7 +187,8 @@ main { flex: 1; min-width: 0; padding: 0 20px 30vh; }
 .mh-stats .st { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .mh-stats .v { font: 600 var(--t-lg)/1.2 var(--mono); color: var(--text); font-variant-numeric: tabular-nums; }
 .mh-stats .l { font: var(--t-xs) var(--sans); color: var(--faint); }
-.mh-stats .in .v { color: var(--you); } .mh-stats .out .v { color: var(--claude); }
+/* one timeline at a time: with the session timeline showing, the chapter spine repeats it */
+body:has(#cctl.on) .spine, body:has(#cctl.on) .spine-cap { display: none; }
 /* progress spine — one segment per chapter */
 .spine { display: flex; gap: 3px; margin-top: 14px; height: 8px; }
 .spine span { flex: 1; border-radius: 3px; background: var(--sel); cursor: pointer; position: relative;
@@ -227,7 +226,7 @@ html, body { overflow-anchor: none; }
 .ch-meta .cm { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .ch-meta .cm b { color: var(--text); font-weight: 600; }
 .ch-meta .cm .icon { width: 12px; height: 12px; color: var(--faint); }
-.ch-meta .cm.quiet { color: var(--faint); }
+.ch-meta .cm.quiet { color: var(--faint); white-space: normal; overflow-wrap: anywhere; }
 .ch-meta .e { color: var(--err); font-weight: 600; background: var(--err-soft); padding: 0 7px; border-radius: 5px; }
 .ch-meta .e .icon { color: var(--err); }
 .cmdchip.shell { color: var(--tool); background: var(--tool-soft); }
@@ -316,7 +315,9 @@ section.chapter > .blink { top: 30px; left: -28px; }
 .trow[aria-expanded="true"] .fold { transform: rotate(90deg); }
 .trow .tn { font-weight: 700; color: var(--tool); flex: none; }
 .trow.agent .tn { color: var(--claude); }
-.trow .tp { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trow .tp { flex: 1; min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+.trow, .throw { align-items: baseline; }
+.rail .trow, .rail .throw { padding-top: 5px; padding-bottom: 5px; line-height: 1.5; }
 .trow .tp .pdir { color: var(--faint); } .trow .tp .pbase { color: var(--text); font-weight: 600; }
 .trow .tk, .throw .tk { flex: none; color: var(--faint); font-size: var(--t-xs); }
 .trow.failed .tn { color: var(--err); }
@@ -338,7 +339,7 @@ pre.res.err { color: var(--err); }
 .throw:hover { background: var(--sel); }
 .throw .fold { flex: none; width: 2ch; text-align: center; }
 .throw .thl { flex: none; font-weight: 700; color: var(--meta); font-style: normal; }
-.throw .tp { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.throw .tp { flex: 1; min-width: 0; overflow-wrap: anywhere; white-space: normal; }
 .thbody { margin: 3px 4px 8px 30px; padding: 8px 12px; border-left: 2px solid color-mix(in srgb, var(--meta) 50%, transparent);
     color: var(--dim); font: italic var(--t-sm)/1.6 var(--sans); white-space: pre-wrap; max-height: 360px; overflow: auto; }
 .evrow { display: flex; align-items: baseline; gap: 8px; padding: 2px 8px; font: var(--t-xs) var(--mono); color: var(--faint); }
@@ -495,7 +496,8 @@ pre.res.err { color: var(--err); }
 .content pre code { white-space: inherit; }
 .content code.shline { display: block; padding: 9px 14px; background: var(--well); border: 1px solid var(--edge);
     border-radius: var(--r); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
-.content pre.boxart { white-space: pre; overflow-wrap: normal; overflow-x: auto; line-height: 1.45; }
+.content pre.boxart { white-space: pre; overflow-wrap: normal; overflow-x: auto; line-height: 1.45;
+    width: max-content; max-width: 100%; }   /* sizeBoxart() lets it use the room right of the column */
 .content pre.boxart code { white-space: pre; }
 .content pre[data-lang]::before { content: attr(data-lang); position: absolute; top: 6px; right: 10px;
     font: var(--t-xs) var(--mono); color: var(--faint); opacity: .8; }
@@ -517,6 +519,10 @@ pre.res.err { color: var(--err); }
 .lk-cp { display: none; margin-left: 3px; padding: 0 3px; border-radius: 4px; font-size: .85em; color: var(--faint); cursor: pointer; }
 .lk:hover + .lk-cp, .lk-cp:hover, .lk-cp.ok { display: inline-block; }
 .lk-cp:hover { color: var(--you); background: var(--you-soft); }
+.lk-cp .icon { width: .95em; height: .95em; vertical-align: -.12em; }
+.byline .cp { display: inline-flex; align-items: center; padding: 2px 4px; border-radius: 5px; }
+.byline .cp .icon { width: 13px; height: 13px; }
+.byline .cp:hover { background: var(--sel); }
 .lk-cp.ok { color: var(--add); }
 /* harness turns (hook, peer, task, system) folded into the chapter they interrupted */
 .hturn { margin: 6px 0 0; }
@@ -608,7 +614,7 @@ pre.res.err { color: var(--err); }
 .shit .tag { flex: none; width: 30px; font: 700 var(--t-xs) var(--mono); color: var(--dim); }
 .shit .tag.r-user { color: var(--you); } .shit .tag.r-assistant { color: var(--claude); } .shit .tag.r-tools { color: var(--tool); }
 .shit .swhere { flex: none; font: 600 var(--t-xs) var(--mono); color: var(--tool); }
-.shit .snip { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-md); color: var(--dim); }
+.shit .snip { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: var(--t-md); color: var(--dim); }
 .shit .snip mark { background: var(--mark); color: var(--text); border-radius: 2px; }
 .shit .sts { flex: none; font: var(--t-xs) var(--mono); color: var(--faint); }
 .sfoot { padding: 7px 16px; font: var(--t-xs) var(--mono); color: var(--faint); border-top: 1px solid var(--edge);
@@ -885,7 +891,7 @@ body.no-outline .outline { display: none; }
 <!-- marked 12.0.2 and highlight.js 11.9.0, vendored in lib/vendor and served by the hub -->
 <script src="/vendor/marked.min.js"></script>
 <script src="/vendor/highlight.min.js"></script>
-<script src="/vendor/hub-shared.js?v=1"></script>
+<script src="/vendor/hub-shared.js?v=2"></script>
 <script>
 "use strict";
 const $ = s => document.querySelector(s);
@@ -921,7 +927,7 @@ function copyText(txt, btn) {
    button: prose, prompts, tool input and output, harness chips, diffs. Files
    open through the hub's /f route (this Mac only); relative paths resolve
    against the session's cwd. */
-const LINK_RE = /https?:\/\/[^\s<>"'`]+|(?:~|\/(?:Users|private|tmp|var|opt|etc|Applications|Volumes|usr|Library|System))(?:\/[^\s<>"'`:,;()\[\]{}|*]+)+|(?:\.{1,2}\/|[\w@.-]+\/)[\w@.\/-]*\.[A-Za-z]\w{0,6}/g;
+const LINK_RE = /https?:\/\/[^\s<>"'`]+|(?:~|\/(?:Users|private|tmp|var|opt|etc|Applications|Volumes|usr|Library|System))(?:\/[^\s<>"'`:,;()\[\]{}|*]+)+|(?:\.{1,2}\/|[\w@.-]+\/)[\w@.\/-]*\.[A-Za-z]\w{0,6}(?![\w@\/-]|\.\w)/g;
 const IS_LOCAL = /^(127\.|localhost$|\[::1\]$)/.test(location.hostname);
 function linkTarget(text) {
     if (/^https?:/.test(text)) return text;
@@ -953,7 +959,7 @@ function linkify(root) {
             a.className = 'lk'; a.dataset.href = href; a.dataset.raw = text; a.textContent = text;
             a.title = IS_LOCAL || /^https?:/.test(text) ? 'Open in a new tab' : 'Copy (files open on the Mac)';
             const cp = document.createElement('span');
-            cp.className = 'lk-cp'; cp.dataset.raw = text; cp.title = 'Copy'; cp.textContent = '⧉';
+            cp.className = 'lk-cp'; cp.dataset.raw = text; cp.title = 'Copy'; cp.innerHTML = ic('copy');
             frag.append(a, cp);
             last = at + text.length;
             return m;
@@ -974,7 +980,7 @@ function openModal({ title, sub, subHref, body, wide }) {
     m.innerHTML = `<div class="pm-card${wide ? ' wide' : ''}" role="dialog" aria-modal="true"><div class="pm-head"><div class="pm-t">` +
         `<div class="pm-title">${esc(title)}</div>` +
         (sub ? `<div class="pm-sub"><span class="lk" data-href="${esc(subHref || linkTarget(sub))}" data-raw="${esc(sub)}" data-tab="1">${esc(sub)}</span>` +
-               `<span class="lk-cp" data-raw="${esc(sub)}" title="Copy">⧉</span></div>` : '') +
+               `<span class="lk-cp" data-raw="${esc(sub)}" title="Copy">${ic("copy")}</span></div>` : '') +
         `</div><button class="pm-x" aria-label="Close">${ic('x')}</button></div><div class="pm-body">${body}</div></div>`;
     m.querySelectorAll('.content[data-md]').forEach(mdRender);
     linkify(m.querySelector('.pm-body'));
@@ -1101,6 +1107,16 @@ function mdRender(el) {
     } else el.textContent = el.getAttribute('data-raw') || '';
     el.removeAttribute('data-raw');
 }
+/* A box drawn in characters may reach past the reading column into the empty
+   margin on its right, so it shows whole instead of scrolling; never past the window. */
+function sizeBoxart(root) {
+    (root || document).querySelectorAll('.content pre.boxart').forEach(pre => {
+        const room = document.documentElement.clientWidth - pre.getBoundingClientRect().left - 24;
+        const col = pre.parentElement.getBoundingClientRect().width;
+        pre.style.maxWidth = Math.max(col, Math.min(room, 1000)) + 'px';
+    });
+}
+addEventListener('resize', () => sizeBoxart());
 /* A fenced block is coloured only when it says what it is, or when it is
    plainly a shell command. Guessing turned English prose into a rainbow. */
 const SHELL_LANGS = /^(bash|sh|shell|zsh|console|terminal)$/i;
@@ -1168,7 +1184,9 @@ function turnOf(r) {
     return 'typed';
 }
 function firstLine(s) {
-    return (String(s || '').split('\n').find(l => l.trim()) || '').replace(/^#+\s*/, '').trim();
+    // a heading or list marker is formatting, not part of what was said
+    return (String(s || '').split('\n').find(l => l.trim()) || '').replace(/^#+\s*/, '')
+        .replace(/^\s*(?:[-*+•]|\d{1,2}[.)])\s+/, '').trim();
 }
 function chTitle(r) {
     if (r.turn === 'shell') return r.label;
@@ -1307,13 +1325,13 @@ function renderMasthead() {
         (range ? `<span class="bi">${ic('clock')}${range}</span>` : '') + `</div>` +
         `<div class="mh-stats">` +
         stat(state.chapters.length, 'chapters', 'Your messages') +
-        stat(m.total_tool_calls, 'tool calls') +
-        (m.subagent_count ? stat(m.subagent_count, 'agents', 'Sub-agents this session started') : '') +
+        stat(m.total_tool_calls, m.total_tool_calls === 1 ? 'tool call' : 'tool calls') +
+        (m.subagent_count ? stat(m.subagent_count, m.subagent_count === 1 ? 'agent' : 'agents', 'Sub-agents this session started') : '') +
         stat(kfmt(t.input), 'tokens in', 'Fresh input tokens, cache reads not counted', 'in') +
         stat(kfmt(t.output), 'tokens out', 'Tokens Claude wrote', 'out') +
         stat(kfmt(t.cache_read), 'cache read', 'Input tokens served from the prompt cache') + `</div>` +
         `<div class="spine${state.chapters.length > 60 ? ' dense' : ''}" id="spine">` +
-        state.chapters.map((c, i) => `<span data-ch="${i}" title="${esc(c.title)}${c.tools ? ` · ${c.tools} tools` : ''}${c.mins ? ` · ${c.mins}m` : ''}" class="${c.errs ? 'err' : ''}" style="flex:${Math.sqrt(1 + c.tools * 2 + c.toks / 1500 + c.mins * 3).toFixed(2)}"></span>`).join('') +
+        state.chapters.map((c, i) => `<span data-ch="${i}" title="${esc(c.title)}${c.tools ? ` · ${plural(c.tools, "tool")}` : ''}${c.mins ? ` · ${fmtMins(c.mins)}` : ''}" class="${c.errs ? 'err' : ''}" style="flex:${Math.sqrt(1 + c.tools * 2 + c.toks / 1500 + c.mins * 3).toFixed(2)}"></span>`).join('') +
         `</div>` +
         `<div class="spine-cap"><span>${esc(state.chapters[0] && state.chapters[0].ts ? state.chapters[0].ts.slice(0,5) : '')}${d0 ? ' · ' + d0 : ''}</span><span id="spineCap">chapter 1 of ${state.chapters.length}</span></div>`;
     $('#tbTitle').textContent = TITLE;
@@ -1324,10 +1342,10 @@ const stat = (v, label, tip, cls) =>
     `<div class="st${cls ? ' ' + cls : ''}"${tip ? ` title="${esc(tip)}"` : ''}><span class="v">${esc(String(v))}</span><span class="l">${esc(label)}</span></div>`;
 function chMetaLine(c) {
     const top = Object.entries(c.byTool).sort((a, b) => b[1] - a[1]).slice(0, 3)
-        .map(([n, k]) => `${esc(n)} ${k}`).join(', ');
+        .map(([n, k]) => `${esc(n.startsWith('mcp__') ? n.split('__').slice(1).join(' ') : n)} ${k}`).join(', ');
     return [
         c.ts ? `<span class="cm">${ic('clock')}${c.ts.slice(0, 5)}</span>` : '',
-        c.mins ? `<span class="cm">worked <b>${c.mins}m</b></span>` : '',
+        c.mins ? `<span class="cm">worked <b>${fmtMins(c.mins)}</b></span>` : '',
         c.tools ? `<span class="cm"><b>${c.tools}</b> tool${c.tools > 1 ? 's' : ''}</span>` : '',
         c.agents ? `<span class="cm">${ic('bot')}<b>${c.agents}</b></span>` : '',
         c.toks ? `<span class="cm" title="output tokens">↑${kfmt(c.toks)}</span>` : '',
@@ -1344,13 +1362,23 @@ function olTitle(c) {
     const head = m && m[1].length <= 72 ? m[1] : t;
     return head.length <= 72 ? head : head.slice(0, 72).replace(/\s+\S*$/, '') + '…';
 }
+/* A chapter heading: the message's first sentence, whole. Only the outline
+   shortens further (owner-approved), so the heading never ends in "…". */
+function headTitle(c) {
+    const t = String(c.title || '');
+    const m = t.match(/^(.{12,}?[.?!])(\s|$)/);
+    return m ? m[1] : t;
+}
+const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + 's')}`;
+/* Minutes of work as a person says them: 45m, 3h 32m. */
+const fmtMins = m => m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}`;
 function renderOutline() {
     $('#olList').innerHTML = state.chapters.map((c, i) =>
         (c.divider && c.divider.kind === 'clear' ? `<div class="ol-div">${esc(c.divider.label)}</div>` : '') +
         `<button class="ol-item${i === state.curCh ? ' cur' : ''}" data-ch="${i}" title="${esc(c.title)}">` +
         `<span class="ol-num">${String(i + (state.chapters[0].user ? 1 : 0)).padStart(2, '0')}</span>` +
         `<span class="ol-t"><span class="ol-title">${esc(olTitle(c))}</span>` +
-        `<span class="ol-meta">${[c.tools ? `${c.tools} tools` : '',
+        `<span class="ol-meta">${[c.tools ? plural(c.tools, "tool") : '',
             c.errs ? `<b class="e">${c.errs} ${c.errs > 1 ? 'errors' : 'error'}</b>` : ''].filter(Boolean).map(x => `<span>${x}</span>`).join('')}</span></span>` +
         `<span class="ol-ts">${esc(c.ts ? c.ts.slice(0, 5) : '')}</span></button>`).join('');
 }
@@ -1364,7 +1392,7 @@ function prevHTML(t) {
         const dir = cut > 0 ? p.slice(0, cut + 1) : '', base = p.slice(cut + 1);
         return `<span class="lk" data-href="${esc(linkTarget(p))}" data-raw="${esc(p)}" title="${esc(p)}">` +
             `<span class="pdir">${esc(dir)}</span><span class="pbase">${esc(base)}</span></span>` +
-            `<span class="lk-cp" data-raw="${esc(p)}" title="Copy">⧉</span>`;
+            `<span class="lk-cp" data-raw="${esc(p)}" title="Copy">${ic("copy")}</span>`;
     }
     if (t.name === 'Bash' && t.input && t.input.command) return esc(t.input.command);
     return esc(t.preview || '');
@@ -1481,7 +1509,7 @@ function ledgerSummary(run) {
     }
     const parts = KIND_ORDER.filter(k => kinds[k]).map(k =>
         `<span class="ls-k k-${k}" title="${k}">${ic(kinds[k].icon)}${kinds[k].n}</span>`);
-    return { errs, html: [mins ? `<span>worked <b>${mins}m</b></span>` : '', ...parts,
+    return { errs, html: [mins ? `<span>worked <b>${fmtMins(mins)}</b></span>` : '', ...parts,
         thinks ? `<span class="ls-k k-think">${ic('spark')}${thinks}</span>` : '',
         toks ? `<span>↑${kfmt(toks)}</span>` : '',
         errs.length ? `<span class="ls-err" title="${esc(errs.join('\n'))}">${errs.length} error${errs.length > 1 ? 's' : ''}</span>` : '']
@@ -1545,7 +1573,8 @@ function hcardHTML(r, k) {
         head = nl > 0 && nl < 160 ? rest.slice(0, nl) : '';
         body = head ? rest.slice(nl + 1).trim() : rest;
     }
-    if (summary) body = summary[1] + (body ? '\n\n' + body : '');
+    // the chip above already says the summary; the card only adds to it
+    if (summary && summary[1] !== String(r.label || '').trim()) body = summary[1] + (body ? '\n\n' + body : '');
     return `<div class="tbody hcard"><div class="cin">` +
         `<div class="hc-kind">${esc(k)}${r.ts ? ` · ${esc(r.ts)}` : ''}</div>` +
         (head ? `<div class="hc-head">${esc(head)}</div>` : '') +
@@ -1587,7 +1616,7 @@ function evlineHTML(r) {
 }
 function chapterHTML(c, i, full) {
     const num = String(i + (state.chapters[0].user ? 1 : 0)).padStart(2, '0');
-    let h = `<div class="chwrap" data-chw="${i}">`;
+    let h = `<div class="chwrap" data-chw="${i}">`, shellCard = "";
     if (c.divider) h += `<div class="divider ${c.divider.kind}">${esc(c.divider.label)}</div>`;
     if (state.newSince != null && c.firstSeq === state.newSince) h += `<div class="newmark" id="newmark">new</div>`;
     h += `<section class="chapter${full ? '' : ' ph'}" data-ch="${i}" data-seq="${c.firstSeq}" data-screen-label="chapter ${num}">`;
@@ -1598,11 +1627,11 @@ function chapterHTML(c, i, full) {
         h += `<span class="cmdchip shell">${ic('terminal')}ran in the shell</span>`;
         h += `<h2 class="ch-title sh" title="jump here"><span class="bang">!</span>${esc(olTitle(c).replace(/^!\s*/, ''))}</h2>`;
         h += `<div class="ch-meta">${chMetaLine(c)}</div>`;
-        if (full) h += shellCardHTML(cmd, c);
+        if (full) shellCard = shellCardHTML(cmd, c);   // placed after the header, on the prose's left edge
     } else if (c.user) {
         const { chip, body } = userParts(c.user.text);
         h += (chip ? `<span class="cmdchip">${esc(chip)}</span>` : '');
-        const short = olTitle(c);
+        const short = headTitle(c);
         h += `<h2 class="ch-title" title="jump here">${esc(short)}</h2>`;
         h += `<div class="ch-meta">${chMetaLine(c)}</div>` + cmdsHTML(c);
         const rest = String(body || '').trim();
@@ -1613,9 +1642,9 @@ function chapterHTML(c, i, full) {
                 `<button class="res-more epi-more" data-epi="${ek}">${ic(open ? 'up' : 'down')}${open ? 'show less' : `show the whole message · ${rest.split(/\s+/).length} words`}</button></div>`;
         }
     } else {
-        h += `<h2 class="ch-title">${esc(c.title)}</h2><div class="ch-meta">${chMetaLine(c)}</div>` + cmdsHTML(c);
+        h += `<h2 class="ch-title">${esc(headTitle(c))}</h2><div class="ch-meta">${chMetaLine(c)}</div>` + cmdsHTML(c);
     }
-    h += `</div></header>`;
+    h += `</div></header>` + shellCard;
     if (!full) return h + `<div class="ch-ph" style="height:${estHeight(c)}px"></div></section></div>`;
     // items: passages + ledgers (consecutive tools/events group into one ledger)
     let run = [];
@@ -1648,7 +1677,7 @@ function chapterHTML(c, i, full) {
         if (r.role === 'assistant')
             h += `<div class="passage" data-seq="${r.seq}"><div class="byline"><span class="who">claude</span>` +
                 `<span>${esc(prettyModel(r.model).toLowerCase())}${r.tokens && r.tokens.out ? ` · ↑${kfmt(r.tokens.out)}` : ''}${r.sidechain ? ' · ↳ sidechain' : ''}</span><span class="hgap"></span>` +
-                `<span>${esc(r.ts || '')}</span><button class="cp" data-copy>copy</button></div>` +
+                `<span>${esc(r.ts || '')}</span><button class="cp" data-copy title="Copy this reply">${ic("copy")}</button></div>` +
                 `<div class="content" data-md data-raw="${esc(r.text)}"></div></div>`;
     }
     flush();
@@ -1709,7 +1738,7 @@ function renderChapters() {
     for (let i = Math.max(0, n - EAGER_NEWEST); i < n; i++) state.filled.add(i);
     el.innerHTML = state.chapters.map((c, i) => chapterHTML(c, i, state.filled.has(i))).join('') + endcapHTML();
     el.querySelectorAll('.content[data-md]').forEach(mdRender);
-    addPermalinks(); linkify(el); addPreviews(el);
+    addPermalinks(); linkify(el); addPreviews(el); sizeBoxart(el);
     observeShells(el);
     renderOutline();
     updateSpine();
@@ -1729,7 +1758,7 @@ function fillChapter(i) {
     const fresh = t.content.firstElementChild;
     old.replaceWith(fresh);
     fresh.querySelectorAll('.content[data-md]').forEach(mdRender);
-    addPermalinks(fresh); linkify(fresh); addPreviews(fresh);
+    addPermalinks(fresh); linkify(fresh); addPreviews(fresh); sizeBoxart(fresh);
     // above the reading line (under the top bar and the sticky timeline): hold the reader's place
     if (r0.bottom <= headOffset()) {
         const delta = fresh.getBoundingClientRect().height - r0.height;
@@ -1749,7 +1778,7 @@ function appendChapters(prevN) {
         const w = t.content.firstElementChild;
         el.insertBefore(w, cap);
         w.querySelectorAll('.content[data-md]').forEach(mdRender);
-        addPermalinks(w); linkify(w); addPreviews(w);
+        addPermalinks(w); linkify(w); addPreviews(w); sizeBoxart(w);
     }
     if (cap) cap.outerHTML = endcapHTML();
 }
@@ -1784,6 +1813,22 @@ function jumpToChapter(i, smooth = true) {
         top = el.getBoundingClientRect().top;
     }
     window.scrollTo({ top: top + scrollY - headOffset(), behavior: smooth ? 'smooth' : 'auto' });
+    settleOn(el);
+}
+/* Chapters that fill in on the way move the target after the scroll has
+   started; once scrolling stops, measure again and close the gap. */
+function settleOn(el, tries = 3) {
+    let done = false;
+    const fix = () => {
+        if (done) return; done = true;
+        const off = el.getBoundingClientRect().top - headOffset();
+        if (Math.abs(off) > 4 && tries > 0) {
+            window.scrollTo({ top: scrollY + off, behavior: 'auto' });
+            requestAnimationFrame(() => settleOn(el, tries - 1));
+        }
+    };
+    if ('onscrollend' in window) addEventListener('scrollend', fix, { once: true });
+    setTimeout(fix, 900);
 }
 /* Build the chapter holding `seq` if it is still a placeholder; its index. */
 function ensureFilled(seq) {
@@ -1885,7 +1930,6 @@ addEventListener('scroll', () => {
     requestAnimationFrame(() => {
         scrollTick = false;
         $('#topbar').classList.toggle('scrolled', scrollY > 180);
-        const tc = $('#tbCh'); if (tc) tc.textContent = `ch ${state.curCh + 1}/${state.chapters.length}`;
         const heads = [...document.querySelectorAll('.chapter')];
         let cur = 0;
         for (let i = 0; i < heads.length; i++)
@@ -1896,6 +1940,8 @@ addEventListener('scroll', () => {
             $('#chLab').innerHTML = `<b>${cur + 1}/${state.chapters.length}</b>`;
             document.querySelectorAll('.ol-item').forEach((el, i) => { el.classList.toggle('cur', i === cur); if (i === cur) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); });
         }
+        // after the current chapter is worked out, so the bar never lags a jump
+        const tc = $('#tbCh'); if (tc) tc.textContent = `ch ${state.curCh + 1}/${state.chapters.length}`;
         if (innerHeight + scrollY > document.body.scrollHeight - 300) { state.newSince = null; $('#jumpNew').classList.remove('on'); }
         updateTimelineView();
     });
@@ -1922,7 +1968,7 @@ document.addEventListener('click', e => {
         state.epis.has(k) ? state.epis.delete(k) : state.epis.add(k);
         fillChapter(+em.closest(".chapter").dataset.ch); return; }
     const cp = e.target.closest('[data-copy]');
-    if (cp) { const p = cp.closest('.passage'); copyText(p ? p.innerText : '', cp); }
+    if (cp) { const p = cp.closest('.passage'); copyText(p ? p.querySelector('.content').innerText : ''); cp.classList.add('ok'); cp.innerHTML = ic('check'); setTimeout(() => { cp.classList.remove('ok'); cp.innerHTML = ic('copy'); }, 1200); }
 });
 /* outline drawer */
 function openOutline() { $('#outline').classList.add('open'); $('#scrim').classList.add('on'); $('#olBtn').setAttribute('aria-pressed', 'true'); }
@@ -2478,9 +2524,21 @@ function buildTimeline(animate) {
     const rs = state.records.filter(r => r.ts_iso);
     if (rs.length < 2 || !$('#masthead')) return;
     const t0 = +new Date(rs[0].ts_iso), t1 = +new Date(rs[rs.length - 1].ts_iso), span = Math.max(1, t1 - t0);
+    // Idle stretches (nights, days away) count as at most GAP of axis each, so
+    // a session that spans days still shows its work instead of slivers.
+    const GAP = 12 * 60000, T = rs.map(r => +new Date(r.ts_iso)), C = [0], breaks = [];
+    for (let i = 1; i < T.length; i++) {
+        const d = Math.max(0, T[i] - T[i - 1]);
+        C[i] = C[i - 1] + Math.min(d, GAP);
+        if (d > GAP * 1.5) breaks.push(C[i - 1] + GAP / 2);
+    }
+    const cspan = Math.max(1, C[C.length - 1]);
+    const lastLE = (arr, v) => { let lo = 0, hi = arr.length - 1, k = -1; while (lo <= hi) { const m = (lo + hi) >> 1; if (arr[m] <= v) { k = m; lo = m + 1; } else hi = m - 1; } return k; };
+    const toX = t => { const i = lastLE(T, t); if (i < 0) return 0; const step = i + 1 < T.length ? C[i + 1] - C[i] : 0; return (C[i] + Math.min(t - T[i], step)) / cspan; };
+    const toT = x => { const c = x * cspan, i = Math.max(0, lastLE(C, c)); return T[i] + (c - C[i]); };
     const N = 140, work = new Array(N).fill(0), pr = [], er = [];
     for (const r of rs) {
-        const x = (+new Date(r.ts_iso) - t0) / span;
+        const x = toX(+new Date(r.ts_iso));
         if (r.role === 'tools') work[Math.min(N - 1, Math.floor(x * N))] += (r.tools || []).length || 1;
         if (r.role === 'user' && ['typed', 'shell'].includes(turnOf(r))) pr.push(x);
         if (r.cls === 'err' || (r.role === 'tools' && (r.tools || []).some(t => t.is_error))) er.push(x);
@@ -2492,14 +2550,16 @@ function buildTimeline(animate) {
         bars += `<rect x="${(i / N * W).toFixed(1)}" y="${base - h}" width="${(W / N * .7).toFixed(1)}" height="${h}" rx="1.5" style="animation-delay:${(i * 4)}ms"></rect>`; }
     const pt = pr.map(x => `<line x1="${(x * W).toFixed(1)}" x2="${(x * W).toFixed(1)}" y1="${base + 2}" y2="${H}"></line>`).join('');
     const et = er.map(x => `<line x1="${(x * W).toFixed(1)}" x2="${(x * W).toFixed(1)}" y1="0" y2="6"></line>`).join('');
+    const bk = breaks.map(c => { const x = (c / cspan * W).toFixed(1); return `<line x1="${x}" x2="${x}" y1="10" y2="${base}"></line>`; }).join('');
     const multiDay = new Date(t0).toDateString() !== new Date(t1).toDateString();
     const el = document.createElement('div'); el.className = 'cctl' + (animate ? ' anim' : ''); el.id = 'cctl';
     el.innerHTML = `<div class="tl-lb"><span>${clockOf(t0, multiDay)}</span><span class="tl-hint">drag to pick a stretch, let go to jump</span><span>${clockOf(t1, multiDay)}</span></div>` +
         `<div class="tl-track"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><g class="tl-bars">${bars}</g>` +
+        `<g class="tl-breaks" stroke="var(--edge2)" stroke-width="1.5" stroke-dasharray="2 3">${bk}</g>` +
         `<g stroke="var(--you)" stroke-width="2.5">${pt}</g><g stroke="var(--err)" stroke-width="2.5">${et}</g></svg>` +
         `<div class="tl-view"></div><div class="tl-sel"></div><div class="tl-cur"><span></span></div></div>`;
     $('#masthead').after(el);
-    TL = { el, rs, t0, t1, span, multiDay };
+    TL = { el, rs, t0, t1, span, multiDay, toX, toT };
     const track = el.querySelector('.tl-track'), sel = el.querySelector('.tl-sel'), cur = el.querySelector('.tl-cur');
     const fx = ev => { const r = track.getBoundingClientRect(); return Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)); };
     let down = null;
@@ -2510,7 +2570,7 @@ function buildTimeline(animate) {
     track.addEventListener('pointermove', ev => {
         const x = fx(ev);
         cur.style.left = x * 100 + '%'; cur.classList.add('on');
-        cur.querySelector('span').textContent = clockOf(t0 + x * span, multiDay);
+        cur.querySelector('span').textContent = clockOf(toT(x), multiDay);
         if (down == null) return;
         sel.style.left = Math.min(down, x) * 100 + '%'; sel.style.width = Math.abs(x - down) * 100 + '%';
     });
@@ -2520,7 +2580,7 @@ function buildTimeline(animate) {
         const x = fx(ev), from = Math.abs(x - down) < .004 ? x : Math.min(down, x);
         down = null;
         setTimeout(() => sel.classList.remove('on'), 700);
-        const tt = t0 + from * span;
+        const tt = toT(from);
         let best = rs[0]; for (const rec of rs) { if (+new Date(rec.ts_iso) <= tt) best = rec; else break; }
         jumpToSeq(best.seq);
     });
@@ -2541,7 +2601,7 @@ function updateTimelineView() {
     const ta = a != null ? tsOf(a) : null, tb = b != null ? tsOf(b) : ta;
     const v = TL.el.querySelector('.tl-view');
     if (ta == null) { v.style.opacity = '0'; return; }
-    const l = (ta - TL.t0) / TL.span, r = ((tb || ta) - TL.t0) / TL.span;
+    const l = TL.toX(ta), r = TL.toX(tb || ta);
     v.style.opacity = '1';
     v.style.left = Math.max(0, l) * 100 + '%';
     v.style.width = Math.max(1.4, (Math.min(1, r) - l) * 100) + '%';
@@ -2574,7 +2634,14 @@ document.addEventListener('click', e => {
 $('#vpDir').onclick = e => { const b = e.target.closest('button'); if (b) vt(() => applyDir(b.dataset.dir)); };
 $('#vpSkin').onclick = e => { const b = e.target.closest('button'); if (b) vt(() => applyPalette(b.dataset.skin)); };
 $('#vpTheme').onclick = e => { const b = e.target.closest('button'); if (b) vt(() => chooseTheme(b.dataset.theme)); };
-$('#vpFs').oninput = e => applyTextSize(+e.target.value);
+/* Resizing text reflows every chapter; hold the block at the top of the screen in place. */
+$('#vpFs').oninput = e => {
+    const y = headOffset() + 4;
+    const anchor = [...document.querySelectorAll('#chapters [data-seq]')].find(el => el.getBoundingClientRect().bottom > y);
+    const before = anchor ? anchor.getBoundingClientRect().top : 0;
+    applyTextSize(+e.target.value);
+    if (anchor) window.scrollBy(0, anchor.getBoundingClientRect().top - before);
+};
 $('#vpTl').onchange = e => setTimeline(e.target.checked, true);
 
 /* ================= init — fetch the real session, then go live */
@@ -2605,7 +2672,13 @@ function showData(data) {
     window.SESSION.records = data.records;
     state.meta = data.meta;
     state.records = data.records;
-    TITLE = (data.meta.ai_title || '').trim() || 'Claude Code session';
+    // Same name the board card showed, so opening a card never renames it:
+    // Claude Code's title, else the card's own name, else the folder.
+    let hint = null;
+    try { hint = JSON.parse(sessionStorage.getItem('hub-open') || 'null'); } catch (e) {}
+    if (hint && !location.pathname.includes(hint.sid)) hint = null;
+    const folder = String(data.meta.cwd || '').replace(/\/+$/, '').split('/').pop();
+    TITLE = (data.meta.ai_title || '').trim() || (hint && hint.title) || folder || 'Claude Code session';
     document.title = TITLE;
     $('#tbTitle').textContent = TITLE;
     lastId = lastClosedId(data.records);

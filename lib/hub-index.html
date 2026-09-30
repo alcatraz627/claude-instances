@@ -7,7 +7,7 @@
 <!-- The menu-bar widget's Claude starburst (terracotta), tiled on the hub's
      slate and wearing a teal live-dot — the hub's own mark. -->
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23191a21'/%3E%3Cg stroke='%23d97757' stroke-width='5.5' stroke-linecap='round'%3E%3Cpath d='M32 32 32 9'/%3E%3Cpath d='M32 32 46 14'/%3E%3Cpath d='M32 32 55 27'/%3E%3Cpath d='M32 32 50 44'/%3E%3Cpath d='M32 32 37 55'/%3E%3Cpath d='M32 32 21 52'/%3E%3Cpath d='M32 32 10 42'/%3E%3Cpath d='M32 32 9 25'/%3E%3Cpath d='M32 32 18 11'/%3E%3C/g%3E%3Ccircle cx='51' cy='51' r='6' fill='%234fb6a6' stroke='%23191a21' stroke-width='2.5'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="/vendor/hub-shared.css?v=1">
+<link rel="stylesheet" href="/vendor/hub-shared.css?v=2">
 <style>
 /* V6 "FLEET" index — the merged board. V3's state-grouped spine (Needs you →
    Working → Ended), V5's query grammar + live peek panes, V1's table density,
@@ -112,7 +112,12 @@ select.tbtn { appearance: none; padding-right: 22px;
     .topbar { gap: 6px; padding: 0 8px; }
     .seg, .tctl { height: 32px; } .seg button { height: 24px; padding: 0 8px; } .tctl.icon { width: 32px; }
     .tb-name { display: none; }
+    /* the header figures filter the same way, so the bar keeps only what fits */
+    #stSeg, #densSeg, .tb-spend { display: none; }
+    .tctl .chev { display: none; }
 }
+/* the top bar scales with the text-size setting, like the page under it */
+.topbar { zoom: var(--zoom, 1); }
 .tctl select { appearance: none; border: none; background: none; color: var(--text); font: inherit; padding: 0; cursor: pointer; }
 .tctl select:focus { outline: none; }
 .tctl .chev { width: 12px; height: 12px; color: var(--faint); margin-left: -2px; pointer-events: none; }
@@ -126,6 +131,8 @@ select.tbtn { appearance: none; padding-right: 22px;
     border: 1px solid var(--edge); border-radius: 10px; background: var(--panel); color: var(--dim); text-align: left;
     font: inherit; transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease); }
 button.hs:hover { border-color: var(--edge2); background: var(--sel); }
+/* a figure that only reports (mail, context) sits on the page, unboxed, so it never reads as a button */
+div.hs { border-color: transparent; background: transparent; }
 .hs.on { border-color: var(--hc, var(--edge2)); box-shadow: 0 0 0 1px var(--hc, var(--edge2)); }
 .hs-v { display: inline-flex; align-items: center; gap: 7px; font: 650 var(--t-lg)/1.25 var(--mono); color: var(--text);
     font-variant-numeric: tabular-nums; }
@@ -164,22 +171,24 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
 .qbar { position: relative; margin-top: 16px; }
 .qbar > .icon { position: absolute; left: 12px; top: 50%; translate: 0 -50%; color: var(--faint); }
 #fq { width: 100%; height: 36px; background: var(--well); border: 1px solid var(--edge);
-    color: var(--text); border-radius: 999px; padding: 0 96px 0 36px; font: var(--t-sm) var(--sans); }
+    color: var(--text); border-radius: 999px; padding: 0 150px 0 36px; font: var(--t-sm) var(--sans); }
+@media (max-width: 480px) { #fq { padding-right: 16px; } }
 #fq::placeholder { color: var(--faint); }
 #fq:focus { outline: none; border-color: var(--you); box-shadow: 0 0 0 3px var(--you-soft); }
 .qstat { position: absolute; right: 14px; top: 50%; translate: 0 -50%; font: var(--t-xs) var(--mono);
     color: var(--faint); pointer-events: none; font-variant-numeric: tabular-nums; }
+@media (max-width: 480px) { .qstat { display: none; } }
 .qhint { margin-top: 6px; font: var(--t-xs) var(--mono); color: var(--faint); }
 .qhint code { background: var(--sel); border-radius: 4px; padding: 1px 6px; cursor: pointer; }
 .qhint code:hover { color: var(--text); }
 .p-hit { margin: 0 13px 9px; padding: 4px 10px; border-radius: 6px;
     background: color-mix(in srgb, var(--tool) 10%, transparent);
-    font: var(--t-xs) var(--mono); color: var(--dim); overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; width: fit-content; max-width: calc(100% - 26px); }
+    font: var(--t-xs) var(--mono); color: var(--dim); overflow-wrap: anywhere;
+    width: fit-content; max-width: calc(100% - 26px); }
 .p-hit mark { background: rgba(226,176,91,.3); color: var(--text); border-radius: 2px; }
 
 /* ---------------- peeks density (V5) ---------------- */
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; margin-top: 18px;
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); gap: 14px; margin-top: 18px;
     align-items: start; }   /* each card its own height: no empty band above a short tail */
 .pane { display: flex; flex-direction: column; text-decoration: none; color: inherit;
     background: var(--panel); border: 1px solid var(--edge); border-radius: var(--r); overflow: hidden;
@@ -199,7 +208,7 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
 .pane.working .p-st { background: var(--claude); }
 .pane.working .p-st::after { content: ''; position: absolute; inset: -4px; border-radius: 50%;
     border: 1.5px solid var(--claude); opacity: 0; animation: pulse 2s var(--ease) infinite; }
-.p-title { font: 650 var(--t-md) var(--sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.p-title { font: 650 var(--t-md) var(--sans); overflow-wrap: anywhere; }
 /* harness lines left out of the tail, counted (hooks, peers, tasks, mode changes) */
 .p-sys { flex: none; font: var(--t-xs) var(--mono); color: var(--faint); border: 1px solid var(--edge);
     border-radius: 999px; padding: 0 7px; }
@@ -208,7 +217,7 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
     color: var(--claude); background: color-mix(in srgb, var(--claude) 11%, transparent);
     border-radius: 4px; padding: 1px 6px; }
 /* card (owner D1a): one header row with stable slots, a two-part footer */
-.p-head { flex-wrap: nowrap; align-items: center; }
+.p-head { flex-wrap: wrap; align-items: center; }
 .p-title { min-width: 0; flex: 0 1 auto; }
 .p-right { margin-left: auto; flex: none; display: inline-flex; align-items: baseline; gap: 8px; }
 .p-right .p-el { margin-left: 0; }
@@ -279,11 +288,11 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
 .p-foot .ctx .bar i { display: block; height: 100%; border-radius: 999px; background: var(--dim); }
 .p-foot .ctx.warn, .p-foot .ctx.warn b { color: var(--tool); } .p-foot .ctx.warn .bar i { background: var(--tool); }
 .p-foot .ctx.hot { color: var(--err); } .p-foot .ctx.hot .bar i { background: var(--err); }
-.p-foot .branch { color: color-mix(in srgb, var(--meta) 40%, var(--faint)); overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.p-foot .branch { color: color-mix(in srgb, var(--meta) 40%, var(--faint)); 
+    overflow-wrap: anywhere; max-width: 100%; }
 .p-foot .mod { color: var(--tool); }
-.p-foot .ipcchip { color: color-mix(in srgb, var(--meta) 45%, var(--faint)); overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap; }
+.p-foot .ipcchip { color: color-mix(in srgb, var(--meta) 45%, var(--faint)); 
+    overflow-wrap: anywhere; }
 .p-foot .ipcchip.bad { color: var(--warn, #c90); }
 .p-foot .ipcchip.stale { opacity: .55; }
 .ipcdisagree { display: inline-flex; align-items: center; color: var(--warn, #c90); margin-left: 4px; cursor: help; }
@@ -312,9 +321,9 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
 .trow.working .st { background: var(--claude); }
 .trow.working .st::after { content: ''; position: absolute; inset: -4px; border-radius: 50%;
     border: 1.5px solid var(--claude); opacity: 0; animation: pulse 2s var(--ease) infinite; }
-.c-dir { font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-dir { font-weight: 700; color: var(--text); overflow-wrap: anywhere; }
 .c-model { color: var(--dim); text-transform: lowercase; }
-.c-state { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-state { overflow-wrap: anywhere; }
 .c-state b { font-weight: 700; }
 .trow.turn .c-state b { color: var(--you); } .trow.working .c-state b { color: var(--claude); }
 .c-state .doing { color: var(--faint); }
@@ -323,7 +332,7 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
 .c-ctx .gauge i { display: block; height: 100%; background: var(--dim); }
 .c-ctx.warn { color: var(--tool); } .c-ctx.warn .gauge i { background: var(--tool); }
 .c-ctx.hot { color: var(--err); } .c-ctx.hot .gauge i { background: var(--err); }
-.c-branch { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); }
+.c-branch { overflow-wrap: anywhere; color: var(--faint); }
 .c-branch .mod { color: var(--tool); }
 .c-el { text-align: right; color: var(--faint); white-space: nowrap; }
 .t-hit { grid-column: 2 / -1; margin: 0 0 8px; }
@@ -345,7 +354,7 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
 .hpk .hd { display: flex; gap: 8px; align-items: baseline; padding: 7px 13px; background: var(--well);
     border-bottom: 1px solid var(--edge); font: 700 var(--t-xs) var(--mono); color: var(--dim); }
 .hpk .hd b { color: var(--text); }
-.trow .c-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trow .c-model { overflow-wrap: anywhere; }
 
 /* View-panel option icons */
 .vp-seg button { display: inline-flex; align-items: center; gap: 5px; }
@@ -503,7 +512,7 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
 
 <main id="main"></main>
 <div class="hpk" id="hpk" aria-hidden="true"></div>
-<script src="/vendor/hub-shared.js?v=1"></script>
+<script src="/vendor/hub-shared.js?v=2"></script>
 <div class="viewpanel" id="viewPanel">
   <div class="vp-cap">View</div>
   <div class="vp-grp"><span class="vp-lb">Direction</span>
@@ -613,11 +622,18 @@ function durShort(iso) {
 /* The state label: Claude Code's own status when the session file gave one
    ("busy 4m"), else the transcript-tail guess. */
 function statusText(s) {
-    if (s.state === 'ended') return 'ended';
-    const base = s.status === 'busy' ? 'busy' : s.status === 'shell' ? 'shell'
-               : s.state === 'idle' ? 'your turn' : 'working';
+    if (s.state === 'ended') return 'Ended';
+    // Claude Code says busy, idle or shell; to the owner that is working or their turn
+    const base = s.state === 'idle' ? 'Your turn' : 'Working';
     const since = s.status ? durShort(s.status_since) : '';
-    return since ? `${base} ${since}` : base;
+    return since ? `${base} · ${since}` : base;
+}
+/* The same state in a sentence, for the tooltip. */
+function statusTip(s) {
+    if (s.state === 'ended') return `Ended ${s.ago || ''}`.trim();
+    const at = s.status_since ? new Date(s.status_since).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    const what = s.state === 'idle' ? (s.status === 'shell' ? 'Waiting for you (in shell mode)' : 'Waiting for you') : 'Claude is working';
+    return at ? `${what} since ${at}` : what;
 }
 function adaptFeed(d) {
     FEED.host = (d.host || '').replace(/\.local$/, '');
@@ -701,18 +717,23 @@ function lineFor(r) {
     if (r.role === 'event') return { sys: true };
     // thinking and empty lines say nothing on a card, so they take no row
     if (r.role === 'thinking') return null;
+    // Each line ends where the text does (its first line or first sentence),
+    // never mid-word: the card wraps rather than cuts.
     if (r.role === 'user') {
-        const tx = (r.label || String(r.text || '').replace(/<[^>]+>/g, ' ')).trim();
-        return tx ? { g: '❯', c: 'u', tx: tx.slice(0, 120) } : null;
+        const tx = firstLineOf(r.label || String(r.text || '').replace(/<[^>]+>/g, ' '));
+        return tx ? { g: '❯', c: 'u', tx } : null;
     }
     if (r.role === 'assistant') {
-        const tx = String(r.text || '').replace(/[#*`>]/g, '').replace(/\s+/g, ' ').trim();
-        return tx ? { g: '●', c: 'a', tx: tx.slice(0, 120) } : null;
+        const tx = firstSentence(firstLineOf(String(r.text || '').replace(/[#*`>]/g, '')));
+        return tx ? { g: '●', c: 'a', tx } : null;
     }
     if (r.role === 'tools') { const t = r.tools[0], k = tailKind(t.name);
-        return { g: ic(k.icon), c: 't k-' + k.k, tx: `<b>${esc(k.label)}</b> ${esc((t.preview || (t.input && t.input.command) || '').slice(0, 100))}`, html: true }; }
+        const what = firstLineOf((t.input && t.input.command) || t.preview || '').replace(/…$/, '');
+        return { g: ic(k.icon), c: 't k-' + k.k, tx: `<b>${esc(k.label)}</b> ${esc(what)}`, html: true }; }
     return null;
 }
+const firstLineOf = s => (String(s || '').split('\n').find(l => l.trim()) || '').replace(/\s+/g, ' ').trim();
+const firstSentence = s => { const m = s.match(/^(.{20,}?[.?!:])(\s|$)/); return m ? m[1] : s; };
 /* A tool's kind on a card: its icon and a short name (an MCP call shows its server). */
 function tailKind(n) {
     n = n || '';
@@ -744,7 +765,7 @@ function ingestTail(sid, recs) {
 /* SWR cache: tails persist in localStorage so a reopen (or a hover repeat)
    paints instantly from stale data, then one cheap ?since revalidate catches
    up. The cache is a placeholder, never a TTL bet — every prime revalidates. */
-const TAILCACHE = 'hub-tail-v4:';   // v4: thinking and empty lines are not kept
+const TAILCACHE = 'hub-tail-v5:';   // v5: lines end at a sentence, never cut mid-word
 function loadTailCache(sid) {
     try { const v = JSON.parse(localStorage.getItem(TAILCACHE + sid)); return v && Array.isArray(v.src) ? v : null; }
     catch (e) { return null; }
@@ -797,7 +818,8 @@ function refreshTailDOM(sid) {
 function tailLinesFor(s) {
     const t = tails[s.session_id];
     if (!t) return [];
-    const vis = t.src.filter(l => !l.sys);
+    // two replies that open with the same sentence would print the same line twice
+    const vis = t.src.filter(l => !l.sys).filter((l, i, a) => !(i && a[i - 1].tx === l.tx && a[i - 1].c === l.c));
     const n = s.state === 'idle' ? 2 : s.state === 'ended' ? 3 : 5;
     return vis.slice(Math.max(0, vis.length - n));
 }
@@ -871,7 +893,8 @@ function headHTML(s, state, when) {
     return `<div class="p-head"><span class="p-st"></span>` +
         `<span class="p-title" data-copy="${esc(s.cwd_short)}" title="Copy">${esc(s.cwd_short)}</span>` +
         `<span class="p-model" data-copy="${esc(s.model_full || s.model)}" title="Copy ${esc(s.model_full || s.model)}">${esc(s.model)}</span>` +
-        `<span class="p-right"><span class="p-state">${esc(state)}</span><span class="p-el">${esc(when || '')}</span></span></div>`;
+        `<span class="p-right"><span class="p-state" data-tip="${esc(statusTip(s))}">${esc(state)}</span>` +
+        `<span class="p-el" data-tip="${s.state === 'ended' ? 'When it ended' : 'How long this session has been running'}">${esc(when || '')}</span></span></div>`;
 }
 /* The footer: where it runs and when it last moved, then the numbers as small
    icon chips. Path and branch copy on click; problems are tinted, not shouted. */
@@ -991,7 +1014,7 @@ function ipcChipHTML(s) {
 }
 function endedPaneHTML(s, hit) {
     return `<a class="pane ended${openable(s) ? '' : ' noopen'}"${openable(s) ? ` href="/s/${encodeURIComponent(s.session_id)}${hit && hit.seq ? `#r${hit.seq}&q=${encodeURIComponent(hit.w)}` : ''}"` : ''}${noOpenAttrs(s)} data-sid="${esc(s.session_id)}" data-peek="1">` +
-        headHTML(s, 'ended', s.ago) +
+        headHTML(s, 'Ended', s.ago) +
         `<div class="p-tail" data-tail="${esc(s.session_id)}">` + tailLinesFor(s).map(l => lineHTML(l)).join('') + `</div>` +
         (hit ? hitHTML(hit) : '') + footHTML(s) + `</a>`;
 }

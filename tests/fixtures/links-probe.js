@@ -8,7 +8,8 @@ const a = html.indexOf('const LINK_RE');
 const b = html.indexOf('function linkify(', a);
 if (a < 0 || b < 0) { console.log('MARKERS MISSING'); process.exit(0); }
 const sample = 'See https://github.com/x/y/pull/9. and /Users/me/Code/app/lib/scan.sh:120, ' +
-    'then ~/.claude/rules/git.md or lib/hub-index.html; not D1a/D2b nor 3/4.';
+    'then ~/.claude/rules/git.md or lib/hub-index.html; not D1a/D2b nor 3/4, ' +
+    'nor type.googleapis.com/google.rpc.PreconditionFailure.';
 const out = new Function('location', 'state', html.slice(a, b) + `
     const found = [];
     ${JSON.stringify(sample)}.replace(LINK_RE, m => {
