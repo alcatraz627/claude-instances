@@ -640,7 +640,8 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/vendor/"):
             return self._serve_vendor(path[len("/vendor/"):])
         if path == "/f":
-            return self._serve_local_file((qs.get("p") or [""])[0], (qs.get("rel") or [""])[0])
+            return self._serve_local_file((qs.get("p") or [""])[0], (qs.get("rel") or [""])[0],
+                                          head=bool((qs.get("head") or [""])[0]))
         if path == "/search":
             return self._serve_search((qs.get("sid") or [""])[0], qs)
         m = SID_RE.match(path)
@@ -671,7 +672,7 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
             return []
         return out.splitlines()[:20]
 
-    def _serve_local_file(self, raw, rel=""):
+    def _serve_local_file(self, raw, rel="", head=False):
         """Open a file or folder named in a transcript, for a reader on this Mac.
 
         Only loopback clients: the hub also listens on the tailnet, and reading
@@ -710,7 +711,11 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
             ctype = "text/html; charset=utf-8"
         else:
             try:
-                body = _read_file(p)
+                if head:   # a preview needs the start of a file, never all of a huge log
+                    with open(p, "rb") as fh:
+                        body = fh.read(512 * 1024)
+                else:
+                    body = _read_file(p)
             except OSError as e:
                 return self._send(403, str(e), "text/plain; charset=utf-8")
             ctype = mimetypes.guess_type(p)[0] or "text/plain"

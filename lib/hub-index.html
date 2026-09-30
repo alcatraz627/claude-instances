@@ -99,6 +99,14 @@ select.tbtn { appearance: none; padding-right: 22px;
 .tctl select:focus { outline: none; }
 .tctl .chev { width: 12px; height: 12px; color: var(--faint); margin-left: -2px; pointer-events: none; }
 .vp-grp:has(#vpDir), .vp-grp:has(#vpTheme) { display: none; }
+.seg button:focus:not(:focus-visible) { outline: none; }
+.st-seg button { padding: 0 9px; gap: 5px; }
+.mh-sub { margin-top: 2px; font: var(--t-sm) var(--sans); color: var(--faint); }
+.alerts { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.al { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 6px; font: var(--t-xs) var(--sans); }
+.al .icon { width: 12px; height: 12px; }
+.al-warn { color: color-mix(in srgb, var(--err) 75%, var(--dim)); background: color-mix(in srgb, var(--err) 7%, transparent); }
+.al-info { color: var(--dim); background: var(--sel); }
 /* opening a card: its title becomes the transcript's title (owner D1 note) */
 @view-transition { navigation: auto; }
 ::view-transition-group(*) { animation-duration: 340ms; animation-timing-function: cubic-bezier(.2, 0, 0, 1); }
@@ -465,10 +473,10 @@ h1 { font: 650 var(--t-xl)/1.2 var(--sans); letter-spacing: -.014em; margin: 0; 
   <span class="tb-brand">Claude</span><span class="tb-host">Aakarshs-M5-Pro</span>
   <span class="tb-sp"></span>
   <div class="seg st-seg" id="stSeg" role="tablist" aria-label="Show sessions">
-    <button data-st="all" class="st-all" title="All sessions"><svg class="icon"><use href="#i-layers"/></svg>All<span class="n" id="nAll"></span></button>
-    <button data-st="you" class="st-you" title="Waiting on you"><svg class="icon"><use href="#i-hand"/></svg>Needs you<span class="n" id="nYou"></span></button>
-    <button data-st="work" class="st-work" title="Claude is working"><svg class="icon"><use href="#i-play"/></svg>Working<span class="n" id="nWork"></span></button>
-    <button data-st="ended" class="st-ended" title="Ended recently"><svg class="icon"><use href="#i-stop"/></svg>Ended<span class="n" id="nEnded"></span></button>
+    <button data-st="all" class="st-all" title="All sessions"><svg class="icon"><use href="#i-layers"/></svg><span class="n" id="nAll"></span></button>
+    <button data-st="you" class="st-you" title="Waiting on you"><svg class="icon"><use href="#i-hand"/></svg><span class="n" id="nYou"></span></button>
+    <button data-st="work" class="st-work" title="Claude is working"><svg class="icon"><use href="#i-play"/></svg><span class="n" id="nWork"></span></button>
+    <button data-st="ended" class="st-ended" title="Ended recently"><svg class="icon"><use href="#i-stop"/></svg><span class="n" id="nEnded"></span></button>
   </div>
   <span class="tb-sp"></span>
   <span class="chip refresh" id="chipRefresh" style="display:none"><span class="pulse"></span>refreshing…</span>
@@ -653,7 +661,11 @@ function setDensity(d) {
 $('#densSeg').onclick = e => { const b = e.target.closest('button'); if (b && b.dataset.dens !== density) setDensity(b.dataset.dens); };
 /* which state groups show (owner D2a): all, or one of needs you / working / ended */
 let stFilter = (() => { try { return localStorage.getItem('hub-st') || 'all'; } catch (e) { return 'all'; } })();
-function stLabel() { document.querySelectorAll('#stSeg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.st === stFilter))); }
+const ST_LABEL = { all: 'All sessions', you: 'Waiting on you', work: 'Claude is working', ended: 'Ended recently' };
+function stLabel() {
+    document.querySelectorAll('#stSeg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.st === stFilter)));
+    const sub = document.getElementById('mhSub'); if (sub) sub.textContent = ST_LABEL[stFilter] || '';
+}
 $('#stSeg').onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     stFilter = b.dataset.st; try { localStorage.setItem('hub-st', stFilter); } catch (err) {}
@@ -898,6 +910,21 @@ function ipcDegradedHTML(live) {
 }
 /* A condition every live session shares (the scan lifts it into `machine`)
    is said once here, not as the same red pill on every card. */
+/* Problems with this Mac or the fleet, each typed (what broke, how bad) and
+   said once, quietly: MCP servers down, the ipc bridge degraded, cards whose
+   ipc read disagrees with the process check. */
+function alertsHTML(live) {
+    const m = FEED.machine || {};
+    const list = [];
+    if (m.mcp_down) list.push({ sev: 'warn', icon: 'plug', text: `MCP down: ${m.mcp_down.split(',').map(s => s.trim()).join(', ')}` });
+    const rows = live.filter(s => s.ipc && s.ipc.alias);
+    if (rows.length && rows.every(s => s.ipc.state && s.ipc.state !== 'fresh'))
+        list.push({ sev: 'warn', icon: 'mail', text: 'ipc unreachable: mail counts unknown' });
+    const dis = live.filter(s => s.ipc && s.ipc.disagree).length;
+    if (dis) list.push({ sev: 'info', icon: 'alert', text: `${dis} session${dis > 1 ? 's' : ''} where ipc and the process check disagree` });
+    return list.length ? `<div class="alerts">${list.map(a =>
+        `<span class="al al-${a.sev}">${ic(a.icon)}${esc(a.text)}</span>`).join('')}</div>` : '';
+}
 function machineHTML() {
     const m = FEED.machine || {};
     return m.mcp_down ? `<div class="p-alert machine">${ic('alert')}MCP down on this Mac: ${esc(m.mcp_down)}</div>` : '';
@@ -1136,8 +1163,8 @@ function render() {
         `<div class="mh-line">` +
         ipcBadgeHTML(live) +
         `</div></div>` +
-        ipcDegradedHTML(live) +
-        machineHTML() +
+        `<div class="mh-sub" id="mhSub">${esc(ST_LABEL[stFilter] || '')}</div>` +
+        alertsHTML(live) +
         ((VDIR && !VDIR.query) ? '' :
         `<div class="qbar">${ic('search')}<input id="fq" placeholder="Search sessions and transcripts" autocomplete="off" spellcheck="false"><span class="qstat" id="qstat"></span></div>` +
         `<div class="qhint" id="qhint"></div>`) +

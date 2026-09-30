@@ -24,6 +24,7 @@
     --meta: oklch(0.74 0.11 305);   /* violet — git/meta hint only */
     --sky: oklch(0.76 0.11 230); --rose: oklch(0.74 0.13 350);
     --out: #22242d;   /* an opened call's output: one shade off the page */
+    --term: #15161c;  /* its input: a shade darker, like a terminal */
     --mark: rgba(226,176,91,.3);
     --you-soft: color-mix(in srgb, var(--you) 10%, transparent);
     --you-ring: color-mix(in srgb, var(--you) 40%, transparent);
@@ -48,6 +49,7 @@
     --meta: oklch(0.46 0.13 305);
     --sky: oklch(0.5 0.12 230); --rose: oklch(0.52 0.16 350);
     --out: #fdfcfa;
+    --term: #f0eee8;
     --mark: rgba(216,160,32,.32);
     --shadow: 0 10px 32px -12px rgba(40,36,20,.24);
 }
@@ -90,11 +92,14 @@ button { font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparen
 .connbar .icon { color: var(--err); }
 .connbar span { color: var(--dim); font: var(--t-xs) var(--mono); }
 .tbtn { height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 11px;
-    border: 1px solid var(--edge); border-radius: 999px; background: transparent; color: var(--dim);
+    border: 1px solid var(--edge); border-radius: 8px; background: var(--bg2); color: var(--dim);
     font: 600 var(--t-sm) var(--sans); white-space: nowrap;
-    transition: all var(--t-fast) var(--ease); }
-.tbtn:hover { background: var(--sel); color: var(--text); border-color: var(--edge2); }
-.tbtn[aria-pressed="true"] { color: var(--you); border-color: var(--you); background: var(--you-soft); }
+    transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.tbtn:hover { background: var(--sel); color: var(--text); }
+.tbtn[aria-pressed="true"] { color: var(--text); box-shadow: 0 0 0 1px var(--edge2); }
+.tbtn .icon { width: 14px; height: 14px; }
+/* the hub's controls took over direction and theme; the panel keeps colours and text size */
+.vp-grp:has(#vpDir), .vp-grp:has(#vpTheme) { display: none; }
 .tbtn .lb { display: none; } @media (min-width: 640px) { .tbtn .lb { display: inline; } }
 /* on a phone the four buttons need the room: back is an arrow, no chapter count */
 @media (max-width: 480px) {
@@ -142,7 +147,7 @@ main { flex: 1; min-width: 0; padding: 0 20px 30vh; }
 .colwrap { max-width: var(--measure); margin: 0 auto; }
 
 /* ================= masthead — the title page */
-.masthead { padding: 44px 0 8px; }
+.masthead { padding: 18px 0 8px; }
 .mh-kicker { font: 700 var(--t-xs) var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--faint); }
 .mh-kicker .live { color: var(--claude); }
 .mh-title { font: 600 var(--t-xl)/1.25 var(--serif); letter-spacing: -.012em;
@@ -356,6 +361,67 @@ pre.res.err { color: var(--err); }
 .rail pre.res { color: var(--dim); }
 .rail .thbody { margin: 2px 0 8px; border: 1px solid var(--edge); border-left: 1px solid var(--edge); border-radius: var(--r); background: var(--out); font-style: normal; }
 .rail .evrow { padding: 2px 8px; }
+/* an opened call: the input as a terminal band (a shade darker), the output below */
+.rail .tb-scroll { padding: 0; }
+.cin { padding: 9px 12px; background: var(--term); border-bottom: 1px solid var(--edge); }
+.cout { padding: 8px 12px 10px; }
+.cmdline { font: var(--t-sm)/1.6 var(--mono); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cmdline .ps { color: var(--faint); font-weight: 400; margin-right: 2px; }
+.sh-p { color: var(--tool); font-weight: 700; } .sh-f { color: var(--meta); } .sh-s { color: var(--add); }
+.sh-v { color: var(--sky); } .sh-o { color: var(--err); font-weight: 600; } .sh-c { color: var(--faint); font-style: italic; }
+.cdesc { margin-top: 4px; font: var(--t-xs) var(--sans); color: var(--faint); }
+.rail .res-head, .res-head { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; padding: 0; border: none;
+    font: var(--t-xs) var(--mono); letter-spacing: 0; text-transform: none; color: var(--faint); }
+.res-head b { color: var(--dim); font-weight: 600; }
+.res-head span::before { content: '·'; margin-right: 8px; }
+.res-head .icon { width: 12px; height: 12px; }
+.res-head.err, .res-head.err b { color: var(--err); }
+.res-more { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; padding: 0; border: none; background: none;
+    color: var(--you); font: var(--t-xs) var(--sans); }
+.res-more .icon { width: 12px; height: 12px; }
+.res-more:hover { background: none; text-decoration: underline; }
+/* opening a call eases in; rows ease their colour */
+.rail .tbody, .rail .thbody { animation: open var(--t-slow) cubic-bezier(.2, 0, 0, 1); transform-origin: top; }
+@keyframes open { from { opacity: 0; transform: translateY(-4px) scaleY(.98); } }
+@media (prefers-reduced-motion: reduce) { .rail .tbody, .rail .thbody { animation: none; } }
+.rail .trow, .rail .throw { transition: background var(--t-fast) var(--ease); }
+/* permission mode: a badge, coloured as the menu bar colours it */
+.modeline { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; }
+.modeline .ts { margin-left: auto; font: var(--t-xs) var(--mono); color: var(--faint); }
+.pmode { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px 1px 6px; border-radius: 6px;
+    font: 600 var(--t-xs) var(--sans); color: var(--pc); background: color-mix(in srgb, var(--pc) 12%, transparent); }
+.pmode .icon { width: 12px; height: 12px; }
+.pm-default { --pc: var(--dim); } .pm-plan { --pc: #c98a12; } .pm-accept { --pc: color-mix(in srgb, var(--err) 70%, var(--tool)); }
+.pm-bypass { --pc: var(--err); }
+.cmdtag { border: none; cursor: pointer; font: inherit; font-weight: 700; }
+.cmdtag:hover { background: color-mix(in srgb, var(--you) 20%, transparent); }
+/* preview modal: title, a path that opens or copies, a bounded scrolling body */
+.pmodal { position: fixed; inset: 0; z-index: 90; display: none; align-items: center; justify-content: center; padding: 24px;
+    background: color-mix(in srgb, var(--bg) 55%, rgba(0,0,0,.35)); backdrop-filter: blur(3px); }
+.pmodal.on { display: flex; animation: fadein var(--t-fast) var(--ease); }
+@keyframes fadein { from { opacity: 0; } }
+.pm-card { width: min(760px, 100%); max-height: min(80vh, 900px); display: flex; flex-direction: column;
+    background: var(--bg); border: 1px solid var(--edge2); border-radius: 12px; box-shadow: var(--shadow);
+    animation: open var(--t-slow) cubic-bezier(.2, 0, 0, 1); }
+.pm-card.wide { width: min(1100px, 100%); }
+.pm-head { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px 12px; border-bottom: 1px solid var(--edge); }
+.pm-t { flex: 1; min-width: 0; }
+.pm-title { font: 600 var(--t-lg) var(--serif); }
+.pm-sub { margin-top: 3px; font: var(--t-xs) var(--mono); color: var(--faint); overflow-wrap: anywhere; }
+.pm-x { flex: none; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+    border: none; border-radius: 7px; background: none; color: var(--dim); }
+.pm-x:hover { background: var(--sel); color: var(--text); }
+.pm-body { padding: 14px 18px 18px; overflow: auto; overscroll-behavior: contain; }
+.pm-body .content { font: var(--t-md)/1.65 var(--sans); }
+.pm-img { display: block; max-width: 100%; margin: 0 auto; border-radius: 8px; }
+.pm-pre { margin: 0; font: var(--t-sm)/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--dim); }
+/* an image named in prose: a preview card, its path the caption */
+.fcard { margin: 10px 0 14px; max-width: 420px; border: 1px solid var(--edge); border-radius: 10px; overflow: hidden; background: var(--bg2); }
+.fcard img { display: block; width: 100%; max-height: 260px; object-fit: contain; background: var(--well); cursor: zoom-in; }
+.fcard figcaption { padding: 6px 10px; font: var(--t-xs) var(--mono); border-top: 1px solid var(--edge); overflow-wrap: anywhere; }
+/* code blocks in prose wrap instead of scrolling sideways */
+.content pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: visible; padding: 8px 12px; }
+.content pre code { white-space: inherit; }
 /* links: every URL and path opens in a new tab; the copy mark shows on hover */
 .lk { color: var(--you); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--you) 35%, transparent);
     text-underline-offset: 2px; cursor: pointer; overflow-wrap: anywhere; }
@@ -454,7 +520,7 @@ pre.res.err { color: var(--err); }
     background-size: 200% 100%; animation: shimmer 1.4s linear infinite; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 /* loading: the real title, then chapters in the shape they will take */
-.skwrap { padding-top: 44px; }
+.skwrap { padding-top: 18px; }
 .skwrap .mh-kicker { margin-bottom: 6px; }
 .skc { display: flex; gap: 14px; padding-top: 26px; margin-top: 22px; border-top: 1px solid var(--edge); }
 .skn { flex: none; width: 2.5ch; height: 11px; margin-top: 4px; border-radius: 3px; background: var(--you-soft); }
@@ -524,7 +590,7 @@ mark.qhl { background: var(--mark, rgba(226,176,91,.35)); color: inherit; border
 @media (max-width: 720px) {
     :root { --fs-prose: var(--t-md); }
     main { padding: 0 16px 34vh; }
-    .masthead { padding-top: 28px; }
+    .masthead { padding-top: 14px; }
     .ch-num { width: 2ch; }
     .ch-head { gap: 10px; }
 }
@@ -679,7 +745,7 @@ body.has-tl .outline { top: calc(var(--tb-h) + 46px); }
   <span class="tb-live working" id="tbLive"><span class="pulse"></span><span id="tbLiveLb">working</span></span>
   <button class="tbtn" id="olBtn" aria-pressed="false"><svg class="icon"><use href="#i-list"/></svg><span class="lb">outline</span></button>
   <button class="tbtn" id="findBtn"><svg class="icon"><use href="#i-search"/></svg><span class="lb">search</span></button>
-  <button class="tbtn" id="viewBtn" title="View options" aria-pressed="false"><svg class="icon"><use href="#i-gear"/></svg><span class="lb">view</span></button>
+  <button class="tbtn" id="viewBtn" title="Text size and colours" aria-pressed="false"><svg class="icon"><use href="#i-type"/></svg></button>
   <button class="tbtn" id="themeBtn" title="Toggle theme"><svg class="icon"><use href="#i-moon"/></svg></button>
 </div>
 <div class="connbar" id="connbar" role="status"><svg class="icon"><use href="#i-alert"/></svg><b>Disconnected, retrying</b><span id="connLast"></span></div>
@@ -819,16 +885,90 @@ function linkify(root) {
         node.replaceWith(frag);
     }
 }
+/* One modal for previews: a title, a path subtitle that opens or copies, and a
+   height-bound scrolling body. */
+function openModal({ title, sub, subHref, body, wide }) {
+    let m = $('#pmodal');
+    if (!m) {
+        m = document.createElement('div'); m.id = 'pmodal'; m.className = 'pmodal';
+        m.addEventListener('click', e => { if (e.target === m || e.target.closest('.pm-x')) closeModal(); });
+        document.body.appendChild(m);
+    }
+    m.innerHTML = `<div class="pm-card${wide ? ' wide' : ''}" role="dialog" aria-modal="true"><div class="pm-head"><div class="pm-t">` +
+        `<div class="pm-title">${esc(title)}</div>` +
+        (sub ? `<div class="pm-sub"><span class="lk" data-href="${esc(subHref || linkTarget(sub))}" data-raw="${esc(sub)}" data-tab="1">${esc(sub)}</span>` +
+               `<span class="lk-cp" data-raw="${esc(sub)}" title="Copy">⧉</span></div>` : '') +
+        `</div><button class="pm-x" aria-label="Close">${ic('x')}</button></div><div class="pm-body">${body}</div></div>`;
+    m.querySelectorAll('.content[data-md]').forEach(mdRender);
+    linkify(m.querySelector('.pm-body'));
+    m.classList.add('on');
+}
+function closeModal() { const m = $('#pmodal'); if (m) m.classList.remove('on'); }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+const IMG_EXT = /\.(png|jpe?g|gif|svg|webp|avif)$/i;
+const TEXT_EXT = /\.(md|markdown|txt|log|json|jsonl|ya?ml|toml|ini|csv|tsv|py|js|mjs|ts|tsx|jsx|sh|zsh|bash|swift|go|rs|rb|java|kt|c|h|cpp|css|scss|html|xml|sql|conf|env\.example)$/i;
+/* A file path, previewed in the modal: an image large, markdown rendered, text coloured. */
+async function openFileModal(raw, href) {
+    const name = raw.split('/').pop();
+    if (IMG_EXT.test(raw)) return openModal({ title: name, sub: raw, subHref: href, wide: true,
+        body: `<img class="pm-img" src="${esc(href)}" alt="${esc(name)}">` });
+    openModal({ title: name, sub: raw, subHref: href, body: `<div class="cap">loading…</div>` });
+    try {
+        const r = await fetch(href + '&head=1');
+        if (!r.ok) throw new Error(await r.text());
+        const text = await r.text();
+        const md = /\.(md|markdown)$/i.test(raw);
+        openModal({ title: name, sub: raw, subHref: href,
+            body: md ? `<div class="content" data-md data-raw="${esc(text)}"></div>`
+                     : `<pre class="pm-pre">${colourText(text, outputLang({ input: { file_path: raw } }))}</pre>` });
+    } catch (err) {
+        openModal({ title: name, sub: raw, subHref: href, body: `<div class="cap">${esc(String(err.message || err))}</div>` });
+    }
+}
+/* A slash command's tag: the skill body Claude Code loaded for it, in the modal. */
+function openCommandModal(seq) {
+    const i = state.records.findIndex(r => r.seq === seq);
+    const cmd = state.records[i];
+    if (!cmd) return;
+    const body = state.records.slice(i + 1, i + 6).find(r => r.role === 'user' && /^\s*Base directory for this skill:/.test(r.text || ''));
+    const dir = body ? (body.text.match(/^\s*Base directory for this skill:\s*(\S+)/) || [])[1] : '';
+    openModal({ title: cmd.command || cmd.label, sub: dir ? dir + '/SKILL.md' : '',
+        body: body ? `<div class="content" data-md data-raw="${esc(body.text.replace(/^\s*Base directory for this skill:[^\n]*\n/, ''))}"></div>`
+                   : `<div class="cap">No skill body was loaded with this command (a built-in command, or one that runs locally).</div>` });
+}
 // Capture phase, so a link inside a tool row opens instead of toggling the row.
 document.addEventListener('click', e => {
+    const tag = e.target.closest('.cmdtag[data-seq]');
+    if (tag) { e.preventDefault(); e.stopImmediatePropagation(); openCommandModal(+tag.dataset.seq); return; }
+    const fig = e.target.closest('.fcard img');
+    if (fig) { e.preventDefault(); e.stopImmediatePropagation(); openFileModal(fig.dataset.raw, fig.dataset.href); return; }
     const cp = e.target.closest('.lk-cp'), lk = e.target.closest('.lk');
     if (!cp && !lk) return;
     e.preventDefault(); e.stopImmediatePropagation();
     if (cp) { copyText(cp.dataset.raw); cp.classList.add('ok'); setTimeout(() => cp.classList.remove('ok'), 1200); return; }
     const href = lk.dataset.href;
     if (href.startsWith('/f?') && !IS_LOCAL) { copyText(lk.dataset.raw); return; }
+    if (href.startsWith('/f?') && !lk.dataset.tab && (IMG_EXT.test(lk.dataset.raw) || TEXT_EXT.test(lk.dataset.raw))) {
+        openFileModal(lk.dataset.raw, href); return;
+    }
     window.open(href, '_blank', 'noopener');
 }, true);
+/* An image path in prose gets a preview card under its paragraph: rounded, the
+   linked path as its caption, click to see it large. This Mac only (/f). */
+function addPreviews(root) {
+    if (!IS_LOCAL) return;
+    root.querySelectorAll('.content .lk').forEach(lk => {
+        if (!IMG_EXT.test(lk.dataset.raw) || !lk.dataset.href.startsWith('/f?')) return;
+        const block = lk.closest('p, li') || lk.parentElement;
+        if (!block || block.nextElementSibling && block.nextElementSibling.dataset.fig === lk.dataset.raw) return;
+        const fig = document.createElement('figure');
+        fig.className = 'fcard'; fig.dataset.fig = lk.dataset.raw;
+        fig.innerHTML = `<img loading="lazy" src="${esc(lk.dataset.href)}" data-raw="${esc(lk.dataset.raw)}" data-href="${esc(lk.dataset.href)}" alt="">` +
+            `<figcaption></figcaption>`;
+        fig.querySelector('figcaption').append(lk.cloneNode(true));
+        block.after(fig);
+    });
+}
 function sanitizeHTML(html) {
     const t = document.createElement('template'); t.innerHTML = html;
     t.content.querySelectorAll('script,style,iframe,object,embed,form,link,meta').forEach(n => n.remove());
@@ -1095,6 +1235,25 @@ function prevHTML(t) {
     if (t.name === 'Bash' && t.input && t.input.command) return esc(t.input.command);
     return esc(t.preview || '');
 }
+/* A shell command, coloured like a terminal: the program after each pipe or
+   separator, its flags, quoted values, $variables, operators and # comments. */
+function shHTML(cmd) {
+    const re = /(#[^\n]*)|("(?:\\.|[^"\\])*"|'[^']*')|(\|\||&&|[|;&]|>>?|<)|(\$\{?\w+\}?)|(\s+)|([^\s|;&<>"'#]+)/g;
+    let out = '', expectProg = true, m;
+    while ((m = re.exec(cmd))) {
+        const [tok, comment, str, op, v, ws, word] = m;
+        if (comment) out += `<span class="sh-c">${esc(comment)}</span>`;
+        else if (str) { out += `<span class="sh-s">${esc(str)}</span>`; expectProg = false; }
+        else if (op) { out += `<span class="sh-o">${esc(op)}</span>`; expectProg = /^(\|\||&&|[|;&])$/.test(op); }
+        else if (v) out += `<span class="sh-v">${esc(v)}</span>`;
+        else if (ws) out += esc(ws);
+        else if (word) {
+            if (expectProg && !/^\w+=/.test(word)) { out += `<span class="sh-p">${esc(word)}</span>`; expectProg = false; }
+            else out += word.startsWith('-') ? `<span class="sh-f">${esc(word)}</span>` : esc(word);
+        } else out += esc(tok);
+    }
+    return out;
+}
 function toolBody(t) {
     if (t.name === 'Edit' || t.name === 'MultiEdit') {
         const old = ((t.input && t.input.old_string) || '').split('\n'), neu = ((t.input && t.input.new_string) || '').split('\n');
@@ -1112,8 +1271,8 @@ function toolBody(t) {
             lines.map(l => `<div class="dl add">+ ${esc(l)}</div>`).join('');
     }
     if (t.name === 'Bash')
-        return `<div class="cmdline"><span class="ps">$</span> ${esc((t.input && t.input.command) || '')}</div>` +
-            ((t.input && t.input.description) ? `<div class="cap">${esc(t.input.description)}</div>` : '');
+        return `<div class="cmdline"><span class="ps">$</span> ${shHTML((t.input && t.input.command) || '')}</div>` +
+            ((t.input && t.input.description) ? `<div class="cdesc">${esc(t.input.description)}</div>` : '');
     if (t.name === 'TodoWrite')
         return `<div class="todos">` + (((t.input && t.input.todos) || []).map(td => {
             const k = td.status === 'completed' ? 'done' : td.status === 'in_progress' ? 'active' : 'pending';
@@ -1211,7 +1370,7 @@ function cmdsHTML(c) {
 }
 /* A slash command: the command is the tag, its arguments are plain text. */
 function cmdLineHTML(r) {
-    return `<div class="cmdline-t"><span class="cmdtag">${esc(r.command || r.label)}</span>` +
+    return `<div class="cmdline-t"><button class="cmdtag" data-seq="${r.seq}" title="Show what ${esc(r.command || r.label)} loaded">${esc(r.command || r.label)}</button>` +
         (r.args ? `<span class="cmdargs">${esc(r.args)}</span>` : '') + `</div>`;
 }
 /* A hook, peer, task or system turn (or a command that ran after the chapter's
@@ -1237,7 +1396,24 @@ function evText(r) {
     }
     return '';
 }
+/* Permission modes, named and coloured as the menu bar shows them (plan amber,
+   accepting edits soft red) plus bypass, the riskiest, in full red. */
+const PERM_MODES = {
+    default: { label: 'asks first', icon: 'shield', cls: 'pm-default' },
+    normal: { label: 'asks first', icon: 'shield', cls: 'pm-default' },
+    plan: { label: 'plan only', icon: 'todo', cls: 'pm-plan' },
+    acceptEdits: { label: 'accepts edits', icon: 'edit', cls: 'pm-accept' },
+    bypassPermissions: { label: 'bypasses permissions', icon: 'zap', cls: 'pm-bypass' },
+    dontAsk: { label: 'never asks', icon: 'hand', cls: 'pm-bypass' },
+};
+function modeHTML(r) {
+    const m = String(r.text || '').split('→').pop().trim();
+    const p = PERM_MODES[m] || { label: m, icon: 'shield', cls: 'pm-default' };
+    return `<div class="modeline"><span class="pmode ${p.cls}" title="permission mode: ${esc(m)}">${ic(p.icon)}${esc(p.label)}</span>` +
+        `<span class="ts">${esc(r.ts || '')}</span></div>`;
+}
 function evlineHTML(r) {
+    if (r.event_type === 'mode-change') return modeHTML(r);
     return `<div class="evline${r.cls === 'err' ? ' err' : ''}">${esc(evText(r))}<span class="ts">${esc(r.ts || '')}</span></div>`;
 }
 function chapterHTML(c, i, full) {
@@ -1344,7 +1520,7 @@ function renderChapters() {
     for (let i = Math.max(0, n - EAGER_NEWEST); i < n; i++) state.filled.add(i);
     el.innerHTML = state.chapters.map((c, i) => chapterHTML(c, i, state.filled.has(i))).join('') + endcapHTML();
     el.querySelectorAll('.content[data-md]').forEach(mdRender);
-    addPermalinks(); linkify(el);
+    addPermalinks(); linkify(el); addPreviews(el);
     observeShells(el);
     renderOutline();
     updateSpine();
@@ -1364,7 +1540,7 @@ function fillChapter(i) {
     const fresh = t.content.firstElementChild;
     old.replaceWith(fresh);
     fresh.querySelectorAll('.content[data-md]').forEach(mdRender);
-    addPermalinks(fresh); linkify(fresh);
+    addPermalinks(fresh); linkify(fresh); addPreviews(fresh);
     const tb = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--tb-h')) || 44;
     if (r0.bottom <= tb) {
         const delta = fresh.getBoundingClientRect().height - r0.height;
@@ -1384,7 +1560,7 @@ function appendChapters(prevN) {
         const w = t.content.firstElementChild;
         el.insertBefore(w, cap);
         w.querySelectorAll('.content[data-md]').forEach(mdRender);
-        addPermalinks(w); linkify(w);
+        addPermalinks(w); linkify(w); addPreviews(w);
     }
     if (cap) cap.outerHTML = endcapHTML();
 }
@@ -1964,9 +2140,10 @@ function resultHTML(t) {
     const full = FULL.get(t.id);
     const text = full != null ? full : res.preview;
     const more = full == null && res.chars > (res.preview || '').length;
-    return `<div class="res-head${res.is_error ? ' err' : ''}">${res.is_error ? 'error' : 'output'} · ${res.lines} line${res.lines === 1 ? '' : 's'} · ${kfmt(res.chars)} chars</div>` +
+    return `<div class="res-head${res.is_error ? ' err' : ''}">${ic(res.is_error ? 'alert' : 'inbox')}<b>${res.is_error ? 'error' : 'output'}</b>` +
+        `<span>${res.lines} line${res.lines === 1 ? '' : 's'}</span><span>${kfmt(res.chars)} chars</span></div>` +
         `<pre class="res${res.is_error ? ' err' : ''}">${text ? (res.is_error ? esc(text) : colourText(text, outputLang(t))) : '<span class="cap">(empty)</span>'}</pre>` +
-        (more ? `<button class="res-more" data-full="${esc(t.id)}">show full output</button>` : '');
+        (more ? `<button class="res-more" data-full="${esc(t.id)}">${ic('down')}show all ${kfmt(res.chars)} chars</button>` : '');
 }
 /* Full bodies fetched from /data?result=<id>, kept across re-renders. */
 const FULL = new Map(), INPUTS = new Map(), _fullFetching = new Map();
@@ -1980,9 +2157,9 @@ function withInput(t) {
 function callBody(t) {
     if (t.input === undefined && t.input_chars && !INPUTS.has(t.id)) {
         fetchFull(t.id);
-        return `<div class="cap">loading ${kfmt(t.input_chars)} chars of input…</div>${resultHTML(t)}`;
+        return `<div class="cin"><div class="cap">loading ${kfmt(t.input_chars)} chars of input…</div></div><div class="cout">${resultHTML(t)}</div>`;
     }
-    return toolBody(withInput(t)) + resultHTML(t);
+    return `<div class="cin">${toolBody(withInput(t))}</div><div class="cout">${resultHTML(t)}</div>`;
 }
 function fetchFull(id) {
     if (!id || FULL.has(id)) return Promise.resolve();
@@ -2100,7 +2277,7 @@ $('#vpTl').onchange = e => setTimeline(e.target.checked, true);
 /* ================= init — fetch the real session, then go live */
 applyTheme(savedTheme() || (osTheme.matches ? 'light' : 'dark'));
 osTheme.addEventListener('change', e => { if (!savedTheme()) applyTheme(e.matches ? 'light' : 'dark'); });
-applyDir(load('hx-dir', 'chapters'));
+applyDir('chapters');   // the reading view; the other directions are retired
 applyPalette(load('cc-skin', 'native'));
 applyTextSize(parseFloat(load('hx-fs', '15.5')));
 setLiveState('working');
