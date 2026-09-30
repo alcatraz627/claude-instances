@@ -208,6 +208,41 @@ recs = json.loads(body)["records"]
 expect("a mid-file rewrite is parsed from scratch",
        _parse_calls["n"] == 1 and recs[1].get("id") == "inserted", f"parses={_parse_calls['n']}")
 
+# ---- Test 3c: /data carries Claude Code's own status, and a status change
+# is not hidden behind a 304 ----
+import subprocess
+SESS = os.path.join(ROOT, "sessions")
+os.makedirs(SESS, exist_ok=True)
+hub.SESSIONS_DIR = SESS
+sidS = "5a000000-0000-4000-8000-000000000001"
+write_session(sidS, 1, "S")
+me = os.getpid()
+start = subprocess.run(["ps", "-o", "lstart=", "-p", str(me)], capture_output=True, text=True).stdout.strip()
+def sess_file(status, when):
+    with open(os.path.join(SESS, f"{me}.json"), "w") as f:
+        json.dump({"pid": me, "sessionId": sidS, "procStart": start, "kind": "interactive",
+                   "status": status, "statusUpdatedAt": when}, f)
+st, _, body = http_get(f"/s/{sidS}/data")
+expect("a session with no session file reads as not live",
+       json.loads(body)["meta"].get("live") is False, f"meta live={json.loads(body)['meta'].get('live')}")
+hub._sid_files.clear()
+sess_file("busy", 1790000000000)
+st, h1s, body = http_get(f"/s/{sidS}/data")
+m = json.loads(body)["meta"]
+expect("/data meta carries live, status and status_updated_at from the session file",
+       m.get("live") is True and m.get("status") == "busy" and m.get("status_updated_at") == "2026-09-21T14:13:20Z",
+       f"meta={ {k: m.get(k) for k in ('live', 'status', 'status_updated_at')} }")
+sess_file("idle", 1790000060000)
+st, _, body = http_get(f"/s/{sidS}/data", {"If-None-Match": h1s.get("ETag") or ""})
+expect("a status change answers 200 with the new status, not 304",
+       st == 200 and json.loads(body)["meta"].get("status") == "idle", f"status={st}")
+with open(os.path.join(SESS, f"{me}.json"), "w") as f:
+    json.dump({"pid": me, "sessionId": sidS, "procStart": "Mon Jan  1 00:00:00 2024",
+               "status": "busy", "statusUpdatedAt": 1}, f)
+st, _, body = http_get(f"/s/{sidS}/data")
+expect("a session file whose procStart names another process is not live",
+       json.loads(body)["meta"].get("live") is False, f"live={json.loads(body)['meta'].get('live')}")
+
 # ---- Test 3b: a tool's full output is served by id, and only by id ----
 sidR = "5e500000-0000-4000-8000-000000000001"
 pR = write_session(sidR, 1, "R")

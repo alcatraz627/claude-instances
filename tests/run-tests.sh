@@ -218,6 +218,8 @@ t_grep "Edit renders as a diff"        lib/transcript-app.html 'dl del'
 t_grep "copy works over insecure http" lib/transcript-app.html 'execCommand'
 t_grep "chapters are built on approach"   lib/transcript-app.html 'new IntersectionObserver'
 t_grep "a toggle rebuilds one chapter"    lib/transcript-app.html 'fillChapter\(\+lg.closest'
+t_check "page reads liveness from /data, not the fleet scan" bash -c '! rg -q "/api/sessions" lib/transcript-app.html'
+t_grep "failed polls raise the disconnected bar" lib/transcript-app.html 'Disconnected, retrying'
 t_grep "bar opens hub transcript"      native/ 'func openHubTranscript'
 t_grep "bar 'Sessions (phone)' action" native/ 'func openHubIndex'
 

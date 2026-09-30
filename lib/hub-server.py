@@ -350,6 +350,101 @@ def slim_records(records):
     return out
 
 
+# Claude Code's own record of each running session: ~/.claude/sessions/<pid>.json
+# carries sessionId, status (busy / idle / shell) and statusUpdatedAt.
+SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
+_sid_files = {}          # session id -> (path, checked_at) ; path None = no file
+_SID_MISS_TTL = 10.0     # how long "no file for this id" is believed
+_proc_starts = {}        # pid -> (ps start text, checked_at)
+
+
+def _proc_start(pid):
+    """The process's start time as `ps` prints it, cached for a minute."""
+    hit = _proc_starts.get(pid)
+    if hit and time.time() - hit[1] < 60:
+        return hit[0]
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=3).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    _proc_starts[pid] = (out, time.time())
+    return out
+
+
+def _start_matches(proc_start, ps_text):
+    """Same test as scan.sh: the file's procStart names the running process's
+    start, read as UTC or local time, within two seconds."""
+    import calendar
+    def parse(text):
+        try:
+            return time.strptime(" ".join((text or "").split()), "%a %b %d %H:%M:%S %Y")
+        except ValueError:
+            return None
+    ps_t = parse(ps_text)
+    f_t = parse(proc_start)
+    if not ps_t or not f_t:
+        return False
+    actual = time.mktime(ps_t)
+    return any(abs(t - actual) <= 2 for t in (calendar.timegm(f_t), time.mktime(f_t)))
+
+
+def _read_json(path):
+    try:
+        with open(path) as fh:
+            obj = json.load(fh)
+        return obj if isinstance(obj, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def session_status(sid):
+    """Whether the session is running, and Claude Code's own status for it.
+
+    Returns {live, status, status_updated_at}. `live` needs the session file,
+    a running pid, and a procStart that matches that pid (a reused pid fails).
+    """
+    dead = {"live": False, "status": "", "status_updated_at": ""}
+    obj = None
+    hit = _sid_files.get(sid)
+    if hit and hit[0]:
+        obj = _read_json(hit[0])
+        if not obj or obj.get("sessionId") != sid:
+            obj, hit = None, None           # file gone or reused: look again
+    elif hit and time.time() - hit[1] < _SID_MISS_TTL:
+        return dead                         # recently looked; no file then
+    if obj is None:
+        path = None
+        try:
+            names = os.listdir(SESSIONS_DIR)
+        except OSError:
+            names = []
+        for n in names:
+            if n.endswith(".json"):
+                o = _read_json(os.path.join(SESSIONS_DIR, n))
+                if o and o.get("sessionId") == sid:
+                    path, obj = os.path.join(SESSIONS_DIR, n), o
+                    break
+        _sid_files[sid] = (path, time.time())
+        if obj is None:
+            return dead
+    path = _sid_files[sid][0]
+    try:
+        pid = int(obj.get("pid") or os.path.splitext(os.path.basename(path))[0])
+        os.kill(pid, 0)
+    except (ValueError, ProcessLookupError):
+        return dead
+    except PermissionError:
+        pass
+    if not _start_matches(obj.get("procStart"), _proc_start(pid)):
+        return dead
+    ms = obj.get("statusUpdatedAt")
+    iso = ""
+    if isinstance(ms, (int, float)) and not isinstance(ms, bool):
+        iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ms / 1000))
+    return {"live": True, "status": str(obj.get("status") or ""), "status_updated_at": iso}
+
+
 def sessions_payload():
     """Reshape scan output into the index page's feed: live first, then recent.
 
@@ -509,6 +604,7 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
         # most of the index's peek traffic — never change again, making their
         # repeat peeks free. A stat race with the parse below can at worst
         # tag a response with a just-superseded etag; the next poll re-fetches.
+        status = session_status(sid)
         etag = None
         try:
             st = os.stat(target)
@@ -518,7 +614,9 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
             # 304. Browsers key per-URL and never hit this; intermediaries and
             # hand-rolled clients can.
             qcrc = zlib.crc32(self.path.encode("utf-8", "surrogatepass"))
-            etag = f'"{st.st_mtime_ns}-{st.st_size}-{qcrc:08x}"'
+            # The live status changes without the file changing; it is in the body, so in the tag.
+            scrc = zlib.crc32(json.dumps(status, sort_keys=True).encode())
+            etag = f'"{st.st_mtime_ns}-{st.st_size}-{qcrc:08x}-{scrc:08x}"'
         except OSError:
             pass
         if etag and self.headers.get("If-None-Match") == etag:
@@ -537,6 +635,7 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
 
         # Slice on shallow copies only: the cached parse must never be mutated.
         result = {"meta": dict(parsed["meta"]), "records": parsed["records"]}
+        result["meta"].update(status)
 
         since = (qs.get("since") or [None])[0]
         after_id = (qs.get("after_id") or [None])[0]

@@ -77,6 +77,13 @@ button { font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparen
     border: 1.5px solid currentColor; opacity: 0; animation: pulse 2s var(--ease) infinite; }
 @keyframes pulse { 0% { transform: scale(.4); opacity: .8; } 70%,100% { transform: scale(1.1); opacity: 0; } }
 .tb-sp { flex: 1; min-width: 0; }
+/* the hub stopped answering: say so under the top bar until a poll succeeds */
+.connbar { position: fixed; top: var(--tb-h); left: 0; right: 0; z-index: 59; display: none;
+    align-items: center; gap: 8px; padding: 7px 14px; font: 12.5px var(--sans); color: var(--text);
+    background: color-mix(in srgb, var(--err) 16%, var(--bg)); border-bottom: 1px solid color-mix(in srgb, var(--err) 45%, transparent); }
+.connbar.on { display: flex; }
+.connbar .icon { color: var(--err); }
+.connbar span { color: var(--dim); font: 11.5px var(--mono); }
 .tbtn { height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 11px;
     border: 1px solid var(--edge); border-radius: 999px; background: transparent; color: var(--dim);
     font: 600 12px var(--sans); white-space: nowrap;
@@ -541,6 +548,7 @@ body.has-tl .outline { top: calc(var(--tb-h) + 46px); }
   <button class="tbtn" id="viewBtn" title="View options" aria-pressed="false"><svg class="icon"><use href="#i-gear"/></svg><span class="lb">view</span></button>
   <button class="tbtn" id="themeBtn" title="Toggle theme"><svg class="icon"><use href="#i-moon"/></svg></button>
 </div>
+<div class="connbar" id="connbar" role="status"><svg class="icon"><use href="#i-alert"/></svg><b>Disconnected, retrying</b><span id="connLast"></span></div>
 <div class="scrim" id="scrim"></div>
 <div class="viewpanel" id="viewPanel">
   <div class="vp-cap">View</div>
@@ -1274,10 +1282,54 @@ function lastClosedId(arr) {
     for (let i = arr.length - 1; i >= 0; i--) if (!arr[i].open) return arr[i].id;
     return null;
 }
-function setLiveState(kind) {
+function ago(iso) {
+    const t = Date.parse(iso || '');
+    if (!t) return '';
+    const s = Math.max(0, (Date.now() - t) / 1000);
+    return s < 60 ? 'now' : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`;
+}
+/* The top-bar state: working, your turn, or ended. `since` is when Claude
+   Code last changed the status, shown as how long it has held. */
+function setLiveState(kind, since, raw) {
     const el = $('#tbLive');
     el.className = 'tb-live ' + (kind === 'working' ? 'working' : kind === 'yourturn' ? 'yourturn' : '');
-    $('#tbLiveLb').textContent = kind === 'working' ? 'working' : kind === 'yourturn' ? 'your turn' : 'ended';
+    const lb = kind === 'working' ? 'working' : kind === 'yourturn' ? 'your turn' : 'ended';
+    const d = since ? ago(since) : '';
+    $('#tbLiveLb').textContent = d && d !== 'now' ? `${lb} ${d}` : lb;
+    el.title = raw ? `Claude Code status: ${raw}${since ? ' since ' + new Date(since).toLocaleTimeString() : ''}` : '';
+}
+/* Status comes from the hub (Claude Code's session file). Only a feed
+   without it falls back to guessing from quiet polls. */
+function applyStatus(meta, activity) {
+    if (meta && meta.live === false) {
+        if (state.isLive !== false) { state.isLive = false; if (state.mode === 'normal') renderMasthead(); }
+        setLiveState('ended');
+        pollEvery(ENDED_POLL_MS);          // slow, so a resumed session comes back
+        return;
+    }
+    if (meta && meta.live === true) {
+        if (state.isLive !== true) { state.isLive = true; if (state.mode === 'normal') renderMasthead(); }
+        pollEvery(LIVE_POLL_MS);
+        if (meta.status) {
+            quietPolls = 0;
+            setLiveState(meta.status === 'busy' ? 'working' : 'yourturn', meta.status_updated_at, meta.status);
+            return;
+        }
+    }
+    if (activity) { quietPolls = 0; setLiveState('working'); }
+    else if (++quietPolls >= 2 && state.mode === 'normal') setLiveState('yourturn');
+}
+/* Failed polls: after a few in a row, say so, with when the page last heard. */
+const FAILS_BEFORE_BAR = 3;
+let failCount = 0, lastOkAt = null;
+function pollOk() {
+    failCount = 0; lastOkAt = new Date();
+    $('#connbar').classList.remove('on');
+}
+function pollFailed() {
+    if (++failCount < FAILS_BEFORE_BAR) return;
+    $('#connLast').textContent = lastOkAt ? `last updated ${lastOkAt.toLocaleTimeString()}` : 'not loaded yet';
+    $('#connbar').classList.add('on');
 }
 function ingestNew(recs) {
     const atBottom = innerHeight + scrollY > document.body.scrollHeight - 320;
@@ -1339,6 +1391,7 @@ async function pollLive() {
         const res = await fetch(API + 'data' + (lastId ? '?after_id=' + encodeURIComponent(lastId) : ''), { cache: 'no-cache' });
         if (!res.ok) throw new Error(res.status);
         const data = await res.json();
+        pollOk();
         state.meta = data.meta; window.SESSION.meta = data.meta;
         if (data.meta && data.meta.cursor_reset) {
             /* The cursor names a record that no longer exists (rewritten
@@ -1348,7 +1401,7 @@ async function pollLive() {
             window.SESSION.records = data.records;
             lastId = lastClosedId(data.records);
             buildChapters(); renderChapters(); renderOutline(); updateSpine(); rebuildTimeline();
-            quietPolls = 0; setLiveState('working');
+            applyStatus(data.meta, true);
             return;
         }
         const known = new Set(state.records.map(x => x.id));
@@ -1362,34 +1415,24 @@ async function pollLive() {
                 setMode('normal');
             } else ingestNew(fresh);
         }
-        if (fresh.length || grew) { quietPolls = 0; setLiveState('working'); }
-        else if (++quietPolls >= 2 && state.mode === 'normal') setLiveState('yourturn');
-    } catch (e) { /* transient poll failure: keep what's on screen, retry next tick */ }
+        applyStatus(data.meta, !!(fresh.length || grew));
+    } catch (e) { pollFailed(); /* keep what's on screen, retry next tick */ }
     finally { pollBusy = false; }
 }
 $('#jumpNew').onclick = () => {
     $('#jumpNew').classList.remove('on'); state.newSince = null;
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
 };
-function startLive() { state.live = true; if (!liveTimer) liveTimer = setInterval(pollLive, 5000); }
+const LIVE_POLL_MS = 5000, ENDED_POLL_MS = 30000;
+let pollMs = 0;
+function pollEvery(ms) {
+    if (liveTimer && ms === pollMs) return;
+    clearInterval(liveTimer);
+    pollMs = ms; liveTimer = setInterval(pollLive, ms);
+}
+function startLive() { state.live = true; if (!liveTimer) pollEvery(LIVE_POLL_MS); }
 function stopLive() { state.live = false; clearInterval(liveTimer); liveTimer = null; }
 document.addEventListener('visibilitychange', () => { if (!document.hidden && state.live) pollLive(); });
-/* Whether this session's process is still running is a hub fact, not a log
-   fact — check the feed. On the legacy (per-PID) route the endpoint is
-   absent; the catch keeps the live assumption. */
-async function checkLiveness() {
-    try {
-        const d = await (await fetch('/api/sessions', { cache: 'no-store' })).json();
-        const sid = (state.meta && state.meta.session_id) || '';
-        const isLive = (d.live || []).some(s => s.session_id === sid);
-        if (isLive === state.isLive) return;
-        state.isLive = isLive;
-        if (state.mode === 'normal') renderMasthead();
-        if (!isLive) { setLiveState('ended'); stopLive(); }
-        else { setLiveState('working'); startLive(); }
-    } catch (e) { /* not the hub — stay in live mode */ }
-}
-setInterval(checkLiveness, 30000);
 
 /* ================= states (demo) */
 function setMode(mode) {
@@ -1627,9 +1670,11 @@ async function boot() {
         document.title = TITLE;
         $('#tbTitle').textContent = TITLE;
         lastId = lastClosedId(data.records);
+        if (data.meta.live === false) state.isLive = false;
         setMode(data.records.length ? 'normal' : 'empty');
         startLive();
-        checkLiveness();
+        pollOk();
+        applyStatus(data.meta, false);
         applyHash();   // deep link (#r<seq>[&q=…]) from the hub or a copied block link
     } catch (e) { setMode('error'); }
 }
