@@ -174,6 +174,26 @@ if etag:
            st4 == 200 and st5 == 200 and h4.get("ETag") != h3.get("ETag"),
            f"plain={st4} crossed={st5}")
 
+# ---- Test 3b: a tool's full output is served by id, and only by id ----
+sidR = "5e500000-0000-4000-8000-000000000001"
+pR = write_session(sidR, 1, "R")
+long_out = "line\n" * 400
+with open(pR, "a") as f:
+    f.write(json.dumps({"type": "user", "uuid": _next_uuid(), "timestamp": "2026-07-17T00:00:02Z",
+                        "message": {"role": "user", "content": [
+                            {"type": "tool_result", "tool_use_id": "Rt0", "content": long_out}]}}) + "\n")
+st, _, body = http_get(f"/s/{sidR}/data")
+call = json.loads(body)["records"][-1]["tools"][0]
+expect("/data carries a short result preview, not the full output",
+       call.get("result", {}).get("chars") == len(long_out)
+       and len(call["result"]["preview"]) <= 300 and long_out not in body.decode(),
+       f"result={str(call.get('result'))[:120]}")
+st, _, body = http_get(f"/s/{sidR}/data?result=Rt0")
+expect("?result=<id> returns the full output",
+       st == 200 and json.loads(body).get("result") == long_out, f"status={st}")
+st, _, _ = http_get(f"/s/{sidR}/data?result=nope")
+expect("?result= for an unknown id is a 404", st == 404, f"status={st}")
+
 # ---- Test 4: stale /api/sessions serves instantly, one background refresh ----
 SLOW = os.path.join(ROOT, "slow-scan.sh")
 with open(SLOW, "w") as f:

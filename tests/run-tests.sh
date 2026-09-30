@@ -350,7 +350,10 @@ SINCE_OUT=$(python3 "$REPO_ROOT/tests/fixtures/since-probe.py" 2>&1)
 t_eq "since-probe: all cases pass" "0" "$?"
 for _case in "client catches up mid-burst" "grown group is delivered" \
              "growth counts as activity" "no duplicate records" \
-             "goes idle when the burst stops" "post-close records still arrive"; do
+             "goes idle when the burst stops" "post-close records still arrive" \
+             "results reach a client that already saw the call" \
+             "a complete group followed by Claude's reply is not resent" \
+             "the full output is kept out of records"; do
     if grep -q "\[PASS\] $_case" <<< "$SINCE_OUT"; then t_pass "since: $_case"
     else t_fail "since: $_case — $(grep -A1 "\[FAIL\] $_case" <<< "$SINCE_OUT" | tail -1)"; fi
 done

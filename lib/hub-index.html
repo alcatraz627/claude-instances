@@ -537,6 +537,7 @@ function lineFor(r) {
     if (!r) return null;
     if (r.role === 'user') return { g: '❯', c: 'u', tx: String(r.text || '').replace(/<[^>]+>/g, ' ').trim().slice(0, 120) };
     if (r.role === 'assistant') return { g: '⏺', c: 'a', tx: String(r.text || '').replace(/[#*`>]/g, '').trim().slice(0, 120) };
+    if (r.role === 'thinking') return { g: '∴', c: 'e', tx: 'thinking' };
     if (r.role === 'tools') { const t = r.tools[0];
         return { g: '⏵', c: 't', tx: `<b>${esc(t.name)}</b> ${esc((t.preview || (t.input && t.input.command) || '').slice(0, 100))}`, html: true }; }
     return { g: '·', c: 'e', tx: String(r.text || '').slice(0, 100) };

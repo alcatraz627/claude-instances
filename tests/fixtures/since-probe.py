@@ -99,8 +99,10 @@ class Client:
             if k is None:
                 fresh.append(r)
                 continue
-            before = len(self.records[k].get("tools") or [])
-            after = len(r.get("tools") or [])
+            # Growth is new calls, or outputs arriving for calls already seen.
+            size = lambda x: sum(1 + ("result" in t) for t in x.get("tools") or [])
+            before = size(self.records[k])
+            after = size(r)
             if after == before:
                 continue
             # Adopt the server's version either way (a shrunk group must not
@@ -257,6 +259,35 @@ check("--since CLI resends the open group",
       len(cli_recs) == 1 and cli_recs[0].get("open") is True,
       f"records={len(cli_recs)} (want the 1 open group), "
       f"open={cli_recs[0].get('open') if cli_recs else '-'}")
+
+# ── Results: output that lands after its call was seen must still arrive ────
+def result(i, out, err=False):
+    return json.dumps({"type": "user", "uuid": _uuid(), "timestamp": "2026-07-17T00:00:03Z",
+                       "message": {"role": "user", "content": [
+                           {"type": "tool_result", "tool_use_id": f"t{i}",
+                            "content": out, "is_error": err}]}})
+
+open(F, "w").close()
+c4 = Client()
+# The client first sees the group already closed by the first result, so its
+# cursor lands ON the group; the second result must still be resent.
+append([user("go3"), tool(10), tool(11), result(10, "first output")])
+c4.poll()
+append([result(11, "Exit code 1\nboom", err=True)])
+c4.poll()
+got = {t["id"]: t.get("result") for r in c4.records if r.get("kind") == "tools"
+       for t in r.get("tools") or []}
+check("results reach a client that already saw the call",
+      bool(got.get("t10")) and bool(got.get("t11")) and got["t11"]["is_error"] is True,
+      f"results={ {k: (v or {}).get('preview') for k, v in got.items()} }")
+append([text("after results")])
+res6 = transcript.parse_transcript(F)
+grp = next(r for r in res6["records"] if r.get("kind") == "tools")
+check("a complete group followed by Claude's reply is not resent",
+      not grp.get("open"), f"open={grp.get('open')}")
+check("the full output is kept out of records",
+      res6["blobs"].get("t10") == "first output" and "blobs" not in grp,
+      f"blob={res6['blobs'].get('t10')!r}")
 
 shutil.rmtree(ROOT, ignore_errors=True)
 print("\n" + ("ALL PASS" if not fails else f"FAILURES: {fails}"))

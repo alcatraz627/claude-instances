@@ -102,6 +102,40 @@ def tool_preview(name, inp):
     return ''
 
 
+# How much of a tool's output, or of a thinking block, rides along in /data.
+# The rest is fetched on expand via /data?result=<id>.
+RESULT_PREVIEW_CHARS = 300
+THINKING_PREVIEW_CHARS = 200
+
+
+def tool_result_text(content):
+    """The readable text of a tool_result block's content.
+
+    Content is either a plain string or a list of typed parts. Text parts are
+    joined; images and tool references become a short bracketed marker, since
+    a base64 image has no business in a text preview.
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return '' if content is None else str(content)
+    parts = []
+    for p in content:
+        if isinstance(p, str):
+            parts.append(p)
+        elif isinstance(p, dict):
+            kind = p.get('type')
+            if kind == 'text':
+                parts.append(p.get('text', ''))
+            elif kind == 'image':
+                parts.append('[image]')
+            elif kind == 'tool_reference':
+                parts.append(f"[tool reference: {p.get('tool_name', '?')}]")
+            else:
+                parts.append(f"[{kind or 'part'}]")
+    return '\n'.join(parts)
+
+
 def file_paths_in_input(name, inp):
     """File paths mentioned in a tool's input — front-end renders click-to-copy."""
     if not isinstance(inp, dict):
@@ -159,6 +193,22 @@ def load_subagent_index(jsonl_file):
 
 # ── Core parse ──────────────────────────────────────────────────────────────
 
+def mark_awaiting_results(records):
+    """Mark the newest tools group open while its calls still await output,
+    so a live reader is resent it and receives the results when they land.
+
+    Claude answers only after every result is in, so any group followed by
+    more of Claude's own output is complete (or was interrupted).
+    """
+    for rec in reversed(records):
+        role = rec.get('role')
+        if role in ('assistant', 'thinking'):
+            return
+        if role == 'tools':
+            if any('result' not in t for t in rec['tools']):
+                rec['open'] = True
+            return
+
 def parse_transcript(jsonl_file, subagent_index=None):
     """Read a transcript .jsonl in full and return {meta, records}.
 
@@ -199,6 +249,14 @@ def parse_transcript(jsonl_file, subagent_index=None):
     # whose id we have already emitted — otherwise the same card renders twice.
     seen_tool_ids = set()
 
+    # Each tool call by its tool_use id, so the tool_result that arrives on a
+    # later line can be attached to the call it answers.
+    calls_by_id = {}
+    # Full bodies kept out of /data: tool output and thinking text, by id.
+    # Served one at a time through /data?result=<id>.
+    blobs = {}
+    seen_thinking = set()
+
     meta = {
         'session_id': os.path.splitext(os.path.basename(jsonl_file))[0],
         'model': 'unknown',
@@ -209,6 +267,10 @@ def parse_transcript(jsonl_file, subagent_index=None):
         'counts': {'user': 0, 'assistant': 0, 'tools': 0, 'events': 0, 'subagents': 0},
         'hook_summaries': 0,
         'hook_errors': 0,
+        'tool_results': 0,
+        'tool_errors': 0,
+        'thinking': 0,
+        'thinking_hidden': 0,
         'subagent_count': len(agent_transcripts),
         'subagent_linked': len(subagent_index),
     }
@@ -262,6 +324,36 @@ def parse_transcript(jsonl_file, subagent_index=None):
         records.append(rec)
         meta['counts']['tools'] += 1
         pending_tools = []
+
+    def attach_result(block):
+        """Pair a tool_result with the call it answers, by tool_use id.
+
+        The call gets a short preview and an error flag; the full text goes
+        to `blobs`. A result re-emitted on resume simply overwrites.
+        """
+        tid = block.get('tool_use_id')
+        if not tid:
+            return
+        text = tool_result_text(block.get('content'))
+        is_error = bool(block.get('is_error'))
+        blobs[tid] = text
+        call = calls_by_id.get(tid)
+        if call is None:
+            return
+        if 'result' not in call:
+            meta['tool_results'] += 1
+            if is_error:
+                meta['tool_errors'] += 1
+        call['result'] = {
+            'preview': _short(text, RESULT_PREVIEW_CHARS),
+            'chars': len(text),
+            'lines': text.count('\n') + 1 if text else 0,
+            'is_error': is_error,
+        }
+        if is_error:
+            call['is_error'] = True
+        else:
+            call.pop('is_error', None)
 
     with open(jsonl_file, 'r', errors='replace') as f:
         for line in f:
@@ -354,6 +446,8 @@ def parse_transcript(jsonl_file, subagent_index=None):
                             if isinstance(block, dict):
                                 if block.get('type') == 'text':
                                     content += block.get('text', '')
+                                elif block.get('type') == 'tool_result':
+                                    attach_result(block)
                             elif isinstance(block, str):
                                 content += block
                 elif isinstance(msg, str):
@@ -397,6 +491,29 @@ def parse_transcript(jsonl_file, subagent_index=None):
                         continue
                     if block.get('type') == 'text':
                         text_part += block.get('text', '')
+                    elif block.get('type') in ('thinking', 'redacted_thinking'):
+                        thought = (block.get('thinking') or '').strip()
+                        if not thought:
+                            # Redacted or signature-only: nothing to show.
+                            meta['thinking_hidden'] += 1
+                            continue
+                        th_id = f"{rec_id(line_uuid, 'th', ts_iso, thought)}:think"
+                        if th_id in seen_thinking:
+                            continue
+                        seen_thinking.add(th_id)
+                        flush_tools()
+                        blobs[th_id] = thought
+                        records.append({
+                            'seq': next_seq(),
+                            'id': th_id,
+                            'role': 'thinking', 'kind': 'thinking',
+                            'preview': _short(thought.replace('\n', ' '), THINKING_PREVIEW_CHARS),
+                            'chars': len(thought),
+                            'words': len(thought.split()),
+                            'ts': ts, 'ts_full': ts_full, 'ts_iso': ts_iso,
+                            'sidechain': sidechain,
+                        })
+                        meta['thinking'] += 1
                     elif block.get('type') == 'tool_use':
                         tid = block.get('id')
                         if tid and tid in seen_tool_ids:
@@ -431,6 +548,8 @@ def parse_transcript(jsonl_file, subagent_index=None):
                                     'description': (tinp or {}).get('description'),
                                     'exists': False,
                                 }
+                        if tid:
+                            calls_by_id[tid] = call
                         tool_calls.append(call)
 
                 if text_part.strip():
@@ -462,6 +581,7 @@ def parse_transcript(jsonl_file, subagent_index=None):
 
     # Nothing closed this burst — the file just ended. It may still be growing.
     flush_tools(still_open=True)
+    mark_awaiting_results(records)
 
     # Tool histogram, most-used first.
     meta['tools_breakdown'] = [
@@ -469,7 +589,7 @@ def parse_transcript(jsonl_file, subagent_index=None):
     ]
     meta['total_tool_calls'] = sum(tool_counter.values())
     meta['total_records'] = len(records)
-    return {'meta': meta, 'records': records}
+    return {'meta': meta, 'records': records, 'blobs': blobs}
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
@@ -519,6 +639,7 @@ def main(argv):
                              if r['seq'] > since or r.get('open')]
         result['meta']['since'] = since
 
+    result.pop('blobs', None)
     json.dump(result, sys.stdout, ensure_ascii=False)
     sys.stdout.write('\n')
     return 0

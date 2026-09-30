@@ -472,6 +472,10 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
             # carries absolute paths and stack fragments.
             sys.stderr.write(f"hub: parse failed for {sid}: {type(e).__name__}: {e}\n")
             return self._json(500, {"error": "transcript could not be parsed"})
+        want = (qs.get("result") or [None])[0]
+        if want is not None:
+            return self._serve_blob(parsed, want, etag)
+
         # Slice on shallow copies only: the cached parse must never be mutated.
         result = {"meta": dict(parsed["meta"]), "records": parsed["records"]}
 
@@ -506,6 +510,21 @@ class HubHandler(http.server.BaseHTTPRequestHandler):
                                  if r["seq"] > s or r.get("open")]
             result["meta"]["since"] = s
         self._json(200, result, cache="no-cache", etag=etag)
+
+    def _serve_blob(self, parsed, want, etag):
+        """One full body that /data only previews: a tool call's output, or
+        a thinking block's text, by its id."""
+        if not want:
+            return self._json(400, {"error": "result must be an id"})
+        blobs = parsed.get("blobs") or {}
+        if want not in blobs:
+            return self._json(404, {"error": f"no result {want}"})
+        body = {"id": want}
+        if want.endswith(":think"):
+            body["thinking"] = blobs[want]
+        else:
+            body["result"] = blobs[want]
+        self._json(200, body, cache="no-cache", etag=etag)
 
 
 def main(argv):

@@ -221,7 +221,29 @@ main { flex: 1; min-width: 0; padding: 0 20px 30vh; }
 .trow.agent .tn { color: var(--claude); }
 .trow .tp { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .trow .tp .pdir { color: var(--faint); } .trow .tp .pbase { color: var(--text); font-weight: 600; }
-.trow .tk { flex: none; color: var(--faint); font-size: 10.5px; }
+.trow .tk, .throw .tk { flex: none; color: var(--faint); font-size: 10.5px; }
+.trow.failed .tn { color: var(--err); }
+.trow .terr { flex: none; font: 700 10px var(--mono); letter-spacing: .06em; text-transform: uppercase;
+    color: var(--err); background: var(--err-soft); border-radius: 4px; padding: 1px 6px; }
+/* a tool's output under its input */
+.res-head { margin: 10px 0 4px; padding-top: 8px; border-top: 1px dashed var(--edge2);
+    font: 700 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+.res-head.err { color: var(--err); }
+pre.res { margin: 0; white-space: pre-wrap; word-break: break-word; color: var(--dim); font: inherit; }
+pre.res.err { color: var(--err); }
+.res-more { margin-top: 6px; background: none; border: 1px solid var(--edge); border-radius: 999px;
+    color: var(--you); font: 600 11.5px var(--sans); padding: 2px 10px; }
+.res-more:hover { background: var(--you-soft); }
+/* thinking: one quiet collapsed line */
+.throw { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; padding: 2px 6px;
+    background: none; border: none; border-radius: 6px; color: var(--faint); text-align: left;
+    font: italic 12px var(--mono); }
+.throw:hover { background: var(--sel); }
+.throw .fold { flex: none; width: 2ch; text-align: center; }
+.throw .thl { flex: none; font-weight: 700; color: var(--meta); font-style: normal; }
+.throw .tp { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thbody { margin: 3px 4px 8px 30px; padding: 8px 12px; border-left: 2px solid color-mix(in srgb, var(--meta) 50%, transparent);
+    color: var(--dim); font: italic 13px/1.6 var(--sans); white-space: pre-wrap; max-height: 360px; overflow: auto; }
 .evrow { display: flex; align-items: baseline; gap: 8px; padding: 2px 8px; font: 11.5px var(--mono); color: var(--faint); }
 .evrow.err { color: var(--err); }
 .evrow .ts { margin-left: auto; font-size: 10.5px; }
@@ -671,6 +693,7 @@ function buildChapters() {
             for (const t of r.tools) {
                 cur.byTool[t.name] = (cur.byTool[t.name] || 0) + 1;
                 if (t.subagent || t.name === 'Agent' || t.name === 'Task') cur.agents++;
+                if (t.is_error) cur.errs++;
             }
         }
         if (r.role === 'assistant') cur.toks += (r.tokens && r.tokens.out) || 0;
@@ -829,16 +852,18 @@ function nestedHTML(t) {
         }).join('') + `</div>`;
 }
 function ledgerSummary(run) {
-    const by = {}; let toks = 0, mins = 0, agents = 0, errs = 0, events = 0;
+    const by = {}; let toks = 0, mins = 0, agents = 0, errs = 0, events = 0, thinks = 0;
     for (const r of run) {
         if (r.role === 'tools') {
             mins += r._workedMin || 0; toks += (r.tokens && r.tokens.out) || 0;
-            for (const t of r.tools) { by[t.name] = (by[t.name] || 0) + 1; if (AGENT(t)) agents++; }
-        } else { events++; if (r.cls === 'err') errs++; }
+            for (const t of r.tools) { by[t.name] = (by[t.name] || 0) + 1; if (AGENT(t)) agents++; if (t.is_error) errs++; }
+        } else if (r.role === 'thinking') thinks++;
+        else { events++; if (r.cls === 'err') errs++; }
     }
     const parts = Object.entries(by).sort((a, b) => b[1] - a[1]).slice(0, 4)
         .map(([n, k]) => `<b>${esc(n)}</b> ×${k}`);
     if (agents) parts.push(`<b>${agents}</b> agent${agents > 1 ? 's' : ''}`);
+    if (thinks) parts.push(`thinking${thinks > 1 ? ` ×${thinks}` : ''}`);
     return { html: [mins ? `worked <b>${mins}m</b>` : '', ...parts, toks ? `↑${kfmt(toks)}` : '',
             events && !errs ? `${events} events` : '', errs ? `<span class="e">${errs} error${errs > 1 ? 's' : ''}</span>` : '']
             .filter(Boolean).join(' · ') };
@@ -846,23 +871,7 @@ function ledgerSummary(run) {
 function ledgerHTML(run, key) {
     const open = state.expanded.has(key);
     const sum = ledgerSummary(run);
-    let body = '';
-    if (open) {
-        body = `<div class="lg-body">` + run.map(r => {
-            if (r.role === 'event') {
-                const err = r.cls === 'err';
-                return `<div class="evrow${err ? ' err' : ''}">${err ? '▲' : '·'} ${esc(r.text)}<span class="ts">${esc(r.ts || '')}</span></div>`;
-            }
-            return r.tools.map((t, i) => {
-                const tkey = r.id + ':' + i, topen = state.expanded.has(tkey);
-                return `<button class="trow${AGENT(t) ? ' agent' : ''}" data-key="${esc(tkey)}" aria-expanded="${topen}">` +
-                    `<span class="fold">${topen ? '▾' : '▸'}</span><span class="tn">${esc(t.name)}</span>` +
-                    `<span class="tp">${prevHTML(t)}</span>` +
-                    (t.tokens_out ? `<span class="tk">↑${kfmt(t.tokens_out)}</span>` : '') + `</button>` +
-                    (topen ? `<div class="tbody"><div class="tb-scroll">${toolBody(t)}</div></div>` : '');
-            }).join('');
-        }).join('') + `</div>`;
-    }
+    const body = open ? `<div class="lg-body">${ledgerRowsHTML(run)}</div>` : '';
     return `<div class="ledger"><button class="lg-row" data-lg="${esc(key)}" aria-expanded="${open}">` +
         `<span class="lg-ico">${ic('gear')}</span><span class="lg-sum">${sum.html}</span>` +
         `<svg class="icon lg-chev" style="width:12px;height:12px"><use href="#i-chev"/></svg></button>${body}</div>`;
@@ -894,7 +903,7 @@ function chapterHTML(c, i) {
     const flush = () => { if (run.length) { h += runHTML(run, 'lg:' + run[0].id); run = []; } };
     for (const r of c.items) {
         // mode/permission events stay visible outside the fold; other events group into the ledger
-        if (r.role === 'tools' || (r.role === 'event' && !/mode/i.test(r.text || ''))) { run.push(r); continue; }
+        if (r.role === 'tools' || r.role === 'thinking' || (r.role === 'event' && !/mode/i.test(r.text || ''))) { run.push(r); continue; }
         flush();
         if (r._divider) h += `<div class="divider ${r._divider.kind}">${esc(r._divider.label)}</div>`;
         if (state.newSince != null && r.seq === state.newSince) h += `<div class="newmark">new</div>`;
@@ -1072,7 +1081,9 @@ document.addEventListener('click', e => {
     if (lg) { const k = lg.dataset.lg;
         state.expanded.has(k) ? state.expanded.delete(k) : state.expanded.add(k);
         renderChapters(); return; }
-    const tr = e.target.closest('.trow[data-key], .inj-row[data-key]');
+    const rm = e.target.closest('.res-more[data-full]');
+    if (rm) { rm.textContent = 'loading…'; fetchFull(rm.dataset.full); return; }
+    const tr = e.target.closest('.trow[data-key], .inj-row[data-key], .throw[data-key]');
     if (tr) { const k = tr.dataset.key;
         state.expanded.has(k) ? state.expanded.delete(k) : state.expanded.add(k);
         renderChapters(); return; }
@@ -1092,7 +1103,9 @@ $('#scrim').onclick = closeOutline;
 /* ================= search */
 function searchable(r) {
     if (r.role === 'user' || r.role === 'assistant') return r.text || '';
-    if (r.role === 'tools') return r.tools.map(t => t.name + ' ' + (t.preview || '')).join(' · ');
+    if (r.role === 'tools') return r.tools.map(t => t.name + ' ' + (t.preview || '') +
+        (t.result ? ' ' + t.result.preview : '')).join(' · ');
+    if (r.role === 'thinking') return r.preview || '';
     return r.text || '';
 }
 function runSearch(term) {
@@ -1198,8 +1211,10 @@ function refreshOpen(recs) {
     for (const r of recs) {
         const i = state.records.findIndex(x => x.id === r.id);
         if (i < 0) continue;
-        const before = (state.records[i].tools || []).length;
-        const after = (r.tools || []).length;
+        // Growth is new calls, or outputs arriving for calls already shown.
+        const size = x => (x.tools || []).length + (x.tools || []).filter(t => t.result).length;
+        const before = size(state.records[i]);
+        const after = size(r);
         if (after === before) continue;
         // Take the server's version either way. Only growth is activity, but a
         // group that shrank (a rewritten transcript) must not stay frozen at
@@ -1318,22 +1333,61 @@ const load = (k, d) => { try { const v = localStorage.getItem(k); return v == nu
 function seg(sel, val, attr) {
     document.querySelectorAll(sel + ' button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset[attr] === val)));
 }
-/* duplicate of the ledger's expanded-rows renderer, used by the card/bare directions */
+/* the rows of one run of tools, thinking and events: the ledger's expanded body,
+   and the whole run for the card and bare directions */
 function ledgerRowsHTML(run) {
     return run.map(r => {
         if (r.role === 'event') {
             const err = r.cls === 'err';
             return `<div class="evrow${err ? ' err' : ''}">${err ? '▲' : '·'} ${esc(r.text)}<span class="ts">${esc(r.ts || '')}</span></div>`;
         }
+        if (r.role === 'thinking') return thinkingHTML(r);
         return r.tools.map((t, i) => {
             const tkey = r.id + ':' + i, topen = state.expanded.has(tkey);
-            return `<button class="trow${AGENT(t) ? ' agent' : ''}" data-key="${esc(tkey)}" aria-expanded="${topen}">` +
+            return `<button class="trow${AGENT(t) ? ' agent' : ''}${t.is_error ? ' failed' : ''}" data-key="${esc(tkey)}" aria-expanded="${topen}">` +
                 `<span class="fold">${topen ? '▾' : '▸'}</span><span class="tn">${esc(t.name)}</span>` +
                 `<span class="tp">${prevHTML(t)}</span>` +
+                (t.is_error ? `<span class="terr">error</span>` : '') +
                 (t.tokens_out ? `<span class="tk">↑${kfmt(t.tokens_out)}</span>` : '') + `</button>` +
-                (topen ? `<div class="tbody"><div class="tb-scroll">${toolBody(t)}</div></div>` : '');
+                (topen ? `<div class="tbody"><div class="tb-scroll">${toolBody(t)}${resultHTML(t)}</div></div>` : '');
         }).join('');
     }).join('');
+}
+/* A thinking block: one collapsed line; the full text loads on expand. */
+function thinkingHTML(r) {
+    const k = 'th:' + r.id, open = state.expanded.has(k);
+    let body = '';
+    if (open) {
+        const full = FULL.get(r.id);
+        body = `<div class="thbody">${full != null ? esc(full)
+            : `${esc(r.preview)}${r.chars > (r.preview || '').length ? ` <span class="cap">loading…</span>` : ''}`}</div>`;
+        if (full == null && r.chars > (r.preview || '').length) fetchFull(r.id);
+    }
+    return `<button class="throw" data-key="${esc(k)}" aria-expanded="${open}"><span class="fold">${open ? '▾' : '▸'}</span>` +
+        `<span class="thl">thinking</span><span class="tp">${esc(r.preview)}</span>` +
+        `<span class="tk">${r.words} words</span></button>${body}`;
+}
+/* A tool call's output: the preview /data carries, then the full body on demand. */
+function resultHTML(t) {
+    const res = t.result;
+    if (!res) return `<div class="res-head">no output recorded</div>`;
+    const full = FULL.get(t.id);
+    const text = full != null ? full : res.preview;
+    const more = full == null && res.chars > (res.preview || '').length;
+    return `<div class="res-head${res.is_error ? ' err' : ''}">${res.is_error ? 'error' : 'output'} · ${res.lines} line${res.lines === 1 ? '' : 's'} · ${kfmt(res.chars)} chars</div>` +
+        `<pre class="res${res.is_error ? ' err' : ''}">${esc(text) || '<span class="cap">(empty)</span>'}</pre>` +
+        (more ? `<button class="res-more" data-full="${esc(t.id)}">show full output</button>` : '');
+}
+/* Full bodies fetched from /data?result=<id>, kept across re-renders. */
+const FULL = new Map(), _fullFetching = new Set();
+function fetchFull(id) {
+    if (!id || FULL.has(id) || _fullFetching.has(id)) return;
+    _fullFetching.add(id);
+    fetch(API + 'data?result=' + encodeURIComponent(id), { cache: 'no-cache' })
+        .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+        .then(d => { FULL.set(id, d.result != null ? d.result : (d.thinking != null ? d.thinking : '')); renderChapters(); })
+        .catch(() => {})
+        .finally(() => _fullFetching.delete(id));
 }
 /* one run of consecutive tools/events, rendered per the active direction's tool-row knob */
 function runHTML(run, key) {
