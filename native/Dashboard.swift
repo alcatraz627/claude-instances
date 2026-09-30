@@ -83,10 +83,9 @@ final class DashboardData: ObservableObject {
     private static func signature(_ r: ScanResult?) -> String {
         guard let r = r else { return "" }
         let liveSig = r.live.map { inst -> String in
-            "\(inst.pid):\(inst.turns ?? 0):\(inst.outputTokens ?? 0):\(inst.costUsd ?? 0):\(inst.sessionState?.state ?? "")"
+            "\(inst.pid):\(inst.turns ?? 0):\(inst.outputTokens ?? 0):\(inst.costUsd ?? 0):\(inst.effectiveState):\(inst.name ?? "")"
         }.joined(separator: "|")
-        let limSig  = r.limits.map { "\($0.fiveH?.pct ?? 0):\($0.week?.pct ?? 0)" } ?? ""
-        return "\(liveSig)#\(limSig)#\(r.history.count)"
+        return "\(liveSig)#\(r.history.count)"
     }
 
     func update(_ newData: ScanResult?) {
@@ -618,33 +617,7 @@ struct OverviewTabView: View {
                                      .map { "\($0.key) ×\($0.value)" }.joined(separator: ", "))
                     }
 
-                    // ── Two-column middle: Rate limits + Live aggregate ──
                     HStack(alignment: .top, spacing: 10) {
-                        // Rate limits
-                        if let limits = d.limits {
-                            OverviewSection(title: "Usage Limits", icon: "gauge.with.dots.needle.33percent", iconColor: .cyan) {
-                                VStack(spacing: 10) {
-                                    if let fiveH = limits.fiveH {
-                                        RateLimitRow(label: "5 Hour", entry: fiveH)
-                                    }
-                                    if let week = limits.week {
-                                        RateLimitRow(label: "Weekly", entry: week)
-                                    }
-                                    if let countdown = rateLimitCountdown(limits.resetsAt) {
-                                        HStack(spacing: 4) {
-                                            Image(systemName: "clock.arrow.circlepath")
-                                                .font(.system(size: 11))
-                                                .foregroundColor(.secondary)
-                                            Text("Resets in \(countdown)")
-                                                .font(.system(size: 12, weight: .medium))
-                                                .foregroundColor(.secondary)
-                                        }
-                                        .padding(.top, 2)
-                                    }
-                                }
-                            }
-                        }
-
                         // Live aggregate (only when running)
                         if d.liveCount > 0 {
                             OverviewSection(title: "Active Totals", icon: "bolt.fill", iconColor: .yellow) {
@@ -793,58 +766,6 @@ struct EventBadge: View {
             )
     }
 }
-
-struct RateLimitRow: View {
-    let label: String
-    let entry: RateLimitEntry
-
-    var body: some View {
-        VStack(spacing: 6) {
-            HStack {
-                Text(label)
-                    .font(.system(size: 13, weight: .medium))
-                Spacer()
-                Text("\(Int(entry.pct))%")
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    .foregroundColor(barColor)
-                if entry.used > 0 || entry.cap > 0 {
-                    Text("(\(fmtTokens(entry.used))/\(fmtTokens(entry.cap)))")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.secondary.opacity(0.15))
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(barColor)
-                        .frame(width: geo.size.width * CGFloat(entry.pct / 100.0))
-                }
-            }
-            .frame(height: 6)
-        }
-    }
-
-    private var barColor: Color {
-        if entry.pct > 90 { return .red }
-        if entry.pct > 75 { return .orange }
-        return .green
-    }
-}
-
-// MARK: - ▲▲▲ End DashboardKit. Below: project-specific tab content ▲▲▲ ─────
-//
-// Everything from here on consumes the kit. The Tab views reference
-// Claude-specific data shapes (LiveInstance, ScanResult, etc.) and would
-// be replaced wholesale when copying the kit into another app.
-//
-// One helper struct (MetadataItem) is defined inside this section but is
-// generic enough to live in the kit — see docs/dashboard-kit.md for the
-// extraction instructions.
-//
-// ─── SwiftUI: Live Instances Tab ────────────────────────────────────────────
 
 struct LiveTabView: View {
     let data: ScanResult?
@@ -2350,9 +2271,7 @@ struct DisplaySizingSection: View {
 /// and the "resets soon" dot threshold. Read live by `updateButton()`.
 struct MenuBarBadgeSection: View {
     @AppStorage("ui.badge.showCount")     private var showCount = true
-    @AppStorage("ui.badge.showRows")      private var showRows = true
     @AppStorage("ui.badge.showPermWarn")  private var showPermWarn = true
-    @AppStorage("rateLimitResetSoonMinutes") private var resetSoon = 30
 
     private func postChange() {
         NotificationCenter.default.post(name: .menuBehaviorDidChange, object: nil)
@@ -2365,25 +2284,8 @@ struct MenuBarBadgeSection: View {
             VStack(alignment: .leading, spacing: 12) {
                 Toggle("Show live session count", isOn: $showCount)
                     .toggleStyle(.checkbox).onChange(of: showCount) { _, _ in postChange() }
-                Toggle("Show per-limit usage rows (5h / weekly)", isOn: $showRows)
-                    .toggleStyle(.checkbox).onChange(of: showRows) { _, _ in postChange() }
                 Toggle("Show permission-request marker (⚠)", isOn: $showPermWarn)
                     .toggleStyle(.checkbox).onChange(of: showPermWarn) { _, _ in postChange() }
-                Divider()
-                HStack(spacing: 12) {
-                    Text("Resets-soon dot")
-                        .font(.system(size: 13, weight: .medium))
-                        .frame(width: 130, alignment: .leading)
-                    Stepper(value: $resetSoon, in: 5...240, step: 5) {
-                        Text("Within \(resetSoon) min")
-                            .font(.system(size: 12, design: .monospaced))
-                    }
-                    .frame(maxWidth: 200)
-                    .onChange(of: resetSoon) { _, _ in postChange() }
-                    Text("A light-blue dot appears on a limit's row when its window resets within this time.")
-                        .font(.system(size: 11)).foregroundColor(.secondary).lineLimit(2)
-                    Spacer()
-                }
             }
             .padding(.vertical, 4)
         }
@@ -2498,45 +2400,16 @@ struct MenuBehaviorSection: View {
     }
 }
 
-/// Settings → Refresh & Warnings. Centralizes the two preferences that
-/// also live in the menu (Refresh submenu + warning-threshold slider).
-/// Reads/writes the SAME UserDefaults keys the menu uses, so changes
-/// flow both ways: edit here → menu updates on next open; edit in menu
-/// → these controls update on next dashboard render. Posts
-/// .menuBehaviorDidChange so the bar restarts its scan timer.
+/// Settings → Refresh. Same UserDefaults keys as the menu's Refresh submenu,
+/// so edits flow both ways; posts .menuBehaviorDidChange to restart the timer.
 struct RefreshAndWarningsSection: View {
     @State private var cadence: Double
     @State private var paused: Bool
-    @State private var threshold: Double
-    @State private var danger: Double
 
     init() {
         let raw = UserDefaults.standard.double(forKey: "scanRefreshInterval")
         _cadence   = State(initialValue: raw > 0 ? raw : 5.0)
         _paused    = State(initialValue: UserDefaults.standard.bool(forKey: "scanRefreshInterval.paused"))
-        let thr    = UserDefaults.standard.integer(forKey: "rateLimitWarningThreshold")
-        _threshold = State(initialValue: thr > 0 ? Double(thr) : 70.0)
-        let dng    = UserDefaults.standard.integer(forKey: "rateLimitDangerThreshold")
-        _danger    = State(initialValue: dng > 0 ? Double(dng) : 90.0)
-    }
-
-    // One usage-zone slider row, persisting its own UserDefaults key (the same
-    // keys the menu's two-slider control writes — edits flow both ways).
-    @ViewBuilder
-    private func zoneRow(_ label: String, value: Binding<Double>, key: String) -> some View {
-        HStack(spacing: 12) {
-            Text(label).font(.system(size: 13, weight: .medium)).frame(width: 130, alignment: .leading)
-            Slider(value: value, in: 50...100, step: 5) { Text(label) }
-            minimumValueLabel: { Text("50%").font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary) }
-            maximumValueLabel: { Text("100%").font(.system(size: 11, design: .monospaced)).foregroundColor(.secondary) }
-            .frame(maxWidth: 320)
-            .onChange(of: value.wrappedValue) { _, newVal in
-                UserDefaults.standard.set(Int(newVal), forKey: key)
-                NotificationCenter.default.post(name: .menuBehaviorDidChange, object: nil)
-            }
-            Text("\(Int(value.wrappedValue))%").font(.system(size: 13, design: .monospaced)).frame(width: 40, alignment: .leading)
-            Spacer()
-        }
     }
 
     private let presets: [Double] = [1, 2, 5, 10, 30, 60]
@@ -2576,15 +2449,6 @@ struct RefreshAndWarningsSection: View {
                         }
                     Spacer()
                 }
-                Divider().opacity(0.4)
-                Text("Usage zones")
-                    .font(.system(size: 13, weight: .semibold))
-                zoneRow("Warn at", value: $threshold, key: "rateLimitWarningThreshold")
-                zoneRow("Danger at", value: $danger, key: "rateLimitDangerThreshold")
-                Text("When 5h or 7d usage crosses a zone, the menu-bar % turns orange (warn) or red (danger). Hitting a cap is fine; these are signals, not limits.")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .padding(.leading, 130 + 12)
             }
             .padding(.vertical, 4)
         }
@@ -2922,7 +2786,7 @@ struct AboutTabView: View {
                         AboutRow(label: "Scanner", value: "lib/scan.sh — Python → JSON, ~950 lines")
                         AboutRow(label: "Statusline cache", value: "/tmp/claude-statusline-<pid>")
                         AboutRow(label: "Sessions JSONL", value: "~/.claude/projects/")
-                        AboutRow(label: "Rate Limits cache", value: "~/.claude/widgets/.limits.json")
+                        AboutRow(label: "Liveness", value: "~/.claude/sessions/<pid>.json")
                         AboutRow(label: "Refresh cadence", value: "user-selectable (default 5s) · full scan every 6 ticks")
                         AboutRow(label: "Transcript HTTP server", value: "lib/detail-server.py — per-pid, idle-exit at 10min")
                     }
@@ -2932,7 +2796,7 @@ struct AboutTabView: View {
                 OverviewSection(title: "Dashboard Tabs", icon: "sidebar.squares.left", iconColor: .indigo) {
                     VStack(alignment: .leading, spacing: 6) {
                         TabHelp(icon: "square.grid.2x2.fill", color: .blue, name: "Overview",
-                                desc: "Stat cards, rate limits, today/week aggregates, model breakdown")
+                                desc: "Stat cards over recent sessions, active totals")
                         TabHelp(icon: "sparkles", color: .green, name: "Live",
                                 desc: "Running instances with metrics, hover actions, transcript viewer")
                         TabHelp(icon: "clock.arrow.circlepath", color: .purple, name: "History",

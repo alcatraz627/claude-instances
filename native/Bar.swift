@@ -22,36 +22,9 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var scanTick: Int = 0
     private let fullScanInterval: Int = 6
 
-    /// Warning threshold for rate limit indicators (persisted via UserDefaults).
-    // Two usage zones drive both the rate bars' colour and the menu-bar icon flag.
-    // A cap isn't something to avoid (hitting it is fine), so these are "highlight
-    // when you cross into this zone", not "a limit". warn ≤ danger.
-    private let thresholdKey = "rateLimitWarningThreshold"
-    private var warningThreshold: Int {
-        get { UserDefaults.standard.integer(forKey: thresholdKey) }
-        set { UserDefaults.standard.set(newValue, forKey: thresholdKey) }
-    }
-    private let dangerKey = "rateLimitDangerThreshold"
-    private var dangerThreshold: Int {
-        get { UserDefaults.standard.integer(forKey: dangerKey) }
-        set { UserDefaults.standard.set(newValue, forKey: dangerKey) }
-    }
-    /// A limit whose window resets within this many minutes lights a small
-    /// light-blue "resets soon" dot on its badge row. Default 30 (Settings-tunable).
-    private let resetSoonKey = "rateLimitResetSoonMinutes"
-    private var resetSoonMinutes: Int {
-        get { let v = UserDefaults.standard.integer(forKey: resetSoonKey); return v > 0 ? v : 30 }
-        set { UserDefaults.standard.set(newValue, forKey: resetSoonKey) }
-    }
     /// Claude logo, loaded once and drawn into the composited badge image each
     /// tick (avoids re-reading the file on every updateButton()).
     private var barIcon: NSImage?
-    /// The severity colour for a usage percentage, by zone (warn / danger).
-    private func zoneColor(forUsage pct: Int) -> NSColor {
-        if pct >= dangerThreshold  { return PaletteStore.shared.color(for: .warnHigh) }
-        if pct >= warningThreshold { return PaletteStore.shared.color(for: .warnMid) }
-        return PaletteStore.shared.color(for: .successHigh)
-    }
 
     /// Refresh cadence — interval (seconds) at which the scan timer fires.
     /// 0 means "paused"; UI exposes presets via the Refresh submenu.
@@ -85,9 +58,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dlog("─── claude-instances-bar starting ───")
         dlog("pid=\(myPID) macOS=\(osVer) log=\(debugLog)")
 
-        // Register UserDefaults defaults (doesn't write — just provides fallbacks)
-        UserDefaults.standard.register(defaults: [thresholdKey: 70, dangerKey: 90, resetSoonKey: 30])
-
         // Apply persisted appearance preference (System / Light / Dark).
         // Affects the dashboard window's chrome. Menu material adapts via OS.
         applyAppearancePref(loadAppearancePref())
@@ -101,21 +71,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         theMenu.autoenablesItems = false
         theMenu.delegate         = self
         statusItem.menu          = theMenu
-
-        // Switchboard (a separate app) moves the usage zones; redraw the icon
-        // when it says they changed.
-        DistributedNotificationCenter.default().addObserver(
-            forName: Notification.Name("dev.switchboard.usage-zones-changed"),
-            object: nil, queue: .main) { [weak self] _ in self?.updateButton() }
-
-        // Hover detection for the usage-preview popover. A tracking area on the
-        // status button doesn't deliver to a non-view owner, and global
-        // mouse-moved monitors are flaky over the menu bar — so poll the cursor
-        // against the status item's screen frame a few times a second. The test
-        // is trivial (a frame contains-point), so 5 Hz is negligible.
-        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
-            self?.checkHover()
-        }
 
         // Initial scan
         refreshData()
@@ -217,7 +172,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         // Full scan — replace everything
                         self.cachedData = r
                     } else if let existing = self.cachedData {
-                        // Quick scan — merge live data + fresh limits into existing cached result.
+                        // Quick scan: merge live data into the existing cached result.
                         // CRITICAL: also merge per-instance enrichment fields
                         // (git_branch / git_modified / last_prompt) from the
                         // previous full scan, since --quick mode emits empty
@@ -234,7 +189,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             history: existing.history,
                             recentEvents: existing.recentEvents,
                             deepEvents: existing.deepEvents,
-                            limits: r.limits ?? existing.limits,
                             aggregates: existing.aggregates,
                             liveCount: r.liveCount
                         )
@@ -258,29 +212,11 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // ── Menu bar button ──────────────────────────────────────────────────────
 
-    /// One badge row = a limit's identity letter + its usage % + a "resets
-    /// soon" flag. Letter colour is the limit's fixed identity (W red, 5
-    /// orange, F teal); the % is severity-tinted by the same zones the
-    /// dropdown bars use, so a glance reads *which* limit and *how bad* at once.
-    private struct BadgeRow {
-        let letter: String
-        let identity: NSColor
-        let pct: Int
-        let resetsSoon: Bool
-    }
-
-    /// True iff this window's reset countdown is within the user's threshold.
-    private func resetsSoon(_ resetsAt: String?) -> Bool {
-        guard let secs = rateLimitResetSeconds(resetsAt) else { return false }
-        return secs <= Double(resetSoonMinutes * 60)
-    }
-
     private func updateButton() {
         guard let btn = statusItem.button else { return }
 
         // Badge composition is user-configurable (Settings → Menu Bar Badge).
         let showCount    = UserDefaults.standard.object(forKey: "ui.badge.showCount")    as? Bool ?? true
-        let showRows     = UserDefaults.standard.object(forKey: "ui.badge.showRows")     as? Bool ?? true
         let showPermWarn = UserDefaults.standard.object(forKey: "ui.badge.showPermWarn") as? Bool ?? true
 
         let liveCount = cachedData?.liveCount ?? 0
@@ -290,33 +226,15 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return hasPerm ? "⚠ \(liveCount)" : (liveCount > 0 ? "\(liveCount)" : "–")
         }()
 
-        // One row per limit window we actually have data for. Order W → 5
-        // (Fable would slot in first as F, teal, once it exists in the feed).
-        var rows: [BadgeRow] = []
-        if showRows, let limits = cachedData?.limits {
-            if let w = limits.week {
-                rows.append(BadgeRow(letter: "W", identity: .systemRed,
-                                     pct: Int(w.pct), resetsSoon: resetsSoon(limits.resetsAtWeekly)))
-            }
-            if let f = limits.fiveH {
-                rows.append(BadgeRow(letter: "5", identity: .systemOrange,
-                                     pct: Int(f.pct), resetsSoon: resetsSoon(limits.resetsAt)))
-            }
-        }
-
-        // Status items are single-line, so the whole badge is drawn as one
-        // multi-colour NSImage (isTemplate=false keeps the per-letter hues).
-        btn.image = composeBadgeImage(count: countText, rows: rows)
+        btn.image = composeBadgeImage(count: countText)
         btn.imagePosition = .imageOnly
         btn.title = ""
         btn.attributedTitle = NSAttributedString(string: "")
         btn.alphaValue = liveCount == 0 ? 0.5 : 1.0   // dim when idle
     }
 
-    /// Draw the claude icon + live count + up-to-3 stacked limit rows into a
-    /// single NSImage sized to the menu-bar height. Rows auto-fit vertically so
-    /// 2 rows read comfortably now and a 3rd (Fable) fits without changes.
-    private func composeBadgeImage(count: String, rows: [BadgeRow]) -> NSImage {
+    /// Draw the claude icon + live count into one NSImage sized to the menu bar.
+    private func composeBadgeImage(count: String) -> NSImage {
         let barH = NSStatusBar.system.thickness            // ~22pt
         let iconSize: CGFloat = 16
 
@@ -333,34 +251,9 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ])
         let countW = ceil(countStr.size().width)
 
-        // Row metrics auto-fit the row count into the bar height.
-        let n = max(rows.count, 1)
-        let lineH = min(11, (barH - 3) / CGFloat(n))
-        let rowFontSize = max(6, lineH - 1.8)
-        let letterFont = NSFont.monospacedDigitSystemFont(ofSize: rowFontSize, weight: .bold)
-        let pctFont    = NSFont.monospacedDigitSystemFont(ofSize: rowFontSize, weight: .semibold)
-        let dotDia: CGFloat = 4
-
-        // Pre-build each row's attributed string + measure the widest.
-        var rowStrings: [(str: NSAttributedString, dot: Bool)] = []
-        var rowsW: CGFloat = 0
-        for r in rows {
-            let s = NSMutableAttributedString()
-            s.append(NSAttributedString(string: r.letter, attributes: [
-                .font: letterFont, .foregroundColor: r.identity]))
-            s.append(NSAttributedString(string: " \(r.pct)%", attributes: [
-                .font: pctFont, .foregroundColor: zoneColor(forUsage: r.pct)]))
-            var w = ceil(s.size().width)
-            if r.resetsSoon { w += dotDia + 2 }
-            rowsW = max(rowsW, w)
-            rowStrings.append((s, r.resetsSoon))
-        }
-
-        let padL: CGFloat = 2, gapIcon: CGFloat = 3, gapRows: CGFloat = 6, padR: CGFloat = 3
+        let padL: CGFloat = 2, gapIcon: CGFloat = 3, padR: CGFloat = 3
         let iconW: CGFloat = icon != nil ? iconSize : 0
-        let totalW = padL + iconW + (iconW > 0 ? gapIcon : 0) + countW
-                   + (rows.isEmpty ? 0 : gapRows + rowsW) + padR
-        let dotColor = NSColor(calibratedRed: 0.35, green: 0.70, blue: 1.0, alpha: 1)
+        let totalW = padL + iconW + (iconW > 0 ? gapIcon : 0) + countW + padR
 
         let img = NSImage(size: NSSize(width: totalW, height: barH), flipped: false) { _ in
             var x = padL
@@ -368,27 +261,7 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 icon.draw(in: NSRect(x: x, y: (barH - iconSize) / 2, width: iconSize, height: iconSize))
                 x += iconW + gapIcon
             }
-            // Count, vertically centred.
             countStr.draw(at: NSPoint(x: x, y: (barH - countStr.size().height) / 2))
-            x += countW
-
-            if !rowStrings.isEmpty {
-                x += gapRows
-                let blockH = CGFloat(rowStrings.count) * lineH
-                let startY = (barH - blockH) / 2
-                for (i, row) in rowStrings.enumerated() {
-                    // Row 0 on top → highest y (origin is bottom-left).
-                    let rowY = startY + CGFloat(rowStrings.count - 1 - i) * lineH
-                    row.str.draw(at: NSPoint(x: x, y: rowY + (lineH - row.str.size().height) / 2))
-                    if row.dot {
-                        let sw = ceil(row.str.size().width)
-                        let d = NSRect(x: x + sw + 2, y: rowY + (lineH - dotDia) / 2,
-                                       width: dotDia, height: dotDia)
-                        dotColor.setFill()
-                        NSBezierPath(ovalIn: d).fill()
-                    }
-                }
-            }
             return true
         }
         img.isTemplate = false
@@ -405,7 +278,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         menuIsOpen = true
-        hideUsagePopover()   // the dropdown supersedes the hover preview
         // First scan tick after open is the next scheduled fire — kick one
         // off immediately so the user sees freshest possible data without
         // waiting up to `refreshInterval` seconds.
@@ -495,12 +367,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
-        // ── Rate limits (top — most urgent info) ────────────────────────────
-        addRateLimitsSection(menu, data)
-
-        // ── Usage stats (today/week aggregates) ─────────────────────────────
-        addUsageStatsSection(menu, data)
-
         // ── Live instances ───────────────────────────────────────────────────
         addLiveInstancesSection(menu, data)
 
@@ -512,266 +378,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // ── Actions ──────────────────────────────────────────────────────────
         addActionsSection(menu, data)
-    }
-
-    // ── Shared usage-bar row (dropdown AND hover popover use this) ───────────
-
-    /// One usage bar row: label + track/fill bar + percent + reset countdown, on
-    /// fixed 326×20 frames so 5h/7d columns align. Pure view construction with no
-    /// menu coupling, so the hover popover reuses it verbatim (one source of truth).
-    private func makeBarRow(_ label: String, pct: Int, color: NSColor, countdown: String?) -> NSView {
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: 326, height: 20))
-        func text(_ s: String, _ font: NSFont, _ c: NSColor, _ x: CGFloat, _ w: CGFloat) {
-            let t = NSTextField(labelWithString: s)
-            t.font = font; t.textColor = c
-            t.frame = NSRect(x: x, y: 2, width: w, height: 15)
-            v.addSubview(t)
-        }
-        text(label, BarFont.monoBody, .secondaryLabelColor, 14, 44)
-        let trackW: CGFloat = 96
-        let track = NSView(frame: NSRect(x: 60, y: 7, width: trackW, height: 6))
-        track.wantsLayer = true
-        track.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.45).cgColor
-        track.layer?.cornerRadius = 3
-        let f = CGFloat(min(100, max(0, pct))) / 100.0
-        let fill = NSView(frame: NSRect(x: 0, y: 0, width: max(3, trackW * f), height: 6))
-        fill.wantsLayer = true
-        fill.layer?.backgroundColor = color.cgColor
-        fill.layer?.cornerRadius = 3
-        track.addSubview(fill)
-        v.addSubview(track)
-        text("\(pct)%", BarFont.monoBody, color, 166, 42)
-        if let cd = countdown {
-            text("resets ~\(cd)", BarFont.monoCaption, .tertiaryLabelColor, 214, 108)
-        }
-        return v
-    }
-
-    // ── Hover usage popover (ask #2) ─────────────────────────────────────────
-    //
-    // A non-clickable, translucent preview of the top usage section — the same
-    // bar rows as the dropdown, plus the read-only "Usage zones" line — shown
-    // when the mouse hovers the menu-bar icon (and the menu itself isn't open).
-    // Duplicates the menu's material via an NSVisualEffectView(.menu).
-
-    private var usagePopover: NSPopover?
-    private var hoverCloseWork: DispatchWorkItem?
-    private var hoverTimer: Timer?
-    private var hoverInside = false
-
-    /// Builds the popover content: the shared bar rows stacked over the zones
-    /// line, inside a menu-material vibrancy view. Returns nil when there's no
-    /// limit data (nothing to preview).
-    private func makeUsagePopoverController() -> NSViewController? {
-        guard let limits = cachedData?.limits,
-              limits.fiveH != nil || limits.week != nil else { return nil }
-
-        let rowW: CGFloat = 326, padX: CGFloat = 12, padTop: CGFloat = 10, padBot: CGFloat = 8
-        let rowH: CGFloat = 20, gap: CGFloat = 2, zonesH: CGFloat = 16, zonesGap: CGFloat = 4
-
-        var rows: [NSView] = []       // [5h, 7d] in dropdown order (5h on top)
-        if let five = limits.fiveH {
-            let p = Int(five.pct)
-            rows.append(makeBarRow("⏱ 5h", pct: p, color: zoneColor(forUsage: p),
-                                   countdown: rateLimitCountdown(limits.resetsAt)))
-        }
-        if let week = limits.week {
-            let p = Int(week.pct)
-            rows.append(makeBarRow("📅 7d", pct: p, color: zoneColor(forUsage: p),
-                                   countdown: rateLimitCountdown(limits.resetsAtWeekly)))
-        }
-
-        let zones = NSTextField(labelWithString:
-            " ⚙ Usage zones · warn ≥\(warningThreshold)% · danger ≥\(dangerThreshold)%")
-        zones.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        zones.textColor = .secondaryLabelColor
-
-        let contentW = rowW + padX * 2
-        let contentH = padTop + CGFloat(rows.count) * (rowH + gap) + zonesGap + zonesH + padBot
-
-        let fx = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: contentW, height: contentH))
-        fx.material = .menu
-        fx.blendingMode = .behindWindow
-        fx.state = .active
-
-        // Bottom-up frames (non-flipped): zones at the bottom, rows above it with
-        // 5h on top. Reversed so rows[0] (5h) lands at the highest y.
-        var y = padBot
-        zones.frame = NSRect(x: padX + 14, y: y, width: rowW - 14, height: zonesH)
-        fx.addSubview(zones)
-        y += zonesH + zonesGap
-        for row in rows.reversed() {
-            row.setFrameOrigin(NSPoint(x: padX, y: y))
-            fx.addSubview(row)
-            y += rowH + gap
-        }
-
-        let vc = NSViewController()
-        vc.view = fx
-        return vc
-    }
-
-    /// Called on every mouse-moved event. Shows the popover when the cursor
-    /// enters the status item's screen rect, hides it (after a short grace
-    /// delay) when it leaves. Cheap frame test; no per-event allocation.
-    private func checkHover() {
-        guard let btn = statusItem.button, let win = btn.window else { return }
-        let screenRect = win.convertToScreen(btn.convert(btn.bounds, to: nil))
-        let inside = screenRect.contains(NSEvent.mouseLocation)
-        if inside && !hoverInside {
-            hoverInside = true
-            hoverCloseWork?.cancel(); hoverCloseWork = nil
-            if !menuIsOpen { showUsagePopover() }
-        } else if !inside && hoverInside {
-            hoverInside = false
-            let work = DispatchWorkItem { [weak self] in self?.hideUsagePopover() }
-            hoverCloseWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
-        }
-    }
-
-    private func showUsagePopover() {
-        guard let btn = statusItem.button, let vc = makeUsagePopoverController() else { return }
-        let pop = usagePopover ?? NSPopover()
-        pop.contentViewController = vc
-        pop.contentSize = vc.view.frame.size
-        pop.behavior = .applicationDefined   // dismissal is hover-driven, not click
-        pop.animates = false
-        usagePopover = pop
-        if !pop.isShown {
-            pop.show(relativeTo: btn.bounds, of: btn, preferredEdge: .maxY)
-        }
-    }
-
-    private func hideUsagePopover() {
-        usagePopover?.performClose(nil)
-        usagePopover = nil
-    }
-
-    // ── Section: Rate Limits ─────────────────────────────────────────────────
-
-    private func addRateLimitsSection(_ menu: NSMenu, _ data: ScanResult) {
-        guard let limits = data.limits else { return }
-        guard limits.fiveH != nil || limits.week != nil else { return }
-
-        // One bar row: label + bracketed bar + percent + reset countdown. The
-        // filled run carries the severity colour, the empty run is dim, and the
-        // countdown is muted — so the row reads at a glance without a wash of
-        // competing colour.
-        // A drawn bar row (track + fill as real views) on fixed frames so 5h and
-        // 7d align crisply — no ASCII bars. Colour comes from the usage zones, so
-        // the bars and the menu-bar icon flag the same thresholds.
-        func addBarItem(_ label: String, pct: Int, color: NSColor, countdown: String?) {
-            let item = NSMenuItem()
-            item.view = self.makeBarRow(label, pct: pct, color: color, countdown: countdown)
-            menu.addItem(item)
-        }
-
-        if let fiveH = limits.fiveH {
-            let r5 = Int(fiveH.pct)
-            addBarItem("⏱ 5h", pct: r5, color: zoneColor(forUsage: r5), countdown: rateLimitCountdown(limits.resetsAt))
-        }
-        if let week = limits.week {
-            let r7 = Int(week.pct)
-            addBarItem("📅 7d", pct: r7, color: zoneColor(forUsage: r7), countdown: rateLimitCountdown(limits.resetsAtWeekly))
-        }
-
-        // Usage zones — two sliders (warn / danger) that flag the menu-bar icon.
-        // Reframed from the old single "Warning at N%": a cap is not a wall.
-        let thresholdItem = NSMenuItem()
-        thresholdItem.attributedTitle = NSAttributedString(
-            string: " ⚙ Usage zones · warn ≥\(warningThreshold)% · danger ≥\(dangerThreshold)%",
-            attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
-                .foregroundColor: NSColor.secondaryLabelColor,
-            ])
-
-        let subMenu = NSMenu()
-        let note = NSMenuItem()
-        note.attributedTitle = NSAttributedString(
-            string: "  The menu-bar icon flags usage that crosses a zone.\n  Hitting a cap is fine; these are signals, not limits.",
-            attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor])
-        note.isEnabled = false
-        subMenu.addItem(note)
-        subMenu.addItem(.separator())
-
-        func zoneSlider(_ title: String, value: Int, tag: Int, labelTag: Int) -> NSMenuItem {
-            let item = NSMenuItem()
-            let container = NSView(frame: NSRect(x: 0, y: 0, width: 248, height: 30))
-            let label = NSTextField(labelWithString: "\(title) \(value)%")
-            label.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
-            label.textColor = .secondaryLabelColor
-            label.frame = NSRect(x: 14, y: 5, width: 92, height: 18)
-            label.tag = labelTag
-            let slider = NSSlider(value: Double(value), minValue: 50, maxValue: 100,
-                                  target: self, action: #selector(thresholdSliderChanged(_:)))
-            slider.frame = NSRect(x: 110, y: 5, width: 122, height: 18)
-            slider.isContinuous = true
-            slider.numberOfTickMarks = 11
-            slider.allowsTickMarkValuesOnly = true
-            slider.tag = tag
-            container.addSubview(label)
-            container.addSubview(slider)
-            item.view = container
-            return item
-        }
-        subMenu.addItem(zoneSlider("Warn ≥",   value: warningThreshold, tag: 1, labelTag: 101))
-        subMenu.addItem(zoneSlider("Danger ≥", value: dangerThreshold,  tag: 2, labelTag: 102))
-
-        thresholdItem.submenu = subMenu
-        menu.addItem(thresholdItem)
-
-        menu.addItem(.separator())
-    }
-
-    // ── Section: Usage Stats (inline today/week aggregates) ────────────────
-
-    private func addUsageStatsSection(_ menu: NSMenu, _ data: ScanResult) {
-        guard let agg = data.aggregates else { return }
-        let today = agg.today
-        let week = agg.week
-
-        // Only show if we have data
-        let todaySessions = today?.sessions ?? 0
-        let weekSessions = week?.sessions ?? 0
-        guard todaySessions > 0 || weekSessions > 0 else { return }
-
-        // A columned row so Today and Week align their stats on one tab stop.
-        func buildUsageRow(label: String, icon: String, period: AggregatesPeriod?, showModels: Bool) -> NSMenuItem {
-            let labelCell = seg(" \(icon) \(label)", BarFont.title, .labelColor)
-            let statsCell = NSMutableAttributedString()
-            if let p = period {
-                var stats: [String] = []
-                if let s = p.sessions, s > 0 { stats.append("\(s) sess") }
-                if let t = p.turns, t > 0 { stats.append("\(fmtTokens(t)) turns") }
-                if let c = p.costUsd, c > 0 { stats.append(fmtCost(c)) }
-                statsCell.append(seg(stats.joined(separator: " · "), BarFont.monoBody, .secondaryLabelColor))
-            }
-            // Model badges (Today only), in identity colour.
-            if showModels, let breakdown = agg.modelBreakdown, !breakdown.isEmpty {
-                var added = 0
-                for entry in breakdown.sorted(by: { $0.value > $1.value }) {
-                    let m = modelDisplay(entry.key)
-                    guard m.label != "?" else { continue }
-                    statsCell.append(seg(added == 0 ? "   " : " ", BarFont.monoCaption, .secondaryLabelColor))
-                    statsCell.append(seg("\(m.badge)\(entry.value)", BarFont.monoCaption, m.color))
-                    added += 1
-                }
-            }
-            let item = NSMenuItem()
-            item.attributedTitle = columned([labelCell, statsCell], stops: [82])
-            item.isEnabled = false
-            return item
-        }
-
-        if todaySessions > 0 {
-            menu.addItem(buildUsageRow(label: "Today", icon: "📊", period: today, showModels: true))
-        }
-        if weekSessions > 0 && weekSessions != todaySessions {
-            menu.addItem(buildUsageRow(label: "Week", icon: "📈", period: week, showModels: false))
-        }
-
-        menu.addItem(.separator())
     }
 
     // ── Section: Live Instances ──────────────────────────────────────────────
@@ -1314,7 +920,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if settingsController == nil {
             settingsController = SettingsWindowController(onWillOpen: { [weak self] in
                 self?.theMenu.cancelTracking()
-                self?.hideUsagePopover()
             })
         }
         settingsController?.show()
@@ -1349,26 +954,6 @@ final class BarDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dlog("manual refresh (forced full)")
         scanTick = fullScanInterval - 1  // Next tick will be a full scan
         refreshData()
-    }
-
-    @objc private func thresholdSliderChanged(_ sender: NSSlider) {
-        let v = Int(sender.doubleValue)
-        let isDanger = sender.tag == 2
-        // Keep the zones ordered: warn ≤ danger.
-        if isDanger {
-            dangerThreshold = max(v, warningThreshold)
-        } else {
-            warningThreshold = min(v, dangerThreshold)
-        }
-        let shown = isDanger ? dangerThreshold : warningThreshold
-        let prefix = isDanger ? "Danger ≥" : "Warn ≥"
-        let labelTag = isDanger ? 102 : 101
-        if let container = sender.superview,
-           let label = container.subviews.first(where: { $0.tag == labelTag }) as? NSTextField {
-            label.stringValue = "\(prefix) \(shown)%"
-        }
-        dlog("zone changed: warn ≥\(warningThreshold)% danger ≥\(dangerThreshold)%")
-        updateButton()
     }
 
     @objc private func resumeHistorySession(_ sender: NSMenuItem) {

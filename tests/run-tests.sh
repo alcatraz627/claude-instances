@@ -101,13 +101,11 @@ t_grep "focus file middle-truncated"   native/ 'middleTruncate\(disp'
 t_grep "copy directory path action"    native/ 'func copyDirPath'
 t_grep "copy resume command action"    native/ 'func copyResumeCmd'
 
-# ── Rate limits + usage P5 (zones, column alignment) ─────────────────────────
-t_section "rate zones + alignment (P5/#22)"
-t_grep "danger zone threshold"         native/ 'dangerThreshold'
-t_grep "zoneColor drives bars + icon"  native/ 'func zoneColor'
-t_grep "two-slider zone submenu"       native/ 'func zoneSlider'
-t_grep "rate bars drawn as views"      native/ 'fill.layer\?.backgroundColor = color'
-t_grep "usage rows column-aligned"     native/ 'columned\(\[labelCell'
+# ── Usage lives in Switchboard, not here ─────────────────────────────────────
+t_section "usage removed"
+t_check "no rate-limit code in the bar"      bash -c '! rg -q "rateLimit|zoneColor|usage-zones-changed" native/ --glob "*.swift"'
+t_check "hub index draws no usage meters"    bash -c '! rg -q "FEED.limits|class=\"meter" lib/hub-index.html'
+t_check "scan emits no limits"               bash -c '! rg -q "get_limits" lib/scan.sh'
 
 # ── Events + History collapse P6 ─────────────────────────────────────────────
 t_section "events + history collapse (P6)"
@@ -127,7 +125,7 @@ else
     t_fail "scan.sh output is not valid JSON"
 fi
 # Required top-level keys.
-for key in live history limits aggregates; do
+for key in live history aggregates; do
     if python3 -c "
 import json,sys
 d = json.load(open('$SCAN_OUT'))

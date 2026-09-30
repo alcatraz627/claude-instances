@@ -146,54 +146,6 @@ func shortenPath(_ path: String?, maxLen: Int = 32) -> String {
     return "…" + p.suffix(maxLen - 1)
 }
 
-func rateLimitCountdown(_ resetsAt: String?) -> String? {
-    guard let str = resetsAt, !str.isEmpty else { return nil }
-    var resetDate: Date?
-    if let epoch = Double(str) {
-        resetDate = Date(timeIntervalSince1970: epoch)
-    } else {
-        let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        resetDate = fmt.date(from: str)
-        if resetDate == nil {
-            let fmt2 = ISO8601DateFormatter()
-            resetDate = fmt2.date(from: str)
-        }
-    }
-    guard let rd = resetDate else { return nil }
-    let secs = rd.timeIntervalSinceNow
-    guard secs > 0 else { return nil }
-    let totalMin = Int(secs) / 60
-    let d = totalMin / 1440
-    let h = (totalMin % 1440) / 60
-    let m = totalMin % 60
-    // Use day-precision for week-scale windows so "5d 3h" doesn't show as
-    // "123h 0m". Keep minute precision for short windows so the 5h bar
-    // still ticks visibly.
-    if d > 0 { return "\(d)d \(h)h" }
-    if h > 0 { return "\(h)h \(m)m" }
-    return "\(m)m"
-}
-
-/// Seconds until a rate-limit window resets, or nil if unknown / already past.
-/// rateLimitCountdown() gives a human string; the badge's "resets soon" dot
-/// needs the raw number to compare against the threshold. Accepts the same
-/// epoch-seconds-or-ISO8601 string the model carries.
-func rateLimitResetSeconds(_ resetsAt: String?) -> TimeInterval? {
-    guard let str = resetsAt, !str.isEmpty else { return nil }
-    var resetDate: Date?
-    if let epoch = Double(str) {
-        resetDate = Date(timeIntervalSince1970: epoch)
-    } else {
-        let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        resetDate = fmt.date(from: str) ?? ISO8601DateFormatter().date(from: str)
-    }
-    guard let rd = resetDate else { return nil }
-    let secs = rd.timeIntervalSinceNow
-    return secs > 0 ? secs : nil
-}
-
 // ─── String helpers ──────────────────────────────────────────────────────────
 
 

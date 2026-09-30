@@ -2,11 +2,10 @@
 # scan.sh — enumerate live Claude Code instances + recent session history.
 #
 # Output: JSON to stdout with structure:
-#   { "live": [...], "history": [...], "limits": {...}, "aggregates": {...} }
+#   { "live": [...], "history": [...], "aggregates": {...} }
 #
 # Live instances: discovered via pgrep + process info + statusline metrics.
 # History: enumerated from ~/.claude/projects/*/*.jsonl.
-# Limits: read from cached ~/.claude/widgets/.limits.json if present.
 # Aggregates: today/week session stats, model breakdown — computed over the
 #   full window via the ~/.claude/widgets/.session-summaries.json cache, not
 #   over the 20-row display list.
@@ -17,20 +16,18 @@
 set -uo pipefail
 
 PROJECTS_DIR="${HOME}/.claude/projects"
-LIMITS_CACHE="${HOME}/.claude/widgets/.limits.json"
 EVENTS_FILE="${HOME}/.claude/events.jsonl"
 STATUSLINE_DIR="/tmp"
 SUMMARY_CACHE="${HOME}/.claude/widgets/.session-summaries.json"
 QUICK_MODE=0
 [[ "${1:-}" == "--quick" ]] && QUICK_MODE=1
 
-python3 - "$PROJECTS_DIR" "$LIMITS_CACHE" "$EVENTS_FILE" "$STATUSLINE_DIR" "$QUICK_MODE" "$SUMMARY_CACHE" <<'PYEOF'
+python3 - "$PROJECTS_DIR" "" "$EVENTS_FILE" "$STATUSLINE_DIR" "$QUICK_MODE" "$SUMMARY_CACHE" <<'PYEOF'
 import sys, json, os, subprocess, re, math
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 projects_dir = sys.argv[1]
-limits_cache = sys.argv[2]
 events_file = sys.argv[3]
 statusline_dir = sys.argv[4]
 quick_mode = sys.argv[5] == '1'
@@ -1746,17 +1743,6 @@ def get_aggregate_history(window_days=7):
         save_summary_cache(fresh)
     return rows
 
-# ─── Limits ──────────────────────────────────────────────────────
-
-def get_limits():
-    if os.path.exists(limits_cache):
-        try:
-            with open(limits_cache, 'r') as f:
-                return json.load(f)
-        except (OSError, json.JSONDecodeError):
-            pass
-    return None
-
 # ─── claudew metrics ─────────────────────────────────────────────
 
 CLAUDEW_EVENTS = os.path.join(home, '.claude', 'claudew', 'events.jsonl')
@@ -1854,15 +1840,10 @@ if quick_mode:
     output['recent_events'] = []
     output['deep_events'] = []
     output['aggregates'] = {'today': {}, 'week': {}, 'model_breakdown': {}}
-    # Limits are a trivial file read — always include them
-    limits = get_limits()
-    if limits:
-        output['limits'] = limits
 else:
     # Full scan: include everything
     history = get_session_history()
     recent_events, deep_events = get_recent_events()
-    limits = get_limits()
     # Not compute_aggregates(history): totals must see past the display cap.
     aggregates = compute_aggregates(get_aggregate_history())
 
@@ -1870,8 +1851,6 @@ else:
     output['recent_events'] = recent_events
     output['deep_events'] = deep_events
     output['aggregates'] = aggregates
-    if limits:
-        output['limits'] = limits
 
 # claudew metrics — lightweight file reads, include in both modes
 claudew = get_claudew_metrics()

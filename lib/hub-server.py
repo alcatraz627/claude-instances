@@ -182,7 +182,7 @@ def run_scan(max_age=2.0):
                 RuntimeError) as e:
             sys.stderr.write(f"hub: scan failed ({type(e).__name__}); "
                              f"nothing cached yet\n")
-            return {"live": [], "history": [], "limits": {}, "aggregates": {},
+            return {"live": [], "history": [], "aggregates": {},
                     "scan_error": type(e).__name__}, False
         _scan_cache["at"] = time.time()
         _scan_cache["data"] = data
@@ -350,7 +350,6 @@ def sessions_payload():
         "host": socket.gethostname(),
         "live": live,
         "recent": recent,
-        "limits": scan.get("limits", {}),
         "aggregates": scan.get("aggregates", {}),
         "refreshing": refreshing,
     }

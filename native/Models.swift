@@ -20,12 +20,11 @@ struct ScanResult: Codable {
     let history: [SessionHistory]
     let recentEvents: [Event]?
     let deepEvents: [Event]?
-    let limits: RateLimits?
     let aggregates: Aggregates?
     let liveCount: Int
 
     enum CodingKeys: String, CodingKey {
-        case live, history, limits, aggregates
+        case live, history, aggregates
         case recentEvents = "recent_events"
         case deepEvents = "deep_events"
         case liveCount = "live_count"
@@ -263,26 +262,6 @@ struct Event: Codable {
         case event, ts, project, model, tool
         case sessionId = "session_id"
         case tabTitle = "tab_title"
-    }
-}
-
-struct RateLimitEntry: Codable {
-    let pct: Double
-    let used: Int
-    let cap: Int
-}
-
-struct RateLimits: Codable {
-    let fiveH: RateLimitEntry?
-    let week: RateLimitEntry?
-    let resetsAt: String?       // 5h window reset
-    let resetsAtWeekly: String? // 7d window reset (added 2026-05)
-
-    enum CodingKeys: String, CodingKey {
-        case fiveH = "5h"
-        case week
-        case resetsAt       = "resets_at"
-        case resetsAtWeekly = "resets_at_weekly"
     }
 }
 

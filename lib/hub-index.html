@@ -80,12 +80,6 @@ h1 { font: 650 21px/1.2 var(--sans); letter-spacing: -.014em; margin: 0; }
 .mh-line { font: 12px var(--mono); color: var(--dim); display: flex; flex-wrap: wrap; gap: 4px 18px;
     font-variant-numeric: tabular-nums; align-items: center; }
 .mh-line b { color: var(--text); font-weight: 700; }
-.meter { display: inline-flex; align-items: center; gap: 7px; }
-.meter .bar { width: 64px; height: 5px; border-radius: 999px; border: 1px solid var(--edge);
-    background: var(--sel); overflow: hidden; }
-.meter .bar i { display: block; height: 100%; border-radius: 999px; background: var(--dim); }
-.meter.warn .bar i { background: var(--tool); } .meter.warn b { color: var(--tool); }
-.meter.hot .bar i { background: var(--err); } .meter.hot b { color: var(--err); }
 
 /* query bar */
 .qbar { position: relative; margin-top: 16px; }
@@ -429,9 +423,7 @@ $('#themeBtn').onclick = () => vt(() => applyTheme(document.documentElement.clas
    session's own GET /s/<id>/data?since=<seq> (keyed by session_id —
    never by feed position). */
 const FEED = { host: '', live: [], recent: [],
-    limits: { '5h': { pct: 0 }, week: { pct: 0 } },
     aggregates: { today: { sessions: 0, tokens_out: 0, cost_usd: 0 } } };
-const lim = p => p >= 90 ? 'hot' : p >= 70 ? 'warn' : '';
 const ctxCls = p => p < 10 ? 'hot' : p < 25 ? 'warn' : '';
 const kfmt = n => { n = +n || 0; return n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + 'K' : String(n); };
 // null cost means nobody could price this model, which is not the same as free.
@@ -524,7 +516,6 @@ function adaptFeed(d) {
         _ageMin: s.modified ? Math.max(0, (Date.now() - new Date(s.modified).getTime()) / 60000) : 9e9,
         cwd_short: s.cwd_short || '(session)',
     }));
-    FEED.limits = { '5h': (d.limits && d.limits['5h']) || { pct: 0 }, week: (d.limits && d.limits.week) || { pct: 0 } };
     const ag = (d.aggregates || {}).today || {};
     FEED.aggregates = { today: { sessions: +ag.sessions || 0, tokens_out: kfmt(ag.turns != null ? ag.tokens_out : 0), cost_usd: +ag.cost_usd || 0 } };
 }
@@ -913,7 +904,7 @@ function sortGroup(arr) {
 function render() {
     const live = FEED.live;
     const turn = live.filter(s => s.state === 'idle').length;
-    const L = FEED.limits, A = FEED.aggregates.today;
+    const A = FEED.aggregates.today;
     const hostEl = document.querySelector('.tb-host'); if (hostEl) hostEl.textContent = FEED.host || '';
     const wasFocused = document.activeElement && document.activeElement.id === 'fq';
     $('#chipLive').innerHTML = `<span class="pulse"></span>${live.length} live`;
@@ -922,8 +913,6 @@ function render() {
     $('#main').innerHTML =
         `<div class="mh-row"><h1>Sessions</h1>` +
         `<div class="mh-line">` +
-        `<span class="meter ${lim(L['5h'].pct)}"><span>5h</span><span class="bar"><i style="width:${L['5h'].pct}%"></i></span><b>${L['5h'].pct}%</b></span>` +
-        `<span class="meter ${lim(L.week.pct)}"><span>7d</span><span class="bar"><i style="width:${L.week.pct}%"></i></span><b>${L.week.pct}%</b></span>` +
         `<span>today <b>${A.sessions}</b> sessions · <b>↑${A.tokens_out}</b> · <b>$${A.cost_usd.toFixed(2)}</b></span>` +
         ipcBadgeHTML(live) +
         `</div></div>` +
@@ -1032,7 +1021,7 @@ let booted = false, lastHash = '';
 function feedHash() {
     return JSON.stringify(FEED.live.map(s => [s.session_id, s.state, s.doing, s.ctx_remaining, s.cost_usd, s.turns, s.output_tokens, s.git_branch, s.git_modified, s.mcp_down, s.elapsed, s.status, s.status_since, s.last_activity, s.cwd_short]))
         + '|' + JSON.stringify(FEED.recent.map(s => [s.session_id, s.ago]))
-        + '|' + JSON.stringify([FEED.limits, FEED.aggregates]);
+        + '|' + JSON.stringify([FEED.aggregates]);
 }
 let refreshRepoll = 0;
 function setRefreshCue(on) {
