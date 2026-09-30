@@ -406,7 +406,7 @@ t_grep "unreadable rows carry no link"        lib/hub-index.html 'const openable
 t_grep "unreadable rows say why"              lib/hub-index.html "transcript isn't readable here"
 t_grep "no prefetch of unreadable rows"       lib/hub-index.html '\.filter\(openable\)'
 
-t_grep "EOF flush marks the group open" lib/transcript.py 'flush_tools\(still_open=True\)'
+t_grep "EOF flush marks the group open" lib/transcript.py "grp\['open'\] = True"
 t_grep "reader resends the open group"  lib/hub-server.py 'r\.get\("open"\)'
 t_grep "bad since is rejected, not ignored" lib/hub-server.py 'since must be an integer'
 t_grep "client swaps the open group"    lib/transcript-app.html 'function refreshOpen'

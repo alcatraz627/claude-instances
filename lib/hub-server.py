@@ -238,7 +238,7 @@ def resolve_session_jsonl(session_id):
 # lifetime instead of once per visit; least-recently-watched entries age
 # out. Per-target locks make concurrent peeks of one cold session share a
 # single parse. Callers slice on copies, never on the cached object.
-_PARSE_CACHE = collections.OrderedDict()   # target -> (key, result, src_bytes)
+_PARSE_CACHE = collections.OrderedDict()   # target -> (key, result, src_bytes, parser, inode, edges)
 _PARSE_CACHE_MAX = 48
 # Entries are whole parsed transcripts in RAM, so the entry cap alone is not a
 # memory cap — a fleet of huge files needs a byte bound too. Measured by the
@@ -264,7 +264,22 @@ def _parse_cache_evict():
         if lk is None or not lk.locked():
             _parse_locks.pop(gone, None)
 
+_EDGE = 512   # bytes compared at the head and at the read offset
+
+
+def _edges(path, offset):
+    """The file's first bytes and the bytes just before `offset`: if either
+    changed, the file was rewritten rather than appended to."""
+    with open(path, "rb") as fh:
+        head = fh.read(_EDGE)
+        fh.seek(max(0, offset - _EDGE))
+        tail = fh.read(min(offset, _EDGE))
+    return head, tail
+
+
 def _parse_cached(target):
+    """The parsed transcript, re-reading only what was appended since the last
+    parse. A rewritten, truncated or replaced file is parsed from scratch."""
     try:
         st = os.stat(target)
     except OSError:
@@ -283,9 +298,22 @@ def _parse_cached(target):
             if hit and hit[0] == key:
                 _PARSE_CACHE.move_to_end(target)
                 return hit[1]
-        result = transcript.parse_transcript(target)
+        result = None
+        if hit:
+            parser, ino, edges = hit[3], hit[4], hit[5]
+            try:
+                if (st.st_ino == ino and st.st_size >= parser.offset
+                        and _edges(target, parser.offset) == edges):
+                    parser.feed_file()
+                    result = parser.snapshot()
+            except OSError:
+                result = None
+        if result is None:
+            result = transcript.parse_transcript(target, with_parser=True)
+            parser = result.pop("parser")
+        edges = _edges(target, parser.offset)
         with _parse_meta:
-            _PARSE_CACHE[target] = (key, result, st.st_size)
+            _PARSE_CACHE[target] = (key, result, st.st_size, parser, st.st_ino, edges)
             _PARSE_CACHE.move_to_end(target)
             _parse_cache_evict()
         return result

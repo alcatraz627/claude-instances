@@ -34,6 +34,7 @@ CLI:
 import sys
 import os
 import json
+import copy
 import glob
 import zlib
 from collections import Counter
@@ -209,141 +210,361 @@ def mark_awaiting_results(records):
                 rec['open'] = True
             return
 
-def parse_transcript(jsonl_file, subagent_index=None):
-    """Read a transcript .jsonl in full and return {meta, records}.
+class TranscriptParser:
+    """A transcript read so far, able to take more lines as the file grows.
 
-    `records` is the ordered list of conversation blocks. Blocks mirror how a
-    reader segments the conversation: consecutive tool-only assistant turns are
-    grouped into one `tools` block (matching the old renderer's flush_tools),
-    ambient lines (mode changes, hook summaries) become `event` blocks, and a
-    `Task` tool call carries a resolved `subagent` object when its sub-agent
-    transcript is on disk.
+    Transcripts are append-only, so a live session never needs a full re-read:
+    `feed_file` parses only the bytes past the last read, and `snapshot` hands
+    out a view that later feeding cannot change. `parse_transcript` is the
+    one-shot form of the same thing.
 
-    `meta` carries session-level rollups (model, token totals, tool histogram,
-    git branch, permission mode, counts) the header needs.
+    Records mirror how a reader segments the conversation: consecutive tool
+    calls are grouped into one `tools` block, ambient lines (mode changes, hook
+    summaries) become `event` blocks, thinking becomes a `thinking` block, and
+    a `Task` call carries its resolved `subagent` when the transcript exists.
     """
-    if subagent_index is None:
-        subagent_index = load_subagent_index(jsonl_file)
 
-    # Count every sub-agent transcript on disk, not just the ones whose meta.json
-    # carries a toolUseId join key — some sessions write metas without it, and
-    # those sub-agents still ran and still deserve to be counted/listed.
-    _base = os.path.splitext(jsonl_file)[0]
-    agent_transcripts = glob.glob(os.path.join(_base, 'subagents', 'agent-*.jsonl'))
+    def __init__(self, jsonl_file, subagent_index=None):
+        self.jsonl_file = jsonl_file
+        self.subagent_index = (load_subagent_index(jsonl_file)
+                               if subagent_index is None else subagent_index)
+        self._index_given = subagent_index is not None
+        self.offset = 0              # bytes of the file consumed so far
+        self.records = []
+        self.pending_tools = []      # consecutive tool calls not yet grouped
+        self.last_line_uuid = ''     # anchor for records whose lines carry no uuid
+        self.mode_id_counts = {}     # (anchor, mode) ordinals for repeated flips
+        self.tool_counter = Counter()
+        self.seq = 0
+        # One assistant message is written as several lines (one per content
+        # block) with the same `usage` on each; tally each message.id once.
+        self.seen_usage_ids = set()
+        # Resume and compaction re-emit a few turns verbatim; drop a call or a
+        # thought already seen so nothing renders twice.
+        self.seen_tool_ids = set()
+        self.seen_thinking = set()
+        # Each call by tool_use id, so a later tool_result finds its call.
+        self.calls_by_id = {}
+        # Full bodies kept out of /data (tool output, thinking), by id.
+        self.blobs = {}
+        # Task calls whose sub-agent transcript had not appeared yet.
+        self.unresolved_agents = []
+        self.meta = {
+            'session_id': os.path.splitext(os.path.basename(jsonl_file))[0],
+            'model': 'unknown',
+            'ai_title': '',
+            'git_branch': '',
+            'permission_mode': '',
+            'tokens': {'input': 0, 'output': 0, 'cache_read': 0},
+            'counts': {'user': 0, 'assistant': 0, 'tools': 0, 'events': 0, 'subagents': 0},
+            'hook_summaries': 0,
+            'hook_errors': 0,
+            'tool_results': 0,
+            'tool_errors': 0,
+            'thinking': 0,
+            'thinking_hidden': 0,
+        }
 
-    records = []
-    pending_tools = []           # consecutive tool-only turns, grouped on flush
-    last_line_uuid = ''          # anchor for records whose lines carry no uuid
-    mode_id_counts = {}          # (anchor, mode) ordinals for repeated flips
-    tool_counter = Counter()
-    seq = 0
 
-    # One logical assistant message is written as several JSONL lines — one per
-    # content block (thinking, text, each tool_use) — and `usage` is repeated
-    # identically on every one of those lines. Counting usage per line would
-    # multiply token totals by the block count, so we tally each message.id once.
-    seen_usage_ids = set()
+    def feed_file(self, final=False):
+        """Parse the bytes appended since the last call.
 
-    # On resume/compaction a handful of turns are re-emitted verbatim, repeating
-    # their tool_use blocks. tool_use ids are unique per call, so we drop a call
-    # whose id we have already emitted — otherwise the same card renders twice.
-    seen_tool_ids = set()
-
-    # Each tool call by its tool_use id, so the tool_result that arrives on a
-    # later line can be attached to the call it answers.
-    calls_by_id = {}
-    # Full bodies kept out of /data: tool output and thinking text, by id.
-    # Served one at a time through /data?result=<id>.
-    blobs = {}
-    seen_thinking = set()
-
-    meta = {
-        'session_id': os.path.splitext(os.path.basename(jsonl_file))[0],
-        'model': 'unknown',
-        'ai_title': '',
-        'git_branch': '',
-        'permission_mode': '',
-        'tokens': {'input': 0, 'output': 0, 'cache_read': 0},
-        'counts': {'user': 0, 'assistant': 0, 'tools': 0, 'events': 0, 'subagents': 0},
-        'hook_summaries': 0,
-        'hook_errors': 0,
-        'tool_results': 0,
-        'tool_errors': 0,
-        'thinking': 0,
-        'thinking_hidden': 0,
-        'subagent_count': len(agent_transcripts),
-        'subagent_linked': len(subagent_index),
-    }
-
-    def next_seq():
-        nonlocal seq
-        seq += 1
-        return seq
-
-    def rec_id(line_uuid, prefix, ts_iso, payload):
-        """A record's identity, stable across re-parses whatever happens to the
-        file around it. `seq` is positional and renumbers on any mid-file
-        rewrite; identity comes from the source line's uuid, or failing that
-        from the content itself (crc, never a per-process salted hash)."""
-        if line_uuid:
-            return line_uuid
-        crc = zlib.crc32(str(payload).encode('utf-8', 'replace')) & 0xffffffff
-        return f"{prefix}:{ts_iso}:{crc:08x}"
-
-    def flush_tools(still_open=False):
-        """Emit accumulated tool calls as one grouped `tools` block.
-
-        `still_open` marks a group we flushed only because the file ended, not
-        because anything closed the burst. That group can still gain tools on a
-        later read while keeping this same seq — so a live-tailing client, which
-        asks for `seq > n`, would never hear about the rest of it. Marking it
-        lets the reader resend it; see `open` in the /data contract.
+        Only whole lines are consumed; a line still being written waits for
+        the next call. `final` also takes an unterminated last line, for a
+        one-shot read of a finished file.
         """
-        nonlocal pending_tools
-        if not pending_tools:
+        with open(self.jsonl_file, 'rb') as f:
+            f.seek(self.offset)
+            data = f.read()
+        if not data:
             return
-        # The group's identity is its FIRST member: a group flushed `open`
-        # keeps gaining tools, but in an append-only file its first member
-        # never changes — so the id stays put while the group grows.
-        first = pending_tools[0]
-        rec = {
-            'seq': next_seq(),
-            'id': first.get('id') or rec_id(first.get('line_uuid', ''), 't',
+        end = len(data) if final else data.rfind(b'\n') + 1
+        if end <= 0:
+            return
+        for raw in data[:end].split(b'\n'):
+            self.feed_line(raw.decode('utf-8', 'replace'))
+        self.offset += end
+        if self.unresolved_agents:
+            self._resolve_late_agents()
+
+    def feed_line(self, line):
+        line = line.strip()
+        if not line:
+            return
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(obj, dict):
+            return
+        meta = self.meta
+        msg_type = obj.get('type', '')
+        line_uuid = obj.get('uuid') or ''
+        if line_uuid:
+            self.last_line_uuid = line_uuid
+        ts_iso = obj.get('timestamp', '')
+        stamp = {'ts': _fmt_ts(ts_iso), 'ts_full': _fmt_ts_full(ts_iso), 'ts_iso': ts_iso}
+        sidechain = bool(obj.get('isSidechain', False))
+        if obj.get('gitBranch'):
+            meta['git_branch'] = obj['gitBranch']
+
+        if msg_type in ('ai-title', 'custom-title'):
+            t = obj.get('aiTitle') or obj.get('customTitle') or ''
+            if t:
+                meta['ai_title'] = t
+            return
+
+        if msg_type in ('permission-mode', 'mode'):
+            pm = obj.get('permissionMode') or obj.get('mode') or ''
+            if pm and pm != meta['permission_mode']:
+                meta['permission_mode'] = pm
+                self._flush_tools()
+                # Mode lines carry no uuid and no timestamp, so the identity
+                # anchors to the last uuid-bearing line, plus an ordinal for
+                # repeated identical flips under one anchor.
+                mode_base = f"mode:{self.last_line_uuid}:{pm}"
+                mode_n = self.mode_id_counts.get(mode_base, 0)
+                self.mode_id_counts[mode_base] = mode_n + 1
+                self._add({
+                    'id': mode_base if mode_n == 0 else f"{mode_base}:{mode_n}",
+                    'role': 'event', 'kind': 'event',
+                    'event_type': 'mode-change', 'cls': 'mode',
+                    'text': f"permission mode → {pm}",
+                    **stamp, 'sidechain': sidechain,
+                })
+                meta['counts']['events'] += 1
+            return
+
+        if msg_type == 'system':
+            if obj.get('subtype', '') == 'stop_hook_summary':
+                hc = obj.get('hookCount') or 0
+                he = obj.get('hookErrors') or []
+                pc = obj.get('preventedContinuation') or False
+                if hc or he or pc:
+                    meta['hook_summaries'] += 1
+                    meta['hook_errors'] += len(he)
+                    self._flush_tools()
+                    self._add({
+                        'id': _rec_id(line_uuid, 'hook', ts_iso, f"{hc}:{len(he)}:{pc}"),
+                        'role': 'event', 'kind': 'event',
+                        'event_type': 'hook-summary',
+                        'cls': 'err' if (he or pc) else 'hooks',
+                        'hook_count': hc,
+                        'errors': he,
+                        'prevented_continuation': bool(pc),
+                        **stamp, 'sidechain': sidechain,
+                    })
+                    meta['counts']['events'] += 1
+            return
+
+        if msg_type == 'user':
+            self._flush_tools()
+            msg = obj.get('message', {})
+            content = ''
+            if isinstance(msg, dict):
+                blocks = msg.get('content', [])
+                if isinstance(blocks, str):
+                    content = blocks          # plain-string content (slash-commands, prose)
+                else:
+                    for block in blocks:
+                        if isinstance(block, dict):
+                            if block.get('type') == 'text':
+                                content += block.get('text', '')
+                            elif block.get('type') == 'tool_result':
+                                self._attach_result(block)
+                        elif isinstance(block, str):
+                            content += block
+            elif isinstance(msg, str):
+                content = msg
+            if content.strip():
+                self._add({
+                    'id': _rec_id(line_uuid, 'u', ts_iso, content),
+                    'role': 'user', 'kind': 'user',
+                    'text': content.strip(),
+                    'system_reminders': content.count('<system-reminder>'),
+                    **stamp, 'sidechain': sidechain,
+                })
+                meta['counts']['user'] += 1
+            return
+
+        if msg_type == 'assistant':
+            self._assistant(obj, line_uuid, ts_iso, stamp, sidechain)
+        # Other line types (attachment, file-history-snapshot) have no body.
+
+    def _assistant(self, obj, line_uuid, ts_iso, stamp, sidechain):
+        meta = self.meta
+        msg = obj.get('message', {})
+        if not isinstance(msg, dict):
+            return
+        m = msg.get('model', '')
+        if m:
+            meta['model'] = m
+        msg_id = msg.get('id')
+        usage = msg.get('usage') or {}
+        # A missing id must never become a shared key, or the first id-less
+        # message would swallow every later one's tokens.
+        if not msg_id or msg_id not in self.seen_usage_ids:
+            if msg_id:
+                self.seen_usage_ids.add(msg_id)
+            meta['tokens']['input'] += usage.get('input_tokens', 0)
+            meta['tokens']['output'] += usage.get('output_tokens', 0)
+            meta['tokens']['cache_read'] += usage.get('cache_read_input_tokens', 0)
+
+        text_part = ''
+        tool_calls = []
+        for block in msg.get('content', []):
+            if not isinstance(block, dict):
+                continue
+            kind = block.get('type')
+            if kind == 'text':
+                text_part += block.get('text', '')
+            elif kind in ('thinking', 'redacted_thinking'):
+                self._thinking(block, line_uuid, ts_iso, stamp, sidechain)
+            elif kind == 'tool_use':
+                call = self._tool_use(block, line_uuid, msg_id, usage, stamp, sidechain)
+                if call:
+                    tool_calls.append(call)
+
+        if text_part.strip():
+            self._flush_tools()
+            self._add({
+                'id': _rec_id(line_uuid, 'a', ts_iso, text_part),
+                'role': 'assistant', 'kind': 'assistant',
+                'text': text_part.strip(),
+                'message_id': msg_id,
+                'model': meta['model'],
+                'tokens': {
+                    'in': usage.get('input_tokens', 0),
+                    'out': usage.get('output_tokens', 0),
+                    'cache': usage.get('cache_read_input_tokens', 0),
+                },
+                **stamp, 'sidechain': sidechain,
+            })
+            meta['counts']['assistant'] += 1
+        self.pending_tools.extend(tool_calls)
+
+    def _thinking(self, block, line_uuid, ts_iso, stamp, sidechain):
+        thought = (block.get('thinking') or '').strip()
+        if not thought:
+            self.meta['thinking_hidden'] += 1     # redacted: nothing to show
+            return
+        th_id = f"{_rec_id(line_uuid, 'th', ts_iso, thought)}:think"
+        if th_id in self.seen_thinking:
+            return
+        self.seen_thinking.add(th_id)
+        self._flush_tools()
+        self.blobs[th_id] = thought
+        self._add({
+            'id': th_id,
+            'role': 'thinking', 'kind': 'thinking',
+            'preview': _short(thought.replace('\n', ' '), THINKING_PREVIEW_CHARS),
+            'chars': len(thought),
+            'words': len(thought.split()),
+            **stamp, 'sidechain': sidechain,
+        })
+        self.meta['thinking'] += 1
+
+    def _tool_use(self, block, line_uuid, msg_id, usage, stamp, sidechain):
+        tid = block.get('id')
+        if tid and tid in self.seen_tool_ids:
+            return None
+        if tid:
+            self.seen_tool_ids.add(tid)
+        tname = block.get('name', '?')
+        tinp = block.get('input', {})
+        self.tool_counter[tname] += 1
+        call = {
+            'name': tname,
+            'id': tid,
+            'line_uuid': line_uuid,
+            'message_id': msg_id,
+            'input': tinp,
+            'preview': tool_preview(tname, tinp),
+            'paths': file_paths_in_input(tname, tinp),
+            **stamp,
+            'tokens_out': usage.get('output_tokens', 0),
+            'sidechain': sidechain,
+        }
+        if tname in ('Task', 'Agent'):
+            sub = self.subagent_index.get(tid)
+            if sub:
+                call['subagent'] = sub
+                self.meta['counts']['subagents'] += 1
+            else:
+                # No transcript on disk yet; label from the input meanwhile.
+                call['subagent'] = {
+                    'agentType': (tinp or {}).get('subagent_type'),
+                    'description': (tinp or {}).get('description'),
+                    'exists': False,
+                }
+                if tid:
+                    self.unresolved_agents.append(call)
+        if tid:
+            self.calls_by_id[tid] = call
+        return call
+
+    def _resolve_late_agents(self):
+        """A sub-agent's meta file can land after its Task line was read."""
+        if self._index_given:
+            return
+        self.subagent_index = load_subagent_index(self.jsonl_file)
+        still = []
+        for call in self.unresolved_agents:
+            sub = self.subagent_index.get(call['id'])
+            if sub:
+                call['subagent'] = sub
+                self.meta['counts']['subagents'] += 1
+            else:
+                still.append(call)
+        self.unresolved_agents = still
+
+    def _add(self, rec):
+        self.seq += 1
+        rec['seq'] = self.seq
+        self.records.append(rec)
+
+    def _group(self, calls, seq):
+        """One `tools` block from consecutive calls. Its identity is its first
+        call, which never changes while the group grows."""
+        first = calls[0]
+        return {
+            'seq': seq,
+            'id': first.get('id') or _rec_id(first.get('line_uuid', ''), 't',
                                             first.get('ts_iso', ''), first.get('name', '')),
             'role': 'tools',
             'kind': 'tools',
-            'ts': pending_tools[-1].get('ts', ''),
-            'ts_full': pending_tools[-1].get('ts_full', ''),
-            'ts_iso': pending_tools[-1].get('ts_iso', ''),
-            'tools': pending_tools,
-            'tokens': {'out': sum(t.get('tokens_out', 0) for t in pending_tools)},
-            'sidechain': any(t.get('sidechain') for t in pending_tools),
+            'ts': calls[-1].get('ts', ''),
+            'ts_full': calls[-1].get('ts_full', ''),
+            'ts_iso': calls[-1].get('ts_iso', ''),
+            'tools': calls,
+            'tokens': {'out': sum(t.get('tokens_out', 0) for t in calls)},
+            'sidechain': any(t.get('sidechain') for t in calls),
         }
-        if still_open:
-            rec['open'] = True
-        records.append(rec)
-        meta['counts']['tools'] += 1
-        pending_tools = []
 
-    def attach_result(block):
-        """Pair a tool_result with the call it answers, by tool_use id.
+    def _flush_tools(self):
+        if not self.pending_tools:
+            return
+        self.seq += 1
+        self.records.append(self._group(self.pending_tools, self.seq))
+        self.meta['counts']['tools'] += 1
+        self.pending_tools = []
 
-        The call gets a short preview and an error flag; the full text goes
-        to `blobs`. A result re-emitted on resume simply overwrites.
-        """
+    def _attach_result(self, block):
+        """Pair a tool_result with its call by tool_use id: the call gets a
+        preview and an error flag, the full text goes to `blobs`."""
         tid = block.get('tool_use_id')
         if not tid:
             return
         text = tool_result_text(block.get('content'))
         is_error = bool(block.get('is_error'))
-        blobs[tid] = text
-        call = calls_by_id.get(tid)
+        self.blobs[tid] = text
+        call = self.calls_by_id.get(tid)
         if call is None:
             return
         if 'result' not in call:
-            meta['tool_results'] += 1
+            self.meta['tool_results'] += 1
             if is_error:
-                meta['tool_errors'] += 1
+                self.meta['tool_errors'] += 1
         call['result'] = {
             'preview': _short(text, RESULT_PREVIEW_CHARS),
             'chars': len(text),
@@ -355,241 +576,64 @@ def parse_transcript(jsonl_file, subagent_index=None):
         else:
             call.pop('is_error', None)
 
-    with open(jsonl_file, 'r', errors='replace') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
 
-            msg_type = obj.get('type', '')
-            line_uuid = obj.get('uuid') or ''
-            if line_uuid:
-                last_line_uuid = line_uuid
-            ts_iso = obj.get('timestamp', '')
-            ts = _fmt_ts(ts_iso)
-            ts_full = _fmt_ts_full(ts_iso)
-            sidechain = bool(obj.get('isSidechain', False))
-            if obj.get('gitBranch'):
-                meta['git_branch'] = obj['gitBranch']
+    def snapshot(self):
+        """{meta, records, blobs, calls} as of now.
 
-            # ── Ambient / lightweight events ────────────────────────────────
-            if msg_type in ('ai-title', 'custom-title'):
-                t = obj.get('aiTitle') or obj.get('customTitle') or ''
-                if t:
-                    meta['ai_title'] = t
-                continue
+        Tools records and their calls are copied, since later results attach
+        to the live ones; everything else is never changed once added. A burst
+        of calls nothing has closed yet is flushed `open`: it may still grow
+        under the same seq, so a live reader must be resent it.
+        """
+        records = []
+        for r in self.records:
+            if r['role'] == 'tools':
+                r = dict(r)
+                r['tools'] = [dict(t) for t in r['tools']]
+            records.append(r)
+        meta = copy.deepcopy(self.meta)
+        if self.pending_tools:
+            grp = self._group([dict(t) for t in self.pending_tools], self.seq + 1)
+            grp['open'] = True
+            records.append(grp)
+            meta['counts']['tools'] += 1
+        mark_awaiting_results(records)
+        base = os.path.splitext(self.jsonl_file)[0]
+        # Count every sub-agent transcript on disk, including ones whose meta
+        # file lacks the join key: they still ran.
+        meta['subagent_count'] = len(glob.glob(os.path.join(base, 'subagents', 'agent-*.jsonl')))
+        meta['subagent_linked'] = len(self.subagent_index)
+        meta['tools_breakdown'] = [
+            {'name': n, 'count': c} for n, c in self.tool_counter.most_common()
+        ]
+        meta['total_tool_calls'] = sum(self.tool_counter.values())
+        meta['total_records'] = len(records)
+        return {'meta': meta, 'records': records, 'blobs': self.blobs,
+                'calls': self.calls_by_id}
 
-            if msg_type in ('permission-mode', 'mode'):
-                pm = obj.get('permissionMode') or obj.get('mode') or ''
-                if pm and pm != meta['permission_mode']:
-                    meta['permission_mode'] = pm
-                    flush_tools()
-                    # mode lines carry no uuid AND no timestamp (verified on
-                    # real transcripts: {type, mode, sessionId} only), so the
-                    # identity anchors to the last uuid-bearing line, with an
-                    # ordinal for repeated identical flips under one anchor.
-                    mode_base = f"mode:{last_line_uuid}:{pm}"
-                    mode_n = mode_id_counts.get(mode_base, 0)
-                    mode_id_counts[mode_base] = mode_n + 1
-                    records.append({
-                        'seq': next_seq(),
-                        'id': mode_base if mode_n == 0 else f"{mode_base}:{mode_n}",
-                        'role': 'event', 'kind': 'event',
-                        'event_type': 'mode-change', 'cls': 'mode',
-                        'text': f"permission mode → {pm}",
-                        'ts': ts, 'ts_full': ts_full, 'ts_iso': ts_iso,
-                        'sidechain': sidechain,
-                    })
-                    meta['counts']['events'] += 1
-                continue
 
-            if msg_type == 'system':
-                subtype = obj.get('subtype', '')
-                if subtype == 'stop_hook_summary':
-                    hc = obj.get('hookCount') or 0
-                    he = obj.get('hookErrors') or []
-                    pc = obj.get('preventedContinuation') or False
-                    if hc or he or pc:
-                        meta['hook_summaries'] += 1
-                        meta['hook_errors'] += len(he)
-                        flush_tools()
-                        records.append({
-                            'seq': next_seq(),
-                            'id': rec_id(line_uuid, 'hook', ts_iso, f"{hc}:{len(he)}:{pc}"),
-                            'role': 'event', 'kind': 'event',
-                            'event_type': 'hook-summary',
-                            'cls': 'err' if (he or pc) else 'hooks',
-                            'hook_count': hc,
-                            'errors': he,
-                            'prevented_continuation': bool(pc),
-                            'ts': ts, 'ts_full': ts_full, 'ts_iso': ts_iso,
-                            'sidechain': sidechain,
-                        })
-                        meta['counts']['events'] += 1
-                continue
+def _rec_id(line_uuid, prefix, ts_iso, payload):
+    """A record's identity, stable across re-parses whatever happens around
+    it: the source line's uuid, else a crc of the content (never a salted
+    hash). `seq` is only a position and renumbers on a mid-file rewrite."""
+    if line_uuid:
+        return line_uuid
+    crc = zlib.crc32(str(payload).encode('utf-8', 'replace')) & 0xffffffff
+    return f"{prefix}:{ts_iso}:{crc:08x}"
 
-            # ── User turns ──────────────────────────────────────────────────
-            if msg_type == 'user':
-                flush_tools()
-                msg = obj.get('message', {})
-                content = ''
-                if isinstance(msg, dict):
-                    blocks = msg.get('content', [])
-                    if isinstance(blocks, str):
-                        content = blocks          # plain-string content (slash-commands, prose)
-                    else:
-                        for block in blocks:
-                            if isinstance(block, dict):
-                                if block.get('type') == 'text':
-                                    content += block.get('text', '')
-                                elif block.get('type') == 'tool_result':
-                                    attach_result(block)
-                            elif isinstance(block, str):
-                                content += block
-                elif isinstance(msg, str):
-                    content = msg
-                if content.strip():
-                    sysrem = content.count('<system-reminder>')
-                    records.append({
-                        'seq': next_seq(),
-                        'id': rec_id(line_uuid, 'u', ts_iso, content),
-                        'role': 'user', 'kind': 'user',
-                        'text': content.strip(),
-                        'system_reminders': sysrem,
-                        'ts': ts, 'ts_full': ts_full, 'ts_iso': ts_iso,
-                        'sidechain': sidechain,
-                    })
-                    meta['counts']['user'] += 1
-                continue
 
-            # ── Assistant turns ─────────────────────────────────────────────
-            if msg_type == 'assistant':
-                msg = obj.get('message', {})
-                m = msg.get('model', '')
-                if m:
-                    meta['model'] = m
-                msg_id = msg.get('id')
-                usage = msg.get('usage', {})
-                # Count usage once per message.id. A missing id (None) must never
-                # become a shared key — otherwise the first id-less message would
-                # swallow every later id-less message's tokens.
-                if not msg_id or msg_id not in seen_usage_ids:
-                    if msg_id:
-                        seen_usage_ids.add(msg_id)
-                    meta['tokens']['input'] += usage.get('input_tokens', 0)
-                    meta['tokens']['output'] += usage.get('output_tokens', 0)
-                    meta['tokens']['cache_read'] += usage.get('cache_read_input_tokens', 0)
+def parse_transcript(jsonl_file, subagent_index=None, with_parser=False):
+    """Read a transcript .jsonl in full and return {meta, records, blobs, calls}.
 
-                text_part = ''
-                tool_calls = []
-                for block in msg.get('content', []):
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get('type') == 'text':
-                        text_part += block.get('text', '')
-                    elif block.get('type') in ('thinking', 'redacted_thinking'):
-                        thought = (block.get('thinking') or '').strip()
-                        if not thought:
-                            # Redacted or signature-only: nothing to show.
-                            meta['thinking_hidden'] += 1
-                            continue
-                        th_id = f"{rec_id(line_uuid, 'th', ts_iso, thought)}:think"
-                        if th_id in seen_thinking:
-                            continue
-                        seen_thinking.add(th_id)
-                        flush_tools()
-                        blobs[th_id] = thought
-                        records.append({
-                            'seq': next_seq(),
-                            'id': th_id,
-                            'role': 'thinking', 'kind': 'thinking',
-                            'preview': _short(thought.replace('\n', ' '), THINKING_PREVIEW_CHARS),
-                            'chars': len(thought),
-                            'words': len(thought.split()),
-                            'ts': ts, 'ts_full': ts_full, 'ts_iso': ts_iso,
-                            'sidechain': sidechain,
-                        })
-                        meta['thinking'] += 1
-                    elif block.get('type') == 'tool_use':
-                        tid = block.get('id')
-                        if tid and tid in seen_tool_ids:
-                            continue
-                        if tid:
-                            seen_tool_ids.add(tid)
-                        tname = block.get('name', '?')
-                        tinp = block.get('input', {})
-                        tool_counter[tname] += 1
-                        call = {
-                            'name': tname,
-                            'id': block.get('id'),
-                            'line_uuid': line_uuid,
-                            'message_id': msg_id,
-                            'input': tinp,
-                            'preview': tool_preview(tname, tinp),
-                            'paths': file_paths_in_input(tname, tinp),
-                            'ts': ts, 'ts_full': ts_full, 'ts_iso': ts_iso,
-                            'tokens_out': usage.get('output_tokens', 0),
-                            'sidechain': sidechain,
-                        }
-                        # Resolve a Task dispatch to the sub-agent it launched.
-                        if tname in ('Task', 'Agent'):
-                            sub = subagent_index.get(block.get('id'))
-                            if sub:
-                                call['subagent'] = sub
-                                meta['counts']['subagents'] += 1
-                            else:
-                                # No transcript on disk — still label from input.
-                                call['subagent'] = {
-                                    'agentType': (tinp or {}).get('subagent_type'),
-                                    'description': (tinp or {}).get('description'),
-                                    'exists': False,
-                                }
-                        if tid:
-                            calls_by_id[tid] = call
-                        tool_calls.append(call)
-
-                if text_part.strip():
-                    flush_tools()
-                    records.append({
-                        'seq': next_seq(),
-                        'id': rec_id(line_uuid, 'a', ts_iso, text_part),
-                        'role': 'assistant', 'kind': 'assistant',
-                        'text': text_part.strip(),
-                        'message_id': msg_id,
-                        'model': meta['model'],
-                        'tokens': {
-                            'in': usage.get('input_tokens', 0),
-                            'out': usage.get('output_tokens', 0),
-                            'cache': usage.get('cache_read_input_tokens', 0),
-                        },
-                        'ts': ts, 'ts_full': ts_full, 'ts_iso': ts_iso,
-                        'sidechain': sidechain,
-                    })
-                    meta['counts']['assistant'] += 1
-                    pending_tools.extend(tool_calls)
-                else:
-                    pending_tools.extend(tool_calls)
-                continue
-
-            # Line types without a conversation body of their own (attachment,
-            # tool_result, file-history-snapshot) are not emitted as blocks. The
-            # informative ones surface as typed `event` records once modelled.
-
-    # Nothing closed this burst — the file just ended. It may still be growing.
-    flush_tools(still_open=True)
-    mark_awaiting_results(records)
-
-    # Tool histogram, most-used first.
-    meta['tools_breakdown'] = [
-        {'name': n, 'count': c} for n, c in tool_counter.most_common()
-    ]
-    meta['total_tool_calls'] = sum(tool_counter.values())
-    meta['total_records'] = len(records)
-    return {'meta': meta, 'records': records, 'blobs': blobs, 'calls': calls_by_id}
+    With `with_parser`, the result also carries the `parser`, which can take
+    the lines appended later without re-reading the file.
+    """
+    parser = TranscriptParser(jsonl_file, subagent_index)
+    parser.feed_file(final=not with_parser)
+    result = parser.snapshot()
+    if with_parser:
+        result['parser'] = parser
+    return result
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────

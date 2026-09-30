@@ -174,6 +174,40 @@ if etag:
            st4 == 200 and st5 == 200 and h4.get("ETag") != h3.get("ETag"),
            f"plain={st4} crossed={st5}")
 
+# ---- Test 3a: an append is parsed incrementally; a rewrite is parsed afresh ----
+sidI = "1a000000-0000-4000-8000-000000000001"
+pI = write_session(sidI, 50, "I")
+http_get(f"/s/{sidI}/data")
+_parse_calls["n"] = 0
+with open(pI, "a") as f:
+    f.write(json.dumps({"type": "user", "uuid": "appended-1", "timestamp": "2026-07-17T00:00:05Z",
+                        "message": {"role": "user", "content": "appended"}}) + "\n")
+st, _, body = http_get(f"/s/{sidI}/data")
+recs = json.loads(body)["records"]
+expect("an appended line reaches /data without a full re-parse",
+       _parse_calls["n"] == 0 and recs[-1].get("id") == "appended-1",
+       f"parses={_parse_calls['n']} last={recs[-1].get('id')}")
+with open(pI, "a") as f:
+    f.write('{"type": "user", "uuid": "half')          # a line still being written
+st, _, body = http_get(f"/s/{sidI}/data")
+expect("a half-written line is not parsed yet", st == 200
+       and json.loads(body)["records"][-1].get("id") == "appended-1", f"status={st}")
+with open(pI, "a") as f:
+    f.write('-done", "timestamp": "2026-07-17T00:00:06Z", "message": {"role": "user", "content": "done"}}\n')
+st, _, body = http_get(f"/s/{sidI}/data")
+expect("the line is parsed once it is complete",
+       json.loads(body)["records"][-1].get("id") == "half-done", f"last={json.loads(body)['records'][-1].get('id')}")
+lines = open(pI).read().splitlines()
+lines.insert(1, json.dumps({"type": "user", "uuid": "inserted", "timestamp": "2026-07-17T00:00:00Z",
+                            "message": {"role": "user", "content": "inserted mid-file"}}))
+with open(pI, "w") as f:
+    f.write("\n".join(lines) + "\n")
+_parse_calls["n"] = 0
+st, _, body = http_get(f"/s/{sidI}/data")
+recs = json.loads(body)["records"]
+expect("a mid-file rewrite is parsed from scratch",
+       _parse_calls["n"] == 1 and recs[1].get("id") == "inserted", f"parses={_parse_calls['n']}")
+
 # ---- Test 3b: a tool's full output is served by id, and only by id ----
 sidR = "5e500000-0000-4000-8000-000000000001"
 pR = write_session(sidR, 1, "R")
