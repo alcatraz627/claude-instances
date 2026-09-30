@@ -373,6 +373,7 @@ done
 # os.path.exists() is True for a FIFO, so the idiom these readers used was no
 # guard at all. The hard timeout IS the assertion: without isfile() the probe
 # never returns.
+SCAN_PROBE="$REPO_ROOT/tests/fixtures/scan-probe.py"
 _fifo_probe() {   # kind -> what the reader returns, or HUNG
     local kind="$1" pid=999883
     mkfifo "/tmp/claude-${kind}-${pid}" 2>/dev/null
@@ -419,7 +420,6 @@ t_grep "client swaps the open group"    lib/transcript-app.html 'function refres
 
 t_section "cost reporting"
 
-SCAN_PROBE="$REPO_ROOT/tests/fixtures/scan-probe.py"
 COST_PID=999424
 
 t_eq "priced model still prices"      "90.0"  "$(python3 "$SCAN_PROBE" estimate opus 1000000 1000000)"
